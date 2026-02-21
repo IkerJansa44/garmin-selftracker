@@ -11,6 +11,7 @@ import {
   findCorrelationPair,
 } from "./correlation";
 import {
+  type AnalysisValueRecord,
   type CheckInEntry,
   type CheckInQuestion,
   type DailyRecord,
@@ -121,6 +122,126 @@ function buildCheckins(days: number): Map<string, CheckInEntry> {
   return entries;
 }
 
+function buildAnalysisValues(
+  records: DailyRecord[],
+  checkinsByDate: Map<string, CheckInEntry>,
+): AnalysisValueRecord[] {
+  const values: AnalysisValueRecord[] = [];
+
+  const addValue = (
+    analysisDate: string,
+    role: "predictor" | "target",
+    featureKey: string,
+    rawValue: unknown,
+    sourceDate: string,
+    lagDays: number,
+  ) => {
+    if (typeof rawValue === "boolean") {
+      values.push({
+        analysisDate,
+        role,
+        featureKey,
+        valueNum: null,
+        valueText: null,
+        valueBool: rawValue,
+        sourceDate,
+        lagDays,
+        alignmentRule: "test_fixture",
+      });
+      return;
+    }
+    if (typeof rawValue === "number") {
+      if (!Number.isFinite(rawValue)) {
+        return;
+      }
+      values.push({
+        analysisDate,
+        role,
+        featureKey,
+        valueNum: rawValue,
+        valueText: null,
+        valueBool: null,
+        sourceDate,
+        lagDays,
+        alignmentRule: "test_fixture",
+      });
+      return;
+    }
+    if (typeof rawValue === "string" && rawValue.trim()) {
+      values.push({
+        analysisDate,
+        role,
+        featureKey,
+        valueNum: null,
+        valueText: rawValue,
+        valueBool: null,
+        sourceDate,
+        lagDays,
+        alignmentRule: "test_fixture",
+      });
+    }
+  };
+
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    const previous = index > 0 ? records[index - 1] : null;
+
+    for (const [metricKey, metricValue] of Object.entries(record.metrics)) {
+      addValue(
+        record.date,
+        "target",
+        `metric:${metricKey}`,
+        metricValue,
+        record.date,
+        0,
+      );
+    }
+
+    const targetEntry = checkinsByDate.get(record.date);
+    for (const [questionId, answerValue] of Object.entries(targetEntry?.answers ?? {})) {
+      addValue(
+        record.date,
+        "target",
+        `question:${questionId}`,
+        answerValue,
+        record.date,
+        0,
+      );
+    }
+
+    if (!previous) {
+      continue;
+    }
+
+    for (const [predictorKey, predictorValue] of Object.entries(previous.predictors)) {
+      addValue(
+        record.date,
+        "predictor",
+        `garmin:${predictorKey}`,
+        predictorValue,
+        previous.date,
+        -1,
+      );
+    }
+
+    const predictorEntry = checkinsByDate.get(previous.date);
+    for (const [questionId, answerValue] of Object.entries(
+      predictorEntry?.answers ?? {},
+    )) {
+      addValue(
+        record.date,
+        "predictor",
+        `question:${questionId}`,
+        answerValue,
+        previous.date,
+        -1,
+      );
+    }
+  }
+
+  return values;
+}
+
 function buildModerateAnovaRecords(days: number): DailyRecord[] {
   return Array.from({ length: days }, (_, index) => {
     const priorGroup = index === 0 ? 0 : (index - 1) % 3;
@@ -210,9 +331,10 @@ describe("correlation helpers", () => {
   it("builds meaningful continuous correlations and assigns FDR-adjusted q values", () => {
     const records = buildRecords(60);
     const checkinsByDate = buildCheckins(60);
+    const analysisValues = buildAnalysisValues(records, checkinsByDate);
     const catalog = buildCorrelationCatalog({
       records,
-      checkinsByDate,
+      analysisValues,
       questions: QUESTIONS,
       derivedPredictors: [],
       weekdayOnly: false,
@@ -236,6 +358,7 @@ describe("correlation helpers", () => {
   it("supports derived categorical predictors with ANOVA stats", () => {
     const records = buildRecords(60);
     const checkinsByDate = buildCheckins(60);
+    const analysisValues = buildAnalysisValues(records, checkinsByDate);
     const derived: DerivedPredictorDefinition[] = [
       {
         id: "caffeine_binary",
@@ -249,7 +372,7 @@ describe("correlation helpers", () => {
 
     const catalog = buildCorrelationCatalog({
       records,
-      checkinsByDate,
+      analysisValues,
       questions: QUESTIONS,
       derivedPredictors: derived,
       weekdayOnly: false,
@@ -269,9 +392,10 @@ describe("correlation helpers", () => {
   it("converts Garmin sleep duration predictor values from seconds to hours", () => {
     const records = buildRecords(30);
     const checkinsByDate = buildCheckins(30);
+    const analysisValues = buildAnalysisValues(records, checkinsByDate);
     const values = buildPredictorDistribution({
       records,
-      checkinsByDate,
+      analysisValues,
       questions: QUESTIONS,
       predictor: "garmin:sleepSeconds",
       weekdayOnly: false,
@@ -282,9 +406,129 @@ describe("correlation helpers", () => {
     expect(values.every((value) => value > 4 && value < 12)).toBe(true);
   });
 
+  it("enforces D-1 predictors mapped to D targets", () => {
+    const records: DailyRecord[] = [
+      {
+        date: "2026-02-20",
+        dayIndex: 0,
+        weekday: 5,
+        isTrainingDay: false,
+        importGap: false,
+        importState: "ok",
+        fellAsleepAt: null,
+        predictors: {
+          steps: 1111,
+          calories: 2000,
+          stressAvg: 20,
+          bodyBattery: 70,
+          sleepSeconds: 28000,
+          isTrainingDay: false,
+        },
+        metrics: {
+          recoveryIndex: 60,
+          sleepScore: 61,
+          restingHr: 50,
+          stress: 20,
+          bodyBattery: 70,
+          trainingReadiness: 62,
+        },
+        coverage: {
+          recoveryIndex: "complete",
+          sleepScore: "complete",
+          restingHr: "complete",
+          stress: "complete",
+          bodyBattery: "complete",
+          trainingReadiness: "complete",
+        },
+      },
+      {
+        date: "2026-02-21",
+        dayIndex: 1,
+        weekday: 6,
+        isTrainingDay: false,
+        importGap: false,
+        importState: "ok",
+        fellAsleepAt: null,
+        predictors: {
+          steps: 2222,
+          calories: 2100,
+          stressAvg: 25,
+          bodyBattery: 68,
+          sleepSeconds: 27000,
+          isTrainingDay: false,
+        },
+        metrics: {
+          recoveryIndex: 70,
+          sleepScore: 71,
+          restingHr: 49,
+          stress: 22,
+          bodyBattery: 69,
+          trainingReadiness: 70,
+        },
+        coverage: {
+          recoveryIndex: "complete",
+          sleepScore: "complete",
+          restingHr: "complete",
+          stress: "complete",
+          bodyBattery: "complete",
+          trainingReadiness: "complete",
+        },
+      },
+      {
+        date: "2026-02-22",
+        dayIndex: 2,
+        weekday: 0,
+        isTrainingDay: false,
+        importGap: false,
+        importState: "ok",
+        fellAsleepAt: null,
+        predictors: {
+          steps: 3333,
+          calories: 2200,
+          stressAvg: 30,
+          bodyBattery: 67,
+          sleepSeconds: 26000,
+          isTrainingDay: false,
+        },
+        metrics: {
+          recoveryIndex: 80,
+          sleepScore: 81,
+          restingHr: 48,
+          stress: 24,
+          bodyBattery: 68,
+          trainingReadiness: 78,
+        },
+        coverage: {
+          recoveryIndex: "complete",
+          sleepScore: "complete",
+          restingHr: "complete",
+          stress: "complete",
+          bodyBattery: "complete",
+          trainingReadiness: "complete",
+        },
+      },
+    ];
+
+    const result = buildCorrelationResult({
+      records,
+      analysisValues: buildAnalysisValues(records, new Map<string, CheckInEntry>()),
+      questions: QUESTIONS,
+      predictor: "garmin:steps",
+      outcome: "metric:sleepScore",
+      weekdayOnly: false,
+      trainingOnly: false,
+    });
+
+    expect(result.points).toEqual([
+      { x: 1111, y: 71, date: "2026-02-21" },
+      { x: 2222, y: 81, date: "2026-02-22" },
+    ]);
+  });
+
   it("keeps ANOVA p-values accurate in the F-CDF complement branch", () => {
     const records = buildModerateAnovaRecords(61);
     const checkinsByDate = buildThreeBinCheckins(61);
+    const analysisValues = buildAnalysisValues(records, checkinsByDate);
     const derived: DerivedPredictorDefinition[] = [
       {
         id: "caffeine_three_bins",
@@ -298,7 +542,7 @@ describe("correlation helpers", () => {
 
     const catalog = buildCorrelationCatalog({
       records,
-      checkinsByDate,
+      analysisValues,
       questions: QUESTIONS,
       derivedPredictors: derived,
       weekdayOnly: false,
@@ -324,9 +568,10 @@ describe("correlation helpers", () => {
   it("classifies low sample pairs as exploratory/insufficient", () => {
     const records = buildRecords(15);
     const checkinsByDate = buildCheckins(15);
+    const analysisValues = buildAnalysisValues(records, checkinsByDate);
     const catalog = buildCorrelationCatalog({
       records,
-      checkinsByDate,
+      analysisValues,
       questions: QUESTIONS,
       derivedPredictors: [],
       weekdayOnly: false,
@@ -339,7 +584,7 @@ describe("correlation helpers", () => {
 
     const tinyCatalog = buildCorrelationCatalog({
       records: buildRecords(10),
-      checkinsByDate: buildCheckins(10),
+      analysisValues: buildAnalysisValues(buildRecords(10), buildCheckins(10)),
       questions: QUESTIONS,
       derivedPredictors: [],
       weekdayOnly: false,
@@ -352,7 +597,7 @@ describe("correlation helpers", () => {
   it("keeps compatibility wrapper for scatter data", () => {
     const result = buildCorrelationResult({
       records: buildRecords(20),
-      checkinsByDate: buildCheckins(20),
+      analysisValues: buildAnalysisValues(buildRecords(20), buildCheckins(20)),
       questions: QUESTIONS,
       predictor: "question:caffeine_count",
       outcome: "metric:sleepScore",

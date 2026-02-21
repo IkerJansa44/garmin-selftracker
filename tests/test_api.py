@@ -16,6 +16,8 @@ from src.api import (
     _load_checkin_reminder_settings_payload,
     _import_status_message,
     _load_checkins_payload,
+    _load_correlation_values_payload,
+    _load_dashboard_payload,
     _load_dashboard_plots_payload,
     _normalize_checkin_reminder_settings_payload,
     _normalize_dashboard_plots_payload,
@@ -689,6 +691,108 @@ def test_checkins_save_and_load_roundtrip(tmp_path: Path) -> None:
     assert len(loaded) == 1
     assert loaded[0]["date"] == "2026-02-20"
     assert loaded[0]["answers"]["late_meal"] == "21:15"
+
+
+def test_load_correlation_values_payload_uses_materialized_analysis_values(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "garmin.db"
+    connection = connect_db(str(db_path))
+    init_db(connection)
+    connection.execute(
+        """
+        INSERT INTO daily_metrics (
+            metric_date,
+            steps,
+            calories,
+            resting_heart_rate,
+            body_battery,
+            stress_avg,
+            sleep_seconds,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("2026-02-20", 6000, 2100, 50, 70, 30, 25200, "2026-02-21T06:00:00+00:00"),
+    )
+    connection.execute(
+        """
+        INSERT INTO daily_metrics (
+            metric_date,
+            steps,
+            calories,
+            resting_heart_rate,
+            body_battery,
+            stress_avg,
+            sleep_seconds,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("2026-02-21", 6500, 2200, 49, 72, 25, 28800, "2026-02-22T06:00:00+00:00"),
+    )
+    connection.execute(
+        """
+        INSERT INTO checkin_entries (checkin_date, answers_json, completed_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            "2026-02-20",
+            '{"caffeine_count": 2, "felt_energized_during_day": "normal"}',
+            "2026-02-20T21:00:00+00:00",
+            "2026-02-20T21:00:00+00:00",
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+    values = _load_correlation_values_payload(
+        str(db_path),
+        from_date=date(2026, 2, 21),
+        to_date=date(2026, 2, 21),
+    )
+    values_by_key = {(value["role"], value["featureKey"]): value for value in values}
+
+    predictor_steps = values_by_key[("predictor", "garmin:steps")]
+    assert predictor_steps["valueNum"] == 6000
+    assert predictor_steps["sourceDate"] == "2026-02-20"
+    assert predictor_steps["lagDays"] == -1
+
+    predictor_question = values_by_key[("predictor", "question:caffeine_count")]
+    assert predictor_question["valueNum"] == 2
+    assert predictor_question["alignmentRule"] == "checkin_previous_day"
+
+    target_sleep_score = values_by_key[("target", "metric:sleepScore")]
+    assert target_sleep_score["valueNum"] == 90
+    assert target_sleep_score["sourceDate"] == "2026-02-21"
+
+
+def test_load_dashboard_payload_includes_fell_asleep_iso_field(tmp_path: Path) -> None:
+    db_path = tmp_path / "garmin.db"
+    metric_date = date.today().isoformat()
+    fell_asleep_at = "2026-02-20T22:44:00+00:00"
+
+    connection = connect_db(str(db_path))
+    init_db(connection)
+    connection.execute(
+        """
+        INSERT INTO daily_metrics (metric_date, sleep_seconds, fell_asleep_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (metric_date, 29220, fell_asleep_at, "2026-02-21T06:00:00+00:00"),
+    )
+    connection.commit()
+    connection.close()
+
+    payload = _load_dashboard_payload(str(db_path), 7)
+    record = next(
+        (entry for entry in payload["records"] if entry["date"] == metric_date),
+        None,
+    )
+
+    assert record is not None
+    assert record["fellAsleepAtIso"] == fell_asleep_at
+    assert record["fellAsleepAt"] == "22:44"
 
 
 def test_import_job_manager_rejects_when_sync_run_already_running(

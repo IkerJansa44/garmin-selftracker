@@ -16,9 +16,11 @@ from urllib.parse import parse_qs, urlparse
 from src.config import SettingsError, load_settings
 from src.db import (
     connect_db,
+    get_analysis_values,
     get_checkin_entries,
     get_setting_json,
     init_db,
+    rebuild_analysis_values,
     upsert_checkin_entry,
     upsert_setting_json,
 )
@@ -767,7 +769,9 @@ def _normalize_derived_predictor(raw: Any) -> dict[str, Any] | None:
     normalized_cut_points: list[float] = []
     previous_value: float | None = None
     for raw_cut_point in cut_points:
-        if isinstance(raw_cut_point, bool) or not isinstance(raw_cut_point, (int, float)):
+        if isinstance(raw_cut_point, bool) or not isinstance(
+            raw_cut_point, (int, float)
+        ):
             return None
         cut_point = float(raw_cut_point)
         if not math.isfinite(cut_point):
@@ -959,6 +963,22 @@ def _load_checkins_payload(
         connection.close()
 
 
+def _load_correlation_values_payload(
+    db_path: str, from_date: date, to_date: date
+) -> list[dict[str, Any]]:
+    connection = connect_db(db_path)
+    try:
+        init_db(connection)
+        rebuild_analysis_values(connection)
+        return get_analysis_values(
+            connection,
+            from_date=from_date.isoformat(),
+            to_date=to_date.isoformat(),
+        )
+    finally:
+        connection.close()
+
+
 def _save_checkin_payload(db_path: str, payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("Check-in payload must be a JSON object")
@@ -1080,6 +1100,11 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
                 "importGap": row is None,
                 "importState": import_state,
                 "fellAsleepAt": _as_clock_time(row["fell_asleep_at"]) if row else None,
+                "fellAsleepAtIso": (
+                    str(row["fell_asleep_at"])
+                    if row and row["fell_asleep_at"] is not None
+                    else None
+                ),
                 "predictors": {
                     "steps": _as_int(row["steps"]) if row else None,
                     "calories": _as_int(row["calories"]) if row else None,
@@ -1166,6 +1191,32 @@ class ApiHandler(BaseHTTPRequestHandler):
                 )
                 return
             self._send_json(HTTPStatus.OK, {"definitions": payload})
+            return
+
+        if parsed.path == "/api/correlation/values":
+            query = parse_qs(parsed.query)
+            try:
+                from_date, to_date = _parse_date_range_query(
+                    query,
+                    max_range_days=MAX_IMPORT_RANGE_DAYS,
+                )
+                values = _load_correlation_values_payload(
+                    self.db_path, from_date, to_date
+                )
+            except ValueError as exc:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "Invalid correlation range", "details": str(exc)},
+                )
+                return
+            except Exception as exc:  # pragma: no cover - runtime guard
+                logger.exception("Failed to load correlation values")
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"error": "Failed to load correlation values", "details": str(exc)},
+                )
+                return
+            self._send_json(HTTPStatus.OK, {"values": values})
             return
 
         if parsed.path == "/api/checkins":

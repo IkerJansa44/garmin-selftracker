@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -285,3 +286,366 @@ def get_checkin_entries(
             }
         )
     return entries
+
+
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    return min(maximum, max(minimum, value))
+
+
+def _as_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _sleep_score(sleep_seconds: int | None) -> int | None:
+    if sleep_seconds is None:
+        return None
+    hours = sleep_seconds / 3600
+    score = 50 + (hours - 4.0) * 10
+    return int(round(_clamp(score, 40, 100)))
+
+
+def _recovery_index(
+    resting_hr: int | None, stress_avg: float | None, sleep_score: int | None
+) -> int | None:
+    if resting_hr is None or stress_avg is None:
+        return None
+    sleep_term = 0 if sleep_score is None else (sleep_score - 70) * 0.3
+    value = 95 - resting_hr - stress_avg * 0.6 + sleep_term
+    return int(round(_clamp(value, 20, 120)))
+
+
+def _training_readiness(
+    body_battery: int | None,
+    sleep_score: int | None,
+    stress_avg: float | None,
+) -> int | None:
+    weighted_sum = 0.0
+    weight_total = 0.0
+    if body_battery is not None:
+        weighted_sum += body_battery * 0.45
+        weight_total += 0.45
+    if sleep_score is not None:
+        weighted_sum += sleep_score * 0.35
+        weight_total += 0.35
+    if stress_avg is not None:
+        weighted_sum += (100 - stress_avg) * 0.2
+        weight_total += 0.2
+    if weight_total == 0:
+        return None
+    return int(round(_clamp(weighted_sum / weight_total, 20, 100)))
+
+
+def _metric_features_from_daily_metrics_row(
+    row: sqlite3.Row,
+) -> dict[str, int | None]:
+    resting_hr = _as_int(row["resting_heart_rate"])
+    body_battery = _as_int(row["body_battery"])
+    stress_avg = _as_float(row["stress_avg"])
+    sleep_seconds = _as_int(row["sleep_seconds"])
+    sleep_score = _sleep_score(sleep_seconds)
+    return {
+        "metric:recoveryIndex": _recovery_index(resting_hr, stress_avg, sleep_score),
+        "metric:sleepScore": sleep_score,
+        "metric:restingHr": resting_hr,
+        "metric:stress": _as_int(stress_avg),
+        "metric:bodyBattery": body_battery,
+        "metric:trainingReadiness": _training_readiness(
+            body_battery, sleep_score, stress_avg
+        ),
+    }
+
+
+def _shift_iso_date(value: str, offset_days: int) -> str | None:
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError:
+        return None
+    return (parsed + timedelta(days=offset_days)).isoformat()
+
+
+def _analysis_value_columns(
+    value: Any,
+) -> tuple[float | None, str | None, int | None] | None:
+    if isinstance(value, bool):
+        return (None, None, 1 if value else 0)
+    if isinstance(value, (int, float)):
+        numeric = _as_float(value)
+        return (numeric, None, None) if numeric is not None else None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        return (None, stripped, None)
+    return None
+
+
+def _append_analysis_row(
+    rows: list[tuple[Any, ...]],
+    *,
+    analysis_date: str,
+    role: str,
+    feature_key: str,
+    value_num: float | None,
+    value_text: str | None,
+    value_bool: int | None,
+    source_date: str,
+    lag_days: int,
+    alignment_rule: str,
+    refreshed_at: str,
+) -> None:
+    rows.append(
+        (
+            analysis_date,
+            role,
+            feature_key,
+            value_num,
+            value_text,
+            value_bool,
+            source_date,
+            lag_days,
+            alignment_rule,
+            refreshed_at,
+        )
+    )
+
+
+def rebuild_analysis_values(connection: sqlite3.Connection) -> None:
+    refreshed_at = utc_now()
+    rows_to_insert: list[tuple[Any, ...]] = []
+
+    connection.execute("DELETE FROM analysis_values")
+
+    training_days: dict[str, int] = {}
+    for row in connection.execute(
+        """
+        SELECT substr(start_time_local, 1, 10) AS activity_date, COUNT(*) AS activity_count
+        FROM activities
+        WHERE start_time_local IS NOT NULL
+        GROUP BY activity_date
+        """
+    ).fetchall():
+        activity_date = row["activity_date"]
+        if activity_date is None:
+            continue
+        training_days[str(activity_date)] = (
+            1 if row["activity_count"] and int(row["activity_count"]) > 0 else 0
+        )
+
+    daily_metric_rows = connection.execute(
+        """
+        SELECT
+            metric_date,
+            steps,
+            calories,
+            stress_avg,
+            body_battery,
+            sleep_seconds,
+            resting_heart_rate
+        FROM daily_metrics
+        ORDER BY metric_date
+        """
+    ).fetchall()
+
+    for row in daily_metric_rows:
+        source_date = str(row["metric_date"])
+        predictor_analysis_date = _shift_iso_date(source_date, 1)
+
+        if predictor_analysis_date is not None:
+            for feature_key, column_name in (
+                ("garmin:steps", "steps"),
+                ("garmin:calories", "calories"),
+                ("garmin:stressAvg", "stress_avg"),
+                ("garmin:bodyBattery", "body_battery"),
+                ("garmin:sleepSeconds", "sleep_seconds"),
+            ):
+                value_num = _as_float(row[column_name])
+                if value_num is None:
+                    continue
+                _append_analysis_row(
+                    rows_to_insert,
+                    analysis_date=predictor_analysis_date,
+                    role="predictor",
+                    feature_key=feature_key,
+                    value_num=value_num,
+                    value_text=None,
+                    value_bool=None,
+                    source_date=source_date,
+                    lag_days=-1,
+                    alignment_rule="garmin_previous_day",
+                    refreshed_at=refreshed_at,
+                )
+
+            _append_analysis_row(
+                rows_to_insert,
+                analysis_date=predictor_analysis_date,
+                role="predictor",
+                feature_key="garmin:isTrainingDay",
+                value_num=None,
+                value_text=None,
+                value_bool=training_days.get(source_date, 0),
+                source_date=source_date,
+                lag_days=-1,
+                alignment_rule="training_previous_day",
+                refreshed_at=refreshed_at,
+            )
+
+        for feature_key, value in _metric_features_from_daily_metrics_row(row).items():
+            if value is None:
+                continue
+            _append_analysis_row(
+                rows_to_insert,
+                analysis_date=source_date,
+                role="target",
+                feature_key=feature_key,
+                value_num=float(value),
+                value_text=None,
+                value_bool=None,
+                source_date=source_date,
+                lag_days=0,
+                alignment_rule="metric_same_day",
+                refreshed_at=refreshed_at,
+            )
+
+    checkin_rows = connection.execute(
+        """
+        SELECT checkin_date, answers_json
+        FROM checkin_entries
+        ORDER BY checkin_date
+        """
+    ).fetchall()
+
+    for row in checkin_rows:
+        source_date = str(row["checkin_date"])
+        predictor_analysis_date = _shift_iso_date(source_date, 1)
+        try:
+            answers = json.loads(str(row["answers_json"]))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(answers, dict):
+            continue
+
+        for raw_key, raw_value in answers.items():
+            if not isinstance(raw_key, str):
+                continue
+            key = raw_key.strip()
+            if not key:
+                continue
+            value_columns = _analysis_value_columns(raw_value)
+            if value_columns is None:
+                continue
+            value_num, value_text, value_bool = value_columns
+            feature_key = f"question:{key}"
+
+            _append_analysis_row(
+                rows_to_insert,
+                analysis_date=source_date,
+                role="target",
+                feature_key=feature_key,
+                value_num=value_num,
+                value_text=value_text,
+                value_bool=value_bool,
+                source_date=source_date,
+                lag_days=0,
+                alignment_rule="checkin_same_day",
+                refreshed_at=refreshed_at,
+            )
+
+            if predictor_analysis_date is None:
+                continue
+            _append_analysis_row(
+                rows_to_insert,
+                analysis_date=predictor_analysis_date,
+                role="predictor",
+                feature_key=feature_key,
+                value_num=value_num,
+                value_text=value_text,
+                value_bool=value_bool,
+                source_date=source_date,
+                lag_days=-1,
+                alignment_rule="checkin_previous_day",
+                refreshed_at=refreshed_at,
+            )
+
+    if rows_to_insert:
+        connection.executemany(
+            """
+            INSERT INTO analysis_values (
+                analysis_date,
+                role,
+                feature_key,
+                value_num,
+                value_text,
+                value_bool,
+                source_date,
+                lag_days,
+                alignment_rule,
+                refreshed_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows_to_insert,
+        )
+    connection.commit()
+
+
+def get_analysis_values(
+    connection: sqlite3.Connection, *, from_date: str, to_date: str
+) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT
+            analysis_date,
+            role,
+            feature_key,
+            value_num,
+            value_text,
+            value_bool,
+            source_date,
+            lag_days,
+            alignment_rule
+        FROM analysis_values
+        WHERE analysis_date BETWEEN ? AND ?
+        ORDER BY analysis_date, role, feature_key
+        """,
+        (from_date, to_date),
+    ).fetchall()
+    values: list[dict[str, Any]] = []
+    for row in rows:
+        value_bool: bool | None
+        if row["value_bool"] is None:
+            value_bool = None
+        else:
+            value_bool = bool(int(row["value_bool"]))
+        values.append(
+            {
+                "analysisDate": str(row["analysis_date"]),
+                "role": str(row["role"]),
+                "featureKey": str(row["feature_key"]),
+                "valueNum": (
+                    float(row["value_num"]) if row["value_num"] is not None else None
+                ),
+                "valueText": (
+                    str(row["value_text"]) if row["value_text"] is not None else None
+                ),
+                "valueBool": value_bool,
+                "sourceDate": str(row["source_date"]),
+                "lagDays": int(row["lag_days"]),
+                "alignmentRule": str(row["alignment_rule"]),
+            }
+        )
+    return values
