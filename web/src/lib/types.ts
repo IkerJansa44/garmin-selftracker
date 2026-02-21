@@ -102,3 +102,18 @@ export interface ExploreSettings {
   scaleMode: "independent" | "normalized";
   lagDays: 0 | 1 | 2;
 }
+
+export type DerivedPredictorMode = "threshold" | "quantile";
+
+export interface DerivedPredictorDefinition {
+  id: string;
+  name: string;
+  sourceKey: `garmin:${string}` | `question:${string}`;
+  mode: DerivedPredictorMode;
+  cutPoints: number[];
+  labels: string[];
+}
+
+export interface DerivedPredictorPayload {
+  definitions: DerivedPredictorDefinition[];
+}
