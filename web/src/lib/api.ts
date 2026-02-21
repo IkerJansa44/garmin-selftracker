@@ -22,6 +22,27 @@ export interface QuestionsApiResponse {
   questions: CheckInQuestion[];
 }
 
+interface ImportApiResponse {
+  status: string;
+  mode: "refresh" | "range";
+  fromDate: string;
+  toDate: string;
+  days: number;
+}
+
+async function readApiError(response: Response, fallback: string): Promise<Error> {
+  try {
+    const payload = (await response.json()) as { error?: string; details?: string };
+    const parts = [payload.error, payload.details].filter(Boolean);
+    if (parts.length) {
+      return new Error(parts.join(": "));
+    }
+  } catch {
+    // Ignore non-JSON errors and return fallback.
+  }
+  return new Error(fallback);
+}
+
 export async function fetchDashboardData(
   days = 365,
   signal?: AbortSignal,
@@ -57,4 +78,34 @@ export async function saveQuestionSettings(
     throw new Error(`Saving questions failed: ${response.status}`);
   }
   return (await response.json()) as QuestionsApiResponse;
+}
+
+export async function startRefreshImport(signal?: AbortSignal): Promise<ImportApiResponse> {
+  const response = await fetch("/api/import", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode: "refresh" }),
+    signal,
+  });
+  if (!response.ok) {
+    throw await readApiError(response, `Import refresh failed: ${response.status}`);
+  }
+  return (await response.json()) as ImportApiResponse;
+}
+
+export async function startDateRangeImport(
+  fromDate: string,
+  toDate: string,
+  signal?: AbortSignal,
+): Promise<ImportApiResponse> {
+  const response = await fetch("/api/import", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode: "range", fromDate, toDate }),
+    signal,
+  });
+  if (!response.ok) {
+    throw await readApiError(response, `Date range import failed: ${response.status}`);
+  }
+  return (await response.json()) as ImportApiResponse;
 }

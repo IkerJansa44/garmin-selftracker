@@ -1,11 +1,11 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
   type MutableRefObject,
   type CSSProperties,
-  type ReactNode,
 } from "react";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
@@ -68,10 +68,13 @@ import {
   rollingAverage,
   shiftSeries,
 } from "./lib/mockData";
+import { mealToSleepGapMinutes, parseClockTimeToMinutes } from "./lib/time";
 import {
   fetchDashboardData,
   fetchQuestionSettings,
   saveQuestionSettings,
+  startDateRangeImport,
+  startRefreshImport,
 } from "./lib/api";
 import { usePersistentState } from "./lib/storage";
 import {
@@ -120,6 +123,8 @@ const METRIC_LIMITS: Record<MetricKey, { min: number; max: number }> = {
 };
 
 const DEFAULT_RANGE_PRESET = 7;
+const TIME_STEP_MINUTES = 15;
+const TIME_SLIDER_MINUTES = { min: 0, max: 23 * 60 + 45 };
 const METRIC_DIRECTIONS: Record<MetricKey, MetricDirection> = {
   recoveryIndex: "higher",
   sleepScore: "higher",
@@ -150,8 +155,16 @@ const EMPTY_COVERAGE: Record<MetricKey, CoverageState> = {
 const LEGACY_METRIC_KEY_MAP: Record<string, MetricKey> = {
   hrv: "recoveryIndex",
 };
+const GARMIN_ONLY_QUESTION_IDS = new Set(["training_intensity", "training_type"]);
+const REMOVED_DEFAULT_QUESTION_IDS = new Set([
+  "sleep_time",
+  "screen_minutes",
+  "thermal",
+]);
 const MEAL_FINISH_QUESTION_ID = "late_meal";
 const SLEEP_TIME_QUESTION_ID = "sleep_time";
+const IMPORT_POLL_INTERVAL_MS = 5000;
+const MAX_IMPORT_RANGE_DAYS = 365;
 
 function normalizeRangePreset(raw: unknown, fallback: number): number {
   if (typeof raw !== "number") {
@@ -246,32 +259,11 @@ function exportQuestions(questions: CheckInQuestion[]): string {
   return JSON.stringify(questions, null, 2);
 }
 
-function parseClockTimeToMinutes(value: string): number | null {
-  const match = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
-  if (!match) {
-    return null;
-  }
-  const hours = Number(match[1]);
-  const minutes = Number(match[2]);
-  if (Number.isNaN(hours) || Number.isNaN(minutes)) {
-    return null;
-  }
-  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
-    return null;
-  }
-  return hours * 60 + minutes;
-}
-
-function mealToSleepGapMinutes(mealTime: string, sleepTime: string): number | null {
-  const mealMinutes = parseClockTimeToMinutes(mealTime);
-  const sleepMinutes = parseClockTimeToMinutes(sleepTime);
-  if (mealMinutes === null || sleepMinutes === null) {
-    return null;
-  }
-  if (sleepMinutes >= mealMinutes) {
-    return sleepMinutes - mealMinutes;
-  }
-  return 24 * 60 - mealMinutes + sleepMinutes;
+function formatMinutesAsClock(minutes: number): string {
+  const bounded = Math.min(TIME_SLIDER_MINUTES.max, Math.max(TIME_SLIDER_MINUTES.min, minutes));
+  const hours = Math.floor(bounded / 60);
+  const remainingMinutes = bounded % 60;
+  return `${String(hours).padStart(2, "0")}:${String(remainingMinutes).padStart(2, "0")}`;
 }
 
 function formatMinutesAsHours(minutes: number | null): string {
@@ -283,35 +275,56 @@ function formatMinutesAsHours(minutes: number | null): string {
   return `${hours}h ${remainingMinutes}m`;
 }
 
-function migrateQuestionLibrary(questions: CheckInQuestion[]): CheckInQuestion[] {
-  const nextQuestions = questions.map((question) => {
-    if (question.id !== MEAL_FINISH_QUESTION_ID) {
-      return question;
-    }
-    return {
-      id: MEAL_FINISH_QUESTION_ID,
-      section: "Nutrition & Substances",
-      prompt: "Finished eating at",
-      inputType: "time",
-      defaultIncluded: question.defaultIncluded,
-    };
-  });
+function formatIsoDateLocal(value: Date): string {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
 
-  const hasSleepTime = nextQuestions.some((question) => question.id === SLEEP_TIME_QUESTION_ID);
-  if (hasSleepTime) {
-    return nextQuestions;
+function parseIsoDate(value: string): Date | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return null;
   }
+  const [year, month, day] = value.split("-").map((entry) => Number(entry));
+  const parsed = new Date(year, month - 1, day);
+  if (
+    Number.isNaN(parsed.getTime())
+    || parsed.getFullYear() !== year
+    || parsed.getMonth() !== month - 1
+    || parsed.getDate() !== day
+  ) {
+    return null;
+  }
+  return parsed;
+}
 
-  return [
-    ...nextQuestions,
-    {
-      id: SLEEP_TIME_QUESTION_ID,
-      section: "Sleep Hygiene",
-      prompt: "Fell asleep at",
-      inputType: "time",
-      defaultIncluded: true,
-    },
-  ];
+function rangeDaysInclusive(fromDate: string, toDate: string): number | null {
+  const fromParsed = parseIsoDate(fromDate);
+  const toParsed = parseIsoDate(toDate);
+  if (!fromParsed || !toParsed) {
+    return null;
+  }
+  return Math.floor((toParsed.getTime() - fromParsed.getTime()) / 86_400_000) + 1;
+}
+
+function migrateQuestionLibrary(questions: CheckInQuestion[]): CheckInQuestion[] {
+  const nextQuestions = questions
+    .filter((question) => !GARMIN_ONLY_QUESTION_IDS.has(question.id))
+    .filter((question) => !REMOVED_DEFAULT_QUESTION_IDS.has(question.id))
+    .map((question) => {
+      if (question.id !== MEAL_FINISH_QUESTION_ID) {
+        return question;
+      }
+      return {
+        id: MEAL_FINISH_QUESTION_ID,
+        section: "Nutrition & Substances",
+        prompt: "Finished eating at",
+        inputType: "time",
+        defaultIncluded: question.defaultIncluded,
+      };
+    });
+  return nextQuestions;
 }
 
 function safeParseQuestions(raw: string): CheckInQuestion[] | null {
@@ -423,72 +436,6 @@ function SparklineTooltip({ active, payload }: { active?: boolean; payload?: Arr
   );
 }
 
-function MagneticButton({
-  children,
-  onClick,
-  className,
-}: {
-  children: ReactNode;
-  onClick?: () => void;
-  className?: string;
-}) {
-  const buttonRef = useRef<HTMLButtonElement | null>(null);
-
-  useEffect(() => {
-    const element = buttonRef.current;
-    if (!element) {
-      return;
-    }
-
-    const context = gsap.context(() => {
-      const xTo = gsap.quickTo(element, "x", { duration: 0.2, ease: "power2.out" });
-      const yTo = gsap.quickTo(element, "y", { duration: 0.2, ease: "power2.out" });
-
-      const onMove = (event: MouseEvent) => {
-        const rect = element.getBoundingClientRect();
-        const dx = (event.clientX - (rect.left + rect.width / 2)) * 0.08;
-        const dy = (event.clientY - (rect.top + rect.height / 2)) * 0.08;
-        xTo(dx);
-        yTo(dy);
-      };
-
-      const onLeave = () => {
-        gsap.to(element, { x: 0, y: 0, scale: 1, duration: 0.25, ease: "power2.out" });
-      };
-
-      const onEnter = () => {
-        gsap.to(element, { scale: 1.02, duration: 0.2, ease: "power2.out" });
-      };
-
-      element.addEventListener("mousemove", onMove);
-      element.addEventListener("mouseenter", onEnter);
-      element.addEventListener("mouseleave", onLeave);
-
-      return () => {
-        element.removeEventListener("mousemove", onMove);
-        element.removeEventListener("mouseenter", onEnter);
-        element.removeEventListener("mouseleave", onLeave);
-      };
-    }, buttonRef);
-
-    return () => context.revert();
-  }, []);
-
-  return (
-    <button
-      ref={buttonRef}
-      onClick={onClick}
-      className={clsx(
-        "focusable min-h-11 rounded-capsule bg-panel px-4 text-sm font-semibold text-ink shadow-soft transition hover:brightness-[0.99]",
-        className,
-      )}
-      type="button"
-    >
-      {children}
-    </button>
-  );
-}
-
 function App() {
   const appRef = useRef<HTMLDivElement | null>(null);
   const heroRef = useRef<HTMLDivElement | null>(null);
@@ -548,22 +495,41 @@ function App() {
   const [correlationB, setCorrelationB] = useState<MetricKey>("trainingReadiness");
   const [weekdayOnly, setWeekdayOnly] = useState(false);
   const [trainingOnly, setTrainingOnly] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [isImportSubmitting, setIsImportSubmitting] = useState(false);
+  const [importFeedback, setImportFeedback] = useState<{
+    message: string;
+    tone: "success" | "error";
+  } | null>(null);
+  const [importFromDate, setImportFromDate] = useState(() => {
+    const end = new Date();
+    const start = new Date(end);
+    start.setDate(end.getDate() - 6);
+    return formatIsoDateLocal(start);
+  });
+  const [importToDate, setImportToDate] = useState(() => formatIsoDateLocal(new Date()));
 
   const sensors = useSensors(useSensor(PointerSensor));
 
-  useEffect(() => {
-    const controller = new AbortController();
-
-    const loadData = async () => {
-      setDataStatus("loading");
+  const loadDashboardData = useCallback(
+    async ({
+      signal,
+      setLoading = true,
+    }: {
+      signal?: AbortSignal;
+      setLoading?: boolean;
+    } = {}) => {
+      if (setLoading) {
+        setDataStatus("loading");
+      }
       setDataError(null);
       try {
-        const payload = await fetchDashboardData(365, controller.signal);
+        const payload = await fetchDashboardData(365, signal);
         setAllRecords(payload.records);
         setImportSummary(payload.importStatus);
         setDataStatus("ready");
       } catch (error) {
-        if (controller.signal.aborted) {
+        if (signal?.aborted) {
           return;
         }
         const message =
@@ -571,11 +537,29 @@ function App() {
         setDataError(message);
         setDataStatus("error");
       }
-    };
+    },
+    [],
+  );
 
-    void loadData();
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadDashboardData({ signal: controller.signal });
     return () => controller.abort();
-  }, []);
+  }, [loadDashboardData]);
+
+  useEffect(() => {
+    if (importSummary.state !== "running") {
+      return;
+    }
+    const controller = new AbortController();
+    const intervalId = window.setInterval(() => {
+      void loadDashboardData({ signal: controller.signal, setLoading: false });
+    }, IMPORT_POLL_INTERVAL_MS);
+    return () => {
+      window.clearInterval(intervalId);
+      controller.abort();
+    };
+  }, [importSummary.state, loadDashboardData]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -589,9 +573,12 @@ function App() {
           ? payload.questions
           : DEFAULT_QUESTIONS;
         const nextQuestions = migrateQuestionLibrary(sourceQuestions);
+        const serializedSource = JSON.stringify(sourceQuestions);
+        const serializedNext = JSON.stringify(nextQuestions);
         setQuestionLibrary(nextQuestions);
         setSelectedQuestionId(nextQuestions[0]?.id ?? "");
-        lastSavedQuestionsRef.current = JSON.stringify(nextQuestions);
+        lastSavedQuestionsRef.current =
+          serializedSource === serializedNext ? serializedNext : serializedSource;
         setQuestionLoadState("ready");
       } catch (error) {
         if (controller.signal.aborted) {
@@ -897,22 +884,12 @@ function App() {
 
   const mealSleepGapValue = useMemo(() => {
     const mealTime = draftAnswers[MEAL_FINISH_QUESTION_ID];
-    const manualSleepTime = draftAnswers[SLEEP_TIME_QUESTION_ID];
-    const garminSleepTime =
-      typeof todayRecord.fellAsleepAt === "string" ? todayRecord.fellAsleepAt : null;
-    const fallbackSleepTime =
-      typeof manualSleepTime === "string" ? manualSleepTime : null;
-    const sleepTime = garminSleepTime ?? fallbackSleepTime;
+    const sleepTime = draftAnswers[SLEEP_TIME_QUESTION_ID];
     if (typeof mealTime !== "string" || typeof sleepTime !== "string") {
       return null;
     }
     return mealToSleepGapMinutes(mealTime, sleepTime);
-  }, [draftAnswers, todayRecord.fellAsleepAt]);
-
-  const selectedQuestion = useMemo(
-    () => questionLibrary.find((question) => question.id === selectedQuestionId) ?? null,
-    [questionLibrary, selectedQuestionId],
-  );
+  }, [draftAnswers]);
 
   const todayDateLabel = new Date().toLocaleDateString(undefined, {
     weekday: "long",
@@ -922,6 +899,75 @@ function App() {
   const lastImportLabel = importSummary.lastImportAt
     ? `${formatReadableDate(importSummary.lastImportAt.slice(0, 10))} ${formatTime(importSummary.lastImportAt)}`
     : "No completed import yet";
+  const maxImportDate = formatIsoDateLocal(new Date());
+
+  const validateImportRange = (fromDate: string, toDate: string): string | null => {
+    const fromParsed = parseIsoDate(fromDate);
+    const toParsed = parseIsoDate(toDate);
+    if (!fromParsed || !toParsed) {
+      return "Dates must use YYYY-MM-DD format.";
+    }
+    if (fromParsed.getTime() > toParsed.getTime()) {
+      return "From date must be on or before to date.";
+    }
+    const todayParsed = parseIsoDate(maxImportDate);
+    if (!todayParsed) {
+      return "Unable to validate current date.";
+    }
+    if (toParsed.getTime() > todayParsed.getTime()) {
+      return "To date cannot be in the future.";
+    }
+    const days = rangeDaysInclusive(fromDate, toDate);
+    if (!days) {
+      return "Date range is invalid.";
+    }
+    if (days > MAX_IMPORT_RANGE_DAYS) {
+      return `Date range cannot exceed ${MAX_IMPORT_RANGE_DAYS} days.`;
+    }
+    return null;
+  };
+
+  const handleRefreshImport = async () => {
+    setIsImportSubmitting(true);
+    setImportFeedback(null);
+    try {
+      const response = await startRefreshImport();
+      setImportFeedback({
+        tone: "success",
+        message: `Import started for ${response.days} day${response.days === 1 ? "" : "s"} (${response.fromDate} to ${response.toDate}).`,
+      });
+      await loadDashboardData({ setLoading: false });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to trigger refresh import.";
+      setImportFeedback({ tone: "error", message });
+    } finally {
+      setIsImportSubmitting(false);
+    }
+  };
+
+  const handleDateImport = async () => {
+    const validationError = validateImportRange(importFromDate, importToDate);
+    if (validationError) {
+      setImportFeedback({ tone: "error", message: validationError });
+      return;
+    }
+    setIsImportSubmitting(true);
+    setImportFeedback(null);
+    try {
+      const response = await startDateRangeImport(importFromDate, importToDate);
+      setImportFeedback({
+        tone: "success",
+        message: `Import started for ${response.fromDate} to ${response.toDate}.`,
+      });
+      setShowImportModal(false);
+      await loadDashboardData({ setLoading: false });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to trigger date range import.";
+      setImportFeedback({ tone: "error", message });
+    } finally {
+      setIsImportSubmitting(false);
+    }
+  };
 
   const handleToggleMetric = (metric: MetricKey) => {
     setSelectedMetrics((previous) => {
@@ -1092,13 +1138,29 @@ function App() {
     }
 
     if (question.inputType === "time") {
+      const parsedMinutes =
+        typeof value === "string" ? parseClockTimeToMinutes(value) : null;
+      const sliderMinutes = parsedMinutes ?? TIME_SLIDER_MINUTES.min;
+      const clockValue = parsedMinutes === null ? "--:--" : formatMinutesAsClock(parsedMinutes);
       return (
-        <input
-          className="focusable min-h-11 w-full rounded-2xl bg-subsurface px-3"
-          type="time"
-          value={typeof value === "string" ? value : ""}
-          onChange={(event) => setDraftAnswers((previous) => ({ ...previous, [question.id]: event.target.value }))}
-        />
+        <div className="space-y-2">
+          <input
+            className="focusable h-11 w-full cursor-pointer accent-accent"
+            min={TIME_SLIDER_MINUTES.min}
+            max={TIME_SLIDER_MINUTES.max}
+            step={TIME_STEP_MINUTES}
+            type="range"
+            value={sliderMinutes}
+            onChange={(event) => {
+              const minutes = Number(event.target.value);
+              setDraftAnswers((previous) => ({
+                ...previous,
+                [question.id]: formatMinutesAsClock(minutes),
+              }));
+            }}
+          />
+          <div className="metric-number text-sm text-muted">{clockValue}</div>
+        </div>
       );
     }
 
@@ -1120,78 +1182,97 @@ function App() {
           isScrolled && "backdrop-blur-md",
         )}
       >
-        <div className="grid gap-3 lg:grid-cols-[1.3fr_1fr_1fr]">
-          <div className="panel gsap-fade flex min-h-16 items-center justify-between px-4 py-2">
-            <div>
-              <p className="text-sm text-muted">Garmin Selftracker</p>
-              <p className="text-lg font-semibold tracking-tight">{todayDateLabel}</p>
-            </div>
-            <div className="flex gap-2 rounded-capsule bg-subsurface p-1">
-              {RANGE_PRESETS.map((preset) => (
-                <button
-                  key={preset}
+        <div className="overflow-x-auto">
+          <div className="flex min-w-max items-center gap-3 whitespace-nowrap">
+            <div className="panel gsap-fade flex min-h-16 shrink-0 items-center gap-5 px-4 py-2 whitespace-nowrap">
+              <div className="shrink-0">
+                <p className="text-sm text-muted">Garmin Selftracker</p>
+                <p className="text-lg font-semibold tracking-tight">{todayDateLabel}</p>
+              </div>
+              <div
+                aria-hidden="true"
+                className="h-10 w-px shrink-0 bg-[rgba(18,18,18,0.14)]"
+              />
+              <div className="shrink-0">
+                <p className="text-xs uppercase tracking-[0.14em] text-muted">Import</p>
+                <p className="text-sm font-semibold">{importSummary.message}</p>
+                <p className="metric-number text-xs text-muted">
+                  Last import {lastImportLabel}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <div
                   className={clsx(
-                    "focusable min-h-11 rounded-capsule px-4 text-sm font-semibold transition",
-                    rangePreset === preset ? "bg-accent text-white" : "text-muted hover:text-ink",
+                    "rounded-capsule px-3 py-2 text-sm font-semibold",
+                    importSummary.state === "ok" && "bg-[color-mix(in_srgb,var(--success)_14%,white)] text-success",
+                    importSummary.state === "running" && "bg-[color-mix(in_srgb,var(--warning)_16%,white)] text-warning",
+                    importSummary.state === "failed" && "bg-[color-mix(in_srgb,var(--error)_16%,white)] text-error",
                   )}
-                  type="button"
-                  onClick={() => setRangePreset(preset)}
                 >
-                  {preset}
+                  {IMPORT_STATUS_LABELS[importSummary.state]}
+                </div>
+                <button
+                  className="focusable min-h-11 rounded-capsule bg-panel px-4 text-sm font-semibold shadow-soft transition disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={isImportSubmitting}
+                  type="button"
+                  onClick={() => void handleRefreshImport()}
+                >
+                  {isImportSubmitting ? (
+                    <span className="inline-flex items-center gap-2">
+                      <LoaderCircle className="size-4 animate-spin" />
+                      Importing
+                    </span>
+                  ) : (
+                    "Refresh import"
+                  )}
                 </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="panel gsap-fade flex min-h-16 items-center justify-between px-4 py-2">
-            <div>
-              <p className="text-xs uppercase tracking-[0.14em] text-muted">Import</p>
-              <p className="text-sm font-semibold">{importSummary.message}</p>
-              <p className="metric-number text-xs text-muted">
-                Last import {lastImportLabel}
-              </p>
+                <button
+                  className="focusable min-h-11 rounded-capsule bg-panel px-4 text-sm font-semibold shadow-soft transition disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={isImportSubmitting}
+                  type="button"
+                  onClick={() => setShowImportModal(true)}
+                >
+                  Import dates
+                </button>
+              </div>
+              {importFeedback && (
+                <p
+                  className={clsx(
+                    "text-sm font-medium",
+                    importFeedback.tone === "success" ? "text-success" : "text-error",
+                  )}
+                >
+                  {importFeedback.message}
+                </p>
+              )}
             </div>
             <div
-              className={clsx(
-                "rounded-capsule px-3 py-2 text-sm font-semibold",
-                importSummary.state === "ok" && "bg-[color-mix(in_srgb,var(--success)_14%,white)] text-success",
-                importSummary.state === "running" && "bg-[color-mix(in_srgb,var(--warning)_16%,white)] text-warning",
-                importSummary.state === "failed" && "bg-[color-mix(in_srgb,var(--error)_16%,white)] text-error",
-              )}
-            >
-              {IMPORT_STATUS_LABELS[importSummary.state]}
-            </div>
-          </div>
+              aria-hidden="true"
+              className="h-10 w-px shrink-0 bg-[rgba(18,18,18,0.14)]"
+            />
 
-          <div className="gsap-fade flex items-center justify-end gap-2">
-            <MagneticButton onClick={() => setShowQuickCheckin(true)}>
-              <span className="inline-flex items-center gap-2">
-                <CirclePlus className="size-4" /> Add Check-In
-              </span>
-            </MagneticButton>
-            <MagneticButton onClick={() => setActiveView("explore")}>Explore</MagneticButton>
-            <MagneticButton onClick={() => setActiveView("settings")}>Settings</MagneticButton>
+            <div className="panel gsap-fade flex min-h-16 shrink-0 items-center px-4 py-2 whitespace-nowrap">
+              <div className="flex flex-nowrap items-center gap-2">
+                {topViewButtons.map((button) => (
+                  <button
+                    key={button.key}
+                    className={clsx(
+                      "focusable min-h-11 rounded-capsule px-4 text-sm font-semibold shadow-soft transition",
+                      activeView === button.key ? "bg-accent text-white" : "bg-panel text-ink",
+                    )}
+                    type="button"
+                    onClick={() => setActiveView(button.key)}
+                  >
+                    {button.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       </header>
 
       <main className="mx-auto flex w-full max-w-[1400px] flex-col gap-8">
-        <div className="gsap-fade flex flex-wrap gap-2">
-          {topViewButtons.map((button) => (
-            <button
-              key={button.key}
-              className={clsx(
-                "focusable min-h-11 rounded-capsule px-4 text-sm font-semibold shadow-soft transition",
-                activeView === button.key ? "bg-accent text-white" : "bg-panel text-ink",
-              )}
-              type="button"
-              onClick={() => setActiveView(button.key)}
-            >
-              {button.label}
-            </button>
-          ))}
-        </div>
-
         {dataStatus !== "ready" && (
           <div
             className={clsx(
@@ -1211,9 +1292,26 @@ function App() {
           <section ref={heroRef} className="panel gsap-fade overflow-hidden p-7 sm:p-10">
             <div className="min-h-[42vh] rounded-[30px] bg-[radial-gradient(circle_at_0%_5%,#ffffff_0%,#f8f6f1_40%,#efede6_100%)] p-8 shadow-inset">
               <p className="text-sm text-muted">{rangePreset}-Day Dashboard</p>
-              <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-                <h1 className="text-5xl font-semibold tracking-tight">Dashboard</h1>
-                <p className="text-lg text-muted">Today vs rolling {rangePreset}-day average.</p>
+              <div className="mt-4 grid grid-cols-[1fr_auto_1fr] items-center gap-4">
+                <h1 className="text-4xl font-semibold tracking-tight xl:text-5xl">Dashboard</h1>
+                <div className="flex justify-self-center gap-2 rounded-capsule bg-subsurface p-1">
+                  {RANGE_PRESETS.map((preset) => (
+                    <button
+                      key={preset}
+                      className={clsx(
+                        "focusable min-h-11 rounded-capsule px-4 text-sm font-semibold transition",
+                        rangePreset === preset ? "bg-accent text-white" : "text-muted hover:text-ink",
+                      )}
+                      type="button"
+                      onClick={() => setRangePreset(preset)}
+                    >
+                      {preset}
+                    </button>
+                  ))}
+                </div>
+                <p className="justify-self-end text-right text-base text-muted lg:text-lg">
+                  Today vs rolling {rangePreset}-day average.
+                </p>
               </div>
               <p className="mt-3 text-sm text-muted">
                 Higher is better for Recovery Index, Sleep Score, Body Battery, and Training Readiness.
@@ -1724,7 +1822,7 @@ function App() {
           <section className="gsap-fade">
             <article className="panel p-6 sm:p-8">
               <div className="mb-6 flex items-center justify-between">
-                <h2 className="text-2xl font-semibold tracking-tight">End-of-Day Check-In</h2>
+                <h2 className="text-2xl font-semibold tracking-tight">Today's Check-In</h2>
                 <button
                   className="focusable min-h-11 rounded-capsule bg-subsurface px-4 text-sm font-semibold shadow-soft"
                   type="button"
@@ -1760,10 +1858,10 @@ function App() {
                 <p className="text-xs uppercase tracking-[0.16em] text-muted">Derived Metric</p>
                 <p className="mt-2 text-sm text-muted">Time Between Eating And Sleep</p>
                 <p className="metric-number mt-1 text-2xl font-semibold text-ink">
-                  {formatMinutesAsHours(mealSleepGapValue)}
+                  {mealSleepGapValue === null ? "Unknown" : formatMinutesAsHours(mealSleepGapValue)}
                 </p>
                 <p className="mt-1 text-xs text-muted">
-                  Uses Garmin fell-asleep time when available, otherwise the manual sleep-time answer.
+                  Unknown until you log when you fell asleep.
                 </p>
               </div>
 
@@ -1782,42 +1880,6 @@ function App() {
 
         {activeView === "settings" && (
           <section className="panel gsap-fade grid gap-5 p-6 sm:grid-cols-2 sm:p-8">
-            <article className="rounded-[24px] bg-subsurface p-5">
-              <h3 className="text-lg font-semibold">Daily Import Schedule</h3>
-              <p className="mt-2 text-sm text-muted">Scheduled every day at 06:00 local. State sourced from sync runs.</p>
-              <div className="mt-4 rounded-2xl bg-panel p-4">
-                <p className="text-sm font-semibold">State: {IMPORT_STATUS_LABELS[importSummary.state]}</p>
-                <p className="metric-number text-sm text-muted">
-                  Last import {lastImportLabel}
-                </p>
-              </div>
-            </article>
-
-            <article className="rounded-[24px] bg-subsurface p-5">
-              <h3 className="text-lg font-semibold">Connection / Token</h3>
-              <p className="mt-2 text-sm text-muted">Placeholder only. Backend integration out of scope.</p>
-              <div className="mt-4 rounded-2xl bg-panel p-4 text-sm">Token status: Not connected</div>
-            </article>
-
-            <article className="rounded-[24px] bg-subsurface p-5">
-              <h3 className="text-lg font-semibold">Data Retention</h3>
-              <p className="mt-2 text-sm text-muted">Fixed retention: 365 days.</p>
-              <div className="mt-4 rounded-2xl bg-panel p-4 text-sm">Local-first. Single user.</div>
-            </article>
-
-            <article className="rounded-[24px] bg-subsurface p-5">
-              <h3 className="text-lg font-semibold">Export</h3>
-              <p className="mt-2 text-sm text-muted">CSV/JSON export UI stub.</p>
-              <div className="mt-4 flex gap-2">
-                <button className="focusable min-h-11 rounded-capsule bg-panel px-4 text-sm shadow-soft" type="button">
-                  Export CSV
-                </button>
-                <button className="focusable min-h-11 rounded-capsule bg-panel px-4 text-sm shadow-soft" type="button">
-                  Export JSON
-                </button>
-              </div>
-            </article>
-
             <article className="rounded-[24px] bg-subsurface p-5 sm:col-span-2">
               <div className="mb-4 flex items-center justify-between">
                 <div>
@@ -1854,25 +1916,28 @@ function App() {
                   strategy={verticalListSortingStrategy}
                 >
                   <div className="space-y-2">
-                    {questionLibrary.map((question) => (
-                      <SortableQuestionItem
-                        key={question.id}
-                        isSelected={question.id === selectedQuestionId}
-                        question={question}
-                        onSelect={() => setSelectedQuestionId(question.id)}
-                      />
-                    ))}
+                    {questionLibrary.map((question) => {
+                      const isSelected = question.id === selectedQuestionId;
+                      return (
+                        <div key={question.id}>
+                          <SortableQuestionItem
+                            isSelected={isSelected}
+                            question={question}
+                            onSelect={() => setSelectedQuestionId(question.id)}
+                          />
+                          {isSelected && (
+                            <QuestionEditor
+                              question={question}
+                              onDelete={() => removeQuestion(question.id)}
+                              onPatch={(patch) => updateQuestion(question.id, patch)}
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </SortableContext>
               </DndContext>
-
-              {selectedQuestion && (
-                <QuestionEditor
-                  question={selectedQuestion}
-                  onDelete={() => removeQuestion(selectedQuestion.id)}
-                  onPatch={(patch) => updateQuestion(selectedQuestion.id, patch)}
-                />
-              )}
 
               <div className="mt-5 rounded-2xl bg-panel p-3">
                 <div className="mb-2 flex gap-2">
@@ -1910,21 +1975,112 @@ function App() {
                 />
               </div>
             </article>
+
+            <article className="rounded-[24px] bg-subsurface p-5">
+              <h3 className="text-lg font-semibold">Daily Import Schedule</h3>
+              <p className="mt-2 text-sm text-muted">Scheduled every day at 06:00 local. State sourced from sync runs.</p>
+              <div className="mt-4 rounded-2xl bg-panel p-4">
+                <p className="text-sm font-semibold">State: {IMPORT_STATUS_LABELS[importSummary.state]}</p>
+                <p className="metric-number text-sm text-muted">
+                  Last import {lastImportLabel}
+                </p>
+              </div>
+            </article>
+
+            <article className="rounded-[24px] bg-subsurface p-5">
+              <h3 className="text-lg font-semibold">Connection / Token</h3>
+              <p className="mt-2 text-sm text-muted">Placeholder only. Backend integration out of scope.</p>
+              <div className="mt-4 rounded-2xl bg-panel p-4 text-sm">Token status: Not connected</div>
+            </article>
+
+            <article className="rounded-[24px] bg-subsurface p-5">
+              <h3 className="text-lg font-semibold">Data Retention</h3>
+              <p className="mt-2 text-sm text-muted">Fixed retention: 365 days.</p>
+              <div className="mt-4 rounded-2xl bg-panel p-4 text-sm">Local-first. Single user.</div>
+            </article>
+
+            <article className="rounded-[24px] bg-subsurface p-5">
+              <h3 className="text-lg font-semibold">Export</h3>
+              <p className="mt-2 text-sm text-muted">CSV/JSON export UI stub.</p>
+              <div className="mt-4 flex gap-2">
+                <button className="focusable min-h-11 rounded-capsule bg-panel px-4 text-sm shadow-soft" type="button">
+                  Export CSV
+                </button>
+                <button className="focusable min-h-11 rounded-capsule bg-panel px-4 text-sm shadow-soft" type="button">
+                  Export JSON
+                </button>
+              </div>
+            </article>
           </section>
         )}
       </main>
 
-      <footer className="mx-auto mt-10 flex w-full max-w-[1400px] items-center justify-end rounded-[24px] bg-panel px-5 py-4 shadow-soft">
-        <span className="inline-flex items-center gap-2 text-sm text-success">
-          <span className="size-2 rounded-full bg-success" /> System Operational
-        </span>
-      </footer>
+      {showImportModal && (
+        <div className="fixed inset-0 z-[70] grid place-items-center bg-[rgba(18,18,18,0.2)] p-4 backdrop-blur-xs">
+          <div className="panel w-full max-w-lg p-6">
+            <div className="mb-5 flex items-center justify-between">
+              <h2 className="text-xl font-semibold">Import Date Range</h2>
+              <button
+                className="focusable min-h-11 rounded-capsule bg-subsurface px-3"
+                disabled={isImportSubmitting}
+                type="button"
+                onClick={() => setShowImportModal(false)}
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="space-y-2 text-sm">
+                <span className="font-medium text-muted">From date</span>
+                <input
+                  className="focusable min-h-11 w-full rounded-2xl bg-subsurface px-3"
+                  max={maxImportDate}
+                  type="date"
+                  value={importFromDate}
+                  onChange={(event) => setImportFromDate(event.target.value)}
+                />
+              </label>
+              <label className="space-y-2 text-sm">
+                <span className="font-medium text-muted">To date</span>
+                <input
+                  className="focusable min-h-11 w-full rounded-2xl bg-subsurface px-3"
+                  max={maxImportDate}
+                  type="date"
+                  value={importToDate}
+                  onChange={(event) => setImportToDate(event.target.value)}
+                />
+              </label>
+            </div>
+            <p className="mt-3 text-sm text-muted">
+              Maximum range: {MAX_IMPORT_RANGE_DAYS} days.
+            </p>
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                className="focusable min-h-11 rounded-capsule bg-subsurface px-4 text-sm disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={isImportSubmitting}
+                type="button"
+                onClick={() => setShowImportModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="focusable min-h-11 rounded-capsule bg-accent px-5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={isImportSubmitting}
+                type="button"
+                onClick={() => void handleDateImport()}
+              >
+                {isImportSubmitting ? "Starting..." : "Start import"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showQuickCheckin && (
         <div className="fixed inset-0 z-[70] grid place-items-center bg-[rgba(18,18,18,0.2)] p-4 backdrop-blur-xs">
           <div className="panel w-full max-w-2xl p-6">
             <div className="mb-5 flex items-center justify-between">
-              <h2 className="text-xl font-semibold">Quick End-of-Day Check-In</h2>
+              <h2 className="text-xl font-semibold">Quick Today's Check-In</h2>
               <button
                 className="focusable min-h-11 rounded-capsule bg-subsurface px-3"
                 type="button"
@@ -1945,10 +2101,10 @@ function App() {
               <p className="text-xs uppercase tracking-[0.16em] text-muted">Derived Metric</p>
               <p className="mt-1 text-sm text-muted">Time Between Eating And Sleep</p>
               <p className="metric-number mt-1 text-xl font-semibold text-ink">
-                {formatMinutesAsHours(mealSleepGapValue)}
+                {mealSleepGapValue === null ? "Unknown" : formatMinutesAsHours(mealSleepGapValue)}
               </p>
               <p className="mt-1 text-xs text-muted">
-                Garmin sleep time preferred, manual fallback.
+                Unknown until you log when you fell asleep.
               </p>
             </div>
             <div className="mt-6 flex justify-end gap-2">
@@ -2150,7 +2306,7 @@ function QuestionEditor({
   };
 
   return (
-    <div className="mt-4 rounded-2xl bg-subsurface p-3">
+    <div className="mt-2 rounded-2xl bg-subsurface p-3">
       <p className="mb-2 text-sm font-semibold">Edit Question</p>
       <div className="space-y-2">
         <input
@@ -2205,7 +2361,18 @@ function QuestionEditor({
               </div>
             )}
             {question.inputType === "time" && (
-              <input className="min-h-11 rounded-capsule bg-panel px-3 text-sm" disabled type="time" />
+              <div className="space-y-2">
+                <input
+                  className="h-11 w-full accent-accent"
+                  disabled
+                  max={TIME_SLIDER_MINUTES.max}
+                  min={TIME_SLIDER_MINUTES.min}
+                  step={TIME_STEP_MINUTES}
+                  type="range"
+                  value={TIME_SLIDER_MINUTES.min}
+                />
+                <p className="metric-number text-xs text-muted">00:00</p>
+              </div>
             )}
             {question.inputType === "text" && (
               <textarea className="min-h-20 w-full rounded-2xl bg-panel p-3 text-sm" disabled />
@@ -2213,14 +2380,6 @@ function QuestionEditor({
           </div>
         </div>
 
-        <label className="flex items-center justify-between rounded-2xl bg-panel px-3 py-2 text-sm">
-          Included by default
-          <input
-            checked={question.defaultIncluded}
-            type="checkbox"
-            onChange={(event) => onPatch({ defaultIncluded: event.target.checked })}
-          />
-        </label>
       </div>
       <div className="mt-3 flex justify-end">
         <button

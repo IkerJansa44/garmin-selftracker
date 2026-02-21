@@ -70,30 +70,6 @@ export const DEFAULT_SELECTED_METRICS: MetricKey[] = [
 
 export const DEFAULT_QUESTIONS: CheckInQuestion[] = [
   {
-    id: "training_intensity",
-    section: "Training",
-    prompt: "Training intensity",
-    inputType: "slider",
-    min: 0,
-    max: 10,
-    step: 1,
-    defaultIncluded: true,
-  },
-  {
-    id: "training_type",
-    section: "Training",
-    prompt: "Training type",
-    inputType: "multi-choice",
-    options: [
-      { id: "easy", label: "Easy" },
-      { id: "tempo", label: "Tempo" },
-      { id: "interval", label: "Interval" },
-      { id: "strength", label: "Strength" },
-      { id: "rest", label: "Rest" },
-    ],
-    defaultIncluded: true,
-  },
-  {
     id: "caffeine_count",
     section: "Nutrition & Substances",
     prompt: "Caffeine (count)",
@@ -106,7 +82,7 @@ export const DEFAULT_QUESTIONS: CheckInQuestion[] = [
   {
     id: "alcohol_units",
     section: "Nutrition & Substances",
-    prompt: "Alcohol",
+    prompt: "Alcohol (count)",
     inputType: "multi-choice",
     options: [
       { id: "0", label: "0" },
@@ -121,36 +97,6 @@ export const DEFAULT_QUESTIONS: CheckInQuestion[] = [
     section: "Nutrition & Substances",
     prompt: "Finished eating at",
     inputType: "time",
-    defaultIncluded: true,
-  },
-  {
-    id: "sleep_time",
-    section: "Sleep Hygiene",
-    prompt: "Fell asleep at",
-    inputType: "time",
-    defaultIncluded: true,
-  },
-  {
-    id: "screen_minutes",
-    section: "Sleep Hygiene",
-    prompt: "Screen time late",
-    inputType: "slider",
-    min: 0,
-    max: 180,
-    step: 5,
-    defaultIncluded: true,
-  },
-  {
-    id: "thermal",
-    section: "Recovery",
-    prompt: "Sauna/cold exposure",
-    inputType: "multi-choice",
-    options: [
-      { id: "none", label: "None" },
-      { id: "sauna", label: "Sauna" },
-      { id: "cold", label: "Cold" },
-      { id: "both", label: "Both" },
-    ],
     defaultIncluded: true,
   },
   {
@@ -173,7 +119,6 @@ export const DEFAULT_QUESTIONS: CheckInQuestion[] = [
 ];
 
 export const SECTION_ORDER = [
-  "Training",
   "Nutrition & Substances",
   "Stress & Mind",
   "Sleep Hygiene",

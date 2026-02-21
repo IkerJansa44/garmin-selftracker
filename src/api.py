@@ -4,6 +4,7 @@ import argparse
 import errno
 import json
 import logging
+import threading
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from http import HTTPStatus
@@ -11,12 +12,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from src.config import load_settings
+from src.config import SettingsError, load_settings
 from src.db import connect_db, get_setting_json, init_db, upsert_setting_json
+from src.sync import run_sync
 
 logger = logging.getLogger(__name__)
 QUESTION_SETTINGS_KEY = "checkin_questions"
 QUESTION_INPUT_TYPES = {"slider", "multi-choice", "boolean", "time", "text"}
+MAX_IMPORT_RANGE_DAYS = 365
 
 
 @dataclass(frozen=True)
@@ -24,6 +27,16 @@ class ApiSettings:
     db_path: str
     host: str
     port: int
+    garmin_email: str
+    garmin_password: str
+    default_sync_days: int
+
+
+@dataclass(frozen=True)
+class ImportRequest:
+    mode: str
+    start_date: date
+    end_date: date
 
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
@@ -98,6 +111,119 @@ def _parse_days(query: dict[str, list[str]]) -> int:
     except (TypeError, ValueError):
         return 365
     return max(7, min(365, parsed))
+
+
+def _parse_iso_date(raw_value: Any, *, field_name: str) -> date:
+    if not isinstance(raw_value, str):
+        raise ValueError(f"{field_name} must be an ISO date string")
+    try:
+        return date.fromisoformat(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be YYYY-MM-DD") from exc
+
+
+def _parse_import_request(
+    payload: Any,
+    *,
+    default_sync_days: int,
+    today: date | None = None,
+) -> ImportRequest:
+    if not isinstance(payload, dict):
+        raise ValueError("Import payload must be a JSON object")
+    mode = payload.get("mode")
+    if mode not in {"refresh", "range"}:
+        raise ValueError("mode must be either 'refresh' or 'range'")
+
+    current_day = today or date.today()
+    if mode == "refresh":
+        days = max(1, int(default_sync_days))
+        end_date = current_day
+        start_date = end_date - timedelta(days=days - 1)
+        return ImportRequest(mode=mode, start_date=start_date, end_date=end_date)
+
+    start_date = _parse_iso_date(payload.get("fromDate"), field_name="fromDate")
+    end_date = _parse_iso_date(payload.get("toDate"), field_name="toDate")
+    if start_date > end_date:
+        raise ValueError("fromDate must be on or before toDate")
+    if end_date > current_day:
+        raise ValueError("toDate cannot be in the future")
+    span_days = (end_date - start_date).days + 1
+    if span_days > MAX_IMPORT_RANGE_DAYS:
+        raise ValueError(f"Date range cannot exceed {MAX_IMPORT_RANGE_DAYS} days")
+    return ImportRequest(mode=mode, start_date=start_date, end_date=end_date)
+
+
+def _latest_sync_run_status(db_path: str) -> str | None:
+    connection = connect_db(db_path)
+    try:
+        init_db(connection)
+        row = connection.execute(
+            """
+            SELECT status
+            FROM sync_runs
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    finally:
+        connection.close()
+    if row is None:
+        return None
+    return str(row["status"])
+
+
+class ImportJobManager:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._running = False
+
+    def start(self, *, settings: ApiSettings, request: ImportRequest) -> bool:
+        with self._lock:
+            if self._running:
+                return False
+            if _latest_sync_run_status(settings.db_path) == "running":
+                return False
+            self._running = True
+
+        thread = threading.Thread(
+            target=self._run_job,
+            args=(settings, request),
+            daemon=True,
+        )
+        try:
+            thread.start()
+        except Exception:
+            with self._lock:
+                self._running = False
+            raise
+        return True
+
+    def _run_job(self, settings: ApiSettings, request: ImportRequest) -> None:
+        try:
+            result = run_sync(
+                db_path=settings.db_path,
+                garmin_email=settings.garmin_email,
+                garmin_password=settings.garmin_password,
+                start_date=request.start_date,
+                end_date=request.end_date,
+            )
+            logger.info(
+                "Import completed mode=%s status=%s (%s/%s days)",
+                request.mode,
+                result.status,
+                result.days_succeeded,
+                result.days_requested,
+            )
+        except Exception:
+            logger.exception(
+                "Import failed mode=%s from=%s to=%s",
+                request.mode,
+                request.start_date.isoformat(),
+                request.end_date.isoformat(),
+            )
+        finally:
+            with self._lock:
+                self._running = False
 
 
 def _coverage(row_exists: bool, value: Any) -> str:
@@ -397,6 +523,8 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
 
 class ApiHandler(BaseHTTPRequestHandler):
     db_path: str = "/data/garmin.db"
+    settings: ApiSettings | None = None
+    import_job_manager = ImportJobManager()
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler signature
         parsed = urlparse(self.path)
@@ -438,6 +566,72 @@ class ApiHandler(BaseHTTPRequestHandler):
             return
 
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
+
+    def do_POST(self) -> None:  # noqa: N802 - stdlib handler signature
+        parsed = urlparse(self.path)
+        if parsed.path != "/api/import":
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
+            return
+
+        if self.settings is None:
+            self._send_json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                {"error": "API settings are not initialized"},
+            )
+            return
+
+        raw_payload = self._read_json_body()
+        if raw_payload is None:
+            return
+
+        try:
+            request = _parse_import_request(
+                raw_payload,
+                default_sync_days=self.settings.default_sync_days,
+            )
+        except ValueError as exc:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "Invalid import payload", "details": str(exc)},
+            )
+            return
+
+        try:
+            started = self.import_job_manager.start(
+                settings=self.settings,
+                request=request,
+            )
+        except Exception as exc:  # pragma: no cover - runtime guard
+            logger.exception("Failed to start import job")
+            self._send_json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                {"error": "Failed to start import job", "details": str(exc)},
+            )
+            return
+
+        if not started:
+            self._send_json(
+                HTTPStatus.CONFLICT,
+                {"error": "Import already running"},
+            )
+            return
+
+        logger.info(
+            "Accepted import request mode=%s from=%s to=%s",
+            request.mode,
+            request.start_date.isoformat(),
+            request.end_date.isoformat(),
+        )
+        self._send_json(
+            HTTPStatus.ACCEPTED,
+            {
+                "status": "accepted",
+                "mode": request.mode,
+                "fromDate": request.start_date.isoformat(),
+                "toDate": request.end_date.isoformat(),
+                "days": (request.end_date - request.start_date).days + 1,
+            },
+        )
 
     def do_PUT(self) -> None:  # noqa: N802 - stdlib handler signature
         parsed = urlparse(self.path)
@@ -529,19 +723,31 @@ def _parse_args() -> argparse.Namespace:
 
 def _build_settings() -> ApiSettings:
     args = _parse_args()
-    env_settings = load_settings(require_garmin_credentials=False)
+    env_settings = load_settings(require_garmin_credentials=True)
     db_path = args.db_path or env_settings.db_path
-    return ApiSettings(db_path=db_path, host=args.host, port=args.port)
+    return ApiSettings(
+        db_path=db_path,
+        host=args.host,
+        port=args.port,
+        garmin_email=env_settings.garmin_email,
+        garmin_password=env_settings.garmin_password,
+        default_sync_days=env_settings.default_sync_days,
+    )
 
 
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
-    settings = _build_settings()
+    try:
+        settings = _build_settings()
+    except SettingsError as exc:
+        logger.error(str(exc))
+        return 1
 
     handler = ApiHandler
     handler.db_path = settings.db_path
+    handler.settings = settings
 
     with ThreadingHTTPServer((settings.host, settings.port), handler) as server:
         logger.info(

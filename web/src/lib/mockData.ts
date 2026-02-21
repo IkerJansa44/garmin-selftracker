@@ -249,8 +249,6 @@ export function generateHistoryFromRecords(records: DailyRecord[]): CheckInEntry
         date: record.date,
         completedAt: `${record.date}T21:${String((index * 7) % 59).padStart(2, "0")}:00Z`,
         answers: {
-          training_intensity: record.checkInFactors.trainingIntensity,
-          training_type: record.checkInFactors.trainingType.toLowerCase(),
           caffeine_count: record.checkInFactors.caffeineCount,
           alcohol_units: alcoholLabel,
           late_meal: mealFinishTime,
