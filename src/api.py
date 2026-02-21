@@ -26,9 +26,27 @@ from src.sync import run_sync
 
 logger = logging.getLogger(__name__)
 QUESTION_SETTINGS_KEY = "checkin_questions"
+DASHBOARD_PLOTS_SETTINGS_KEY = "dashboard_plots"
 CORRELATION_DERIVED_PREDICTORS_KEY = "correlation_derived_predictors"
 QUESTION_INPUT_TYPES = {"slider", "multi-choice", "boolean", "time", "text"}
 QUESTION_ANALYSIS_MODES = {"predictor_next_day", "target_same_day"}
+PLOT_DIRECTIONS = {"higher", "lower"}
+METRIC_PLOT_DIRECTIONS = {
+    "recoveryIndex": "higher",
+    "sleepScore": "higher",
+    "bodyBattery": "higher",
+    "trainingReadiness": "higher",
+    "stress": "lower",
+    "restingHr": "lower",
+}
+DEFAULT_DASHBOARD_PLOTS = [
+    {"key": "metric:recoveryIndex", "direction": "higher"},
+    {"key": "metric:sleepScore", "direction": "higher"},
+    {"key": "metric:restingHr", "direction": "lower"},
+    {"key": "metric:stress", "direction": "lower"},
+    {"key": "metric:bodyBattery", "direction": "higher"},
+    {"key": "metric:trainingReadiness", "direction": "higher"},
+]
 QUESTION_CHILD_CONDITION_OPERATORS = {
     "equals",
     "not_equals",
@@ -643,6 +661,57 @@ def _normalize_questions_payload(payload: Any) -> list[dict[str, Any]] | None:
     return normalized
 
 
+def _default_plot_direction(plot_key: str) -> str:
+    if plot_key.startswith("metric:"):
+        metric_key = plot_key[7:]
+        direction = METRIC_PLOT_DIRECTIONS.get(metric_key)
+        if direction in PLOT_DIRECTIONS:
+            return direction
+    return "higher"
+
+
+def _normalize_dashboard_plots_payload(payload: Any) -> list[dict[str, str]] | None:
+    if not isinstance(payload, list):
+        return None
+
+    normalized: list[dict[str, str]] = []
+    seen_keys: set[str] = set()
+    for raw_plot in payload:
+        plot_key: str
+        direction: str
+
+        if isinstance(raw_plot, str):
+            stripped = raw_plot.strip()
+            if not stripped:
+                return None
+            plot_key = stripped
+            direction = _default_plot_direction(plot_key)
+        elif isinstance(raw_plot, dict):
+            key_value = raw_plot.get("key")
+            if not isinstance(key_value, str) or not key_value.strip():
+                return None
+            plot_key = key_value.strip()
+            direction_value = raw_plot.get("direction")
+            if direction_value is None:
+                direction = _default_plot_direction(plot_key)
+            elif (
+                isinstance(direction_value, str)
+                and direction_value in PLOT_DIRECTIONS
+            ):
+                direction = direction_value
+            else:
+                return None
+        else:
+            return None
+
+        if plot_key in seen_keys:
+            continue
+        seen_keys.add(plot_key)
+        normalized.append({"key": plot_key, "direction": direction})
+
+    return normalized
+
+
 def _is_valid_derived_source_key(raw_key: Any) -> bool:
     if not isinstance(raw_key, str):
         return False
@@ -687,9 +756,7 @@ def _normalize_derived_predictor(raw: Any) -> dict[str, Any] | None:
     normalized_cut_points: list[float] = []
     previous_value: float | None = None
     for raw_cut_point in cut_points:
-        if isinstance(raw_cut_point, bool) or not isinstance(
-            raw_cut_point, (int, float)
-        ):
+        if isinstance(raw_cut_point, bool) or not isinstance(raw_cut_point, (int, float)):
             return None
         cut_point = float(raw_cut_point)
         if not math.isfinite(cut_point):
@@ -745,6 +812,19 @@ def _load_questions_payload(db_path: str) -> list[dict[str, Any]]:
     return normalized if normalized is not None else []
 
 
+def _load_dashboard_plots_payload(db_path: str) -> list[dict[str, str]]:
+    connection = connect_db(db_path)
+    try:
+        init_db(connection)
+        raw_payload = get_setting_json(connection, DASHBOARD_PLOTS_SETTINGS_KEY)
+    finally:
+        connection.close()
+    if raw_payload is None:
+        return [dict(plot) for plot in DEFAULT_DASHBOARD_PLOTS]
+    normalized = _normalize_dashboard_plots_payload(raw_payload)
+    return normalized if normalized is not None else []
+
+
 def _load_derived_predictors_payload(db_path: str) -> list[dict[str, Any]]:
     connection = connect_db(db_path)
     try:
@@ -766,6 +846,19 @@ def _save_questions_payload(db_path: str, payload: Any) -> list[dict[str, Any]]:
     try:
         init_db(connection)
         upsert_setting_json(connection, QUESTION_SETTINGS_KEY, normalized)
+    finally:
+        connection.close()
+    return normalized
+
+
+def _save_dashboard_plots_payload(db_path: str, payload: Any) -> list[dict[str, str]]:
+    normalized = _normalize_dashboard_plots_payload(payload)
+    if normalized is None:
+        raise ValueError("Invalid dashboard plots payload")
+    connection = connect_db(db_path)
+    try:
+        init_db(connection)
+        upsert_setting_json(connection, DASHBOARD_PLOTS_SETTINGS_KEY, normalized)
     finally:
         connection.close()
     return normalized
@@ -1054,6 +1147,22 @@ class ApiHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, {"entries": entries})
             return
 
+        if parsed.path == "/api/dashboard-plots":
+            try:
+                plots = _load_dashboard_plots_payload(self.db_path)
+            except Exception as exc:  # pragma: no cover - runtime guard
+                logger.exception("Failed to load dashboard plot settings")
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {
+                        "error": "Failed to load dashboard plot settings",
+                        "details": str(exc),
+                    },
+                )
+                return
+            self._send_json(HTTPStatus.OK, {"plots": plots})
+            return
+
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler signature
@@ -1200,6 +1309,39 @@ class ApiHandler(BaseHTTPRequestHandler):
                 )
                 return
             self._send_json(HTTPStatus.OK, {"definitions": normalized})
+            return
+
+        if parsed.path == "/api/dashboard-plots":
+            plots_payload = (
+                raw_payload.get("plots")
+                if isinstance(raw_payload, dict)
+                else raw_payload
+            )
+            try:
+                normalized = _save_dashboard_plots_payload(
+                    self.db_path,
+                    plots_payload,
+                )
+            except ValueError as exc:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {
+                        "error": "Invalid dashboard plot settings payload",
+                        "details": str(exc),
+                    },
+                )
+                return
+            except Exception as exc:  # pragma: no cover - runtime guard
+                logger.exception("Failed to save dashboard plot settings")
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {
+                        "error": "Failed to save dashboard plot settings",
+                        "details": str(exc),
+                    },
+                )
+                return
+            self._send_json(HTTPStatus.OK, {"plots": normalized})
             return
 
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
