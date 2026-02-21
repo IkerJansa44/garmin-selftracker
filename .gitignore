@@ -208,3 +208,7 @@ __marimo__/
 
 # uv
 uv.lock
+
+# Web frontend
+web/node_modules/
+web/dist/

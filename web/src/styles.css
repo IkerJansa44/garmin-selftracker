@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --ceramic-bg: #f6f4ef;
+  --panel-surface: #ffffff;
+  --subsurface: #efede6;
+  --ink-text: #121212;
+  --muted-text: rgba(18, 18, 18, 0.62);
+  --hairline: rgba(18, 18, 18, 0.06);
+  --accent: #cc5833;
+  --success: #50755c;
+  --warning: #b98c36;
+  --error: #b0584f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(circle at 22% 0%, #ffffff 0%, #f6f4ef 52%, #ece9e0 100%);
+  color: var(--ink-text);
+  font-family: -apple-system, "SF Pro Text", Inter, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body::before {
+  content: "";
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  background-image: radial-gradient(rgba(18, 18, 18, 0.015) 0.65px, transparent 0.65px);
+  background-size: 4px 4px;
+  opacity: 0.2;
+  mix-blend-mode: multiply;
+  z-index: -1;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+.metric-number {
+  font-variant-numeric: tabular-nums;
+}
+
+.panel {
+  @apply rounded-panel bg-panel shadow-panel;
+}
+
+.control-chip {
+  @apply rounded-capsule bg-panel px-4 py-2 text-sm font-medium text-ink shadow-soft transition;
+}
+
+.control-chip[data-active="true"] {
+  @apply bg-accent text-white;
+}
+
+.focusable:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 78%, white 22%);
+  outline-offset: 2px;
+}
+
+.scrollbar-hide {
+  scrollbar-width: none;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
