@@ -520,8 +520,20 @@ describe("correlation helpers", () => {
     });
 
     expect(result.points).toEqual([
-      { x: 1111, y: 71, date: "2026-02-21" },
-      { x: 2222, y: 81, date: "2026-02-22" },
+      {
+        x: 1111,
+        y: 71,
+        date: "2026-02-21",
+        predictorSourceDate: "2026-02-20",
+        outcomeSourceDate: "2026-02-21",
+      },
+      {
+        x: 2222,
+        y: 81,
+        date: "2026-02-22",
+        predictorSourceDate: "2026-02-21",
+        outcomeSourceDate: "2026-02-22",
+      },
     ]);
   });
 

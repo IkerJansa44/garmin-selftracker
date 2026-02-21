@@ -29,8 +29,16 @@ export interface CorrelationOption {
   label: string;
 }
 
+export interface CorrelationPoint {
+  x: number;
+  y: number;
+  date: string;
+  predictorSourceDate: string;
+  outcomeSourceDate: string;
+}
+
 export interface CorrelationResult {
-  points: Array<{ x: number; y: number; date: string }>;
+  points: CorrelationPoint[];
   correlation: number;
   sampleCount: number;
   regression: { slope: number; intercept: number };
@@ -42,7 +50,7 @@ export interface CorrelationPairResult {
   predictorLabel: string;
   outcome: OutcomeKey;
   outcomeLabel: string;
-  points: Array<{ x: number; y: number; date: string }>;
+  points: CorrelationPoint[];
   sampleCount: number;
   testType: CorrelationTestType;
   pValue: number | null;
@@ -349,23 +357,32 @@ function analysisNumericValue(value: AnalysisValueRecord | undefined): number | 
   return null;
 }
 
+type ParsedAnalysisValue = {
+  value: number;
+  sourceDate: string;
+};
+
 function parseBasePredictorValue(
   predictor: BasePredictorKey,
   analysisValueIndex: AnalysisValueIndex,
   questionsById: Map<string, QuestionFieldDefinition>,
   outcomeDate: string,
-): number | null {
+): ParsedAnalysisValue | null {
   const predictorValuesByFeature = analysisValueIndex.predictorByDate.get(outcomeDate);
   if (predictor.startsWith("garmin:")) {
     const key = predictor.slice(7) as GarminPredictorKey;
-    const value = analysisNumericValue(predictorValuesByFeature?.get(`garmin:${key}`));
+    const record = predictorValuesByFeature?.get(`garmin:${key}`);
+    const value = analysisNumericValue(record);
     if (value === null) {
       return null;
     }
-    if (key === "sleepSeconds") {
-      return value / 3600;
+    if (!record) {
+      return null;
     }
-    return value;
+    if (key === "sleepSeconds") {
+      return { value: value / 3600, sourceDate: record.sourceDate };
+    }
+    return { value, sourceDate: record.sourceDate };
   }
 
   const questionId = predictor.slice(9);
@@ -373,10 +390,15 @@ function parseBasePredictorValue(
   if (!question || question.analysisMode !== "predictor_next_day") {
     return null;
   }
-  return parseQuestionValue(
+  const record = predictorValuesByFeature?.get(`question:${questionId}`);
+  const value = parseQuestionValue(
     question,
-    analysisScalarValue(predictorValuesByFeature?.get(`question:${questionId}`)),
+    analysisScalarValue(record),
   );
+  if (value === null || !record) {
+    return null;
+  }
+  return { value, sourceDate: record.sourceDate };
 }
 
 function derivedBinIndex(value: number, cutPoints: number[]): number {
@@ -393,7 +415,7 @@ function parsePredictorValue(
   questionsById: Map<string, QuestionFieldDefinition>,
   derivedById: Map<string, DerivedPredictorDefinition>,
   outcomeDate: string,
-): number | null {
+): ParsedAnalysisValue | null {
   if (predictor.startsWith("derived:")) {
     const derivedId = predictor.slice(8);
     const definition = derivedById.get(derivedId);
@@ -409,7 +431,10 @@ function parsePredictorValue(
     if (sourceValue === null) {
       return null;
     }
-    return derivedBinIndex(sourceValue, definition.cutPoints);
+    return {
+      value: derivedBinIndex(sourceValue.value, definition.cutPoints),
+      sourceDate: sourceValue.sourceDate,
+    };
   }
 
   return parseBasePredictorValue(
@@ -425,24 +450,34 @@ function parseOutcomeValue(
   analysisValueIndex: AnalysisValueIndex,
   questionsById: Map<string, QuestionFieldDefinition>,
   outcomeDate: string,
-): number | null {
+): ParsedAnalysisValue | null {
   const targetValuesByFeature = analysisValueIndex.targetByDate.get(outcomeDate);
   if (outcome.startsWith("metric:")) {
-    return analysisNumericValue(targetValuesByFeature?.get(outcome));
+    const record = targetValuesByFeature?.get(outcome);
+    const value = analysisNumericValue(record);
+    if (value === null || !record) {
+      return null;
+    }
+    return { value, sourceDate: record.sourceDate };
   }
   const questionId = outcome.slice(9);
   const question = questionsById.get(questionId);
   if (!question || question.analysisMode !== "target_same_day") {
     return null;
   }
-  return parseQuestionValue(
+  const record = targetValuesByFeature?.get(`question:${questionId}`);
+  const value = parseQuestionValue(
     question,
-    analysisScalarValue(targetValuesByFeature?.get(`question:${questionId}`)),
+    analysisScalarValue(record),
   );
+  if (value === null || !record) {
+    return null;
+  }
+  return { value, sourceDate: record.sourceDate };
 }
 
 function buildContinuousPair(
-  points: Array<{ x: number; y: number; date: string }>,
+  points: CorrelationPoint[],
 ): Pick<
   CorrelationPairResult,
   "testType" | "pValue" | "strength" | "direction" | "correlation" | "regression" | "fStatistic" | "etaSquared" | "categoryLabels" | "categoryMeans" | "categoryCounts"
@@ -476,7 +511,7 @@ function buildContinuousPair(
 }
 
 function buildCategoricalPair(
-  points: Array<{ x: number; y: number; date: string }>,
+  points: CorrelationPoint[],
   labels: string[],
 ): Pick<
   CorrelationPairResult,
@@ -753,7 +788,7 @@ export function buildPredictorDistribution({
     if (value === null) {
       continue;
     }
-    values.push(value);
+    values.push(value.value);
   }
 
   return values;
@@ -788,7 +823,7 @@ export function buildCorrelationCatalog({
     const predictor = predictorOption.key as PredictorKey;
     for (const outcomeOption of outcomeOptions) {
       const outcome = outcomeOption.key as OutcomeKey;
-      const points: Array<{ x: number; y: number; date: string }> = [];
+      const points: CorrelationPoint[] = [];
 
       for (const record of records) {
         if (weekdayOnly && (record.weekday === 0 || record.weekday === 6)) {
@@ -813,7 +848,13 @@ export function buildCorrelationCatalog({
         if (x === null || y === null) {
           continue;
         }
-        points.push({ x, y, date: record.date });
+        points.push({
+          x: x.value,
+          y: y.value,
+          date: record.date,
+          predictorSourceDate: x.sourceDate,
+          outcomeSourceDate: y.sourceDate,
+        });
       }
 
       const isDerived = predictor.startsWith("derived:");
@@ -891,7 +932,7 @@ export function buildCorrelationResult({
   const questionFields = flattenQuestionFields(questions);
   const questionsById = new Map(questionFields.map((question) => [question.id, question]));
   const derivedById = new Map(derivedPredictors.map((definition) => [definition.id, definition]));
-  const points: Array<{ x: number; y: number; date: string }> = [];
+  const points: CorrelationPoint[] = [];
 
   for (const record of records) {
     if (weekdayOnly && (record.weekday === 0 || record.weekday === 6)) {
@@ -916,7 +957,13 @@ export function buildCorrelationResult({
     if (x === null || y === null) {
       continue;
     }
-    points.push({ x, y, date: record.date });
+    points.push({
+      x: x.value,
+      y: y.value,
+      date: record.date,
+      predictorSourceDate: x.sourceDate,
+      outcomeSourceDate: y.sourceDate,
+    });
   }
 
   const xs = points.map((point) => point.x);

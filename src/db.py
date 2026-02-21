@@ -471,7 +471,6 @@ def rebuild_analysis_values(connection: sqlite3.Connection) -> None:
                 ("garmin:calories", "calories"),
                 ("garmin:stressAvg", "stress_avg"),
                 ("garmin:bodyBattery", "body_battery"),
-                ("garmin:sleepSeconds", "sleep_seconds"),
             ):
                 value_num = _as_float(row[column_name])
                 if value_num is None:
@@ -487,6 +486,23 @@ def rebuild_analysis_values(connection: sqlite3.Connection) -> None:
                     source_date=source_date,
                     lag_days=-1,
                     alignment_rule="garmin_previous_day",
+                    refreshed_at=refreshed_at,
+                )
+
+            sleep_seconds = _as_float(row["sleep_seconds"])
+            sleep_source_date = _shift_iso_date(source_date, -1)
+            if sleep_seconds is not None and sleep_source_date is not None:
+                _append_analysis_row(
+                    rows_to_insert,
+                    analysis_date=source_date,
+                    role="predictor",
+                    feature_key="garmin:sleepSeconds",
+                    value_num=sleep_seconds,
+                    value_text=None,
+                    value_bool=None,
+                    source_date=sleep_source_date,
+                    lag_days=-1,
+                    alignment_rule="garmin_sleep_previous_night",
                     refreshed_at=refreshed_at,
                 )
 

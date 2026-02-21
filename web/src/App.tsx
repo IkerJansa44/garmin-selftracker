@@ -155,6 +155,17 @@ interface DashboardPlot {
   ticks: number[];
 }
 
+interface CorrelationTooltipEntry {
+  name?: string;
+  value?: number | string;
+  dataKey?: string | number;
+  payload?: {
+    date?: string;
+    predictorSourceDate?: string;
+    outcomeSourceDate?: string;
+  };
+}
+
 const IMPORT_STATUS_LABELS: Record<ImportState, string> = {
   ok: "OK",
   running: "Running",
@@ -1881,6 +1892,66 @@ function App() {
       ))
       .filter((entry): entry is { x: number; xJittered: number; y: number } => entry !== null);
   }, [selectedCorrelationPair]);
+  const renderCorrelationTooltip = useCallback(({ active, payload }: {
+    active?: boolean;
+    payload?: CorrelationTooltipEntry[];
+  }) => {
+    if (!active || !payload?.length) {
+      return null;
+    }
+    const point = payload.find((entry) => (
+      entry.payload?.predictorSourceDate && entry.payload?.outcomeSourceDate
+    ))?.payload ?? payload.find((entry) => entry.payload?.date)?.payload;
+    let predictorSourceDate = point?.predictorSourceDate;
+    let outcomeSourceDate = point?.outcomeSourceDate;
+    let date = point?.date;
+    if ((!predictorSourceDate || !outcomeSourceDate || !date) && selectedCorrelationPair) {
+      const xEntry = payload.find((entry) => (
+        entry.dataKey === "x" || entry.dataKey === "xJittered"
+      ));
+      const yEntry = payload.find((entry) => entry.dataKey === "y");
+      const xValue = Number(xEntry?.value);
+      const yValue = Number(yEntry?.value);
+      if (Number.isFinite(xValue) && Number.isFinite(yValue)) {
+        const matchedPoint = selectedCorrelationPair.points.find((candidate) => (
+          Math.abs(candidate.x - xValue) < 1e-6 && Math.abs(candidate.y - yValue) < 1e-6
+        ));
+        if (matchedPoint) {
+          predictorSourceDate = matchedPoint.predictorSourceDate;
+          outcomeSourceDate = matchedPoint.outcomeSourceDate;
+          date = matchedPoint.date;
+        }
+      }
+    }
+    return (
+      <div className="rounded-lg border border-black/10 bg-white/95 px-3 py-2 shadow-sm">
+        {predictorSourceDate && outcomeSourceDate ? (
+          <p className="mb-1 text-xs text-muted">
+            Predictor: {formatReadableDate(predictorSourceDate)} | Outcome: {formatReadableDate(outcomeSourceDate)}
+          </p>
+        ) : date ? (
+          <p className="mb-1 text-xs text-muted">{formatReadableDate(date)}</p>
+        ) : null}
+        <div className="space-y-1">
+          {payload.map((entry, index) => {
+            const numericValue = typeof entry.value === "number" ? entry.value : Number(entry.value);
+            const valueText = Number.isFinite(numericValue)
+              ? selectedCorrelationPair?.testType === "continuous"
+                && predictorKey === "garmin:sleepSeconds"
+                && entry.dataKey === "x"
+                ? formatHoursAsHoursMinutes(numericValue)
+                : numericValue.toFixed(2)
+              : String(entry.value ?? "--");
+            return (
+              <p key={`${entry.name ?? "value"}:${index}`} className="text-sm text-ink">
+                {entry.name}: {valueText}
+              </p>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }, [predictorKey, selectedCorrelationPair]);
   const derivedSourceValues = useMemo(
     () =>
       buildPredictorDistribution({
@@ -3150,20 +3221,7 @@ function App() {
                         />
                         <Tooltip
                           cursor={{ strokeDasharray: "3 4" }}
-                          formatter={(value: number, key) => {
-                            if (
-                              selectedCorrelationPair.testType === "continuous"
-                              && predictorKey === "garmin:sleepSeconds"
-                              && key === "x"
-                            ) {
-                              return [formatHoursAsHoursMinutes(value), key];
-                            }
-                            return [`${value.toFixed(2)}`, key];
-                          }}
-                          labelFormatter={(_, payload) => {
-                            const date = payload?.[0]?.payload?.date;
-                            return date ? formatReadableDate(date) : "";
-                          }}
+                          content={renderCorrelationTooltip}
                         />
                         <Scatter
                           data={selectedCorrelationPair.testType === "categorical"

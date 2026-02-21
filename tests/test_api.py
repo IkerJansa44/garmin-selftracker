@@ -758,6 +758,11 @@ def test_load_correlation_values_payload_uses_materialized_analysis_values(
     assert predictor_steps["sourceDate"] == "2026-02-20"
     assert predictor_steps["lagDays"] == -1
 
+    predictor_sleep = values_by_key[("predictor", "garmin:sleepSeconds")]
+    assert predictor_sleep["valueNum"] == 28800
+    assert predictor_sleep["sourceDate"] == "2026-02-20"
+    assert predictor_sleep["alignmentRule"] == "garmin_sleep_previous_night"
+
     predictor_question = values_by_key[("predictor", "question:caffeine_count")]
     assert predictor_question["valueNum"] == 2
     assert predictor_question["alignmentRule"] == "checkin_previous_day"
