@@ -14,9 +14,12 @@ from src.api import (
     _as_clock_time,
     _import_status_message,
     _load_checkins_payload,
+    _load_dashboard_plots_payload,
+    _normalize_dashboard_plots_payload,
     _normalize_questions_payload,
     _parse_import_request,
     _save_checkin_payload,
+    _save_dashboard_plots_payload,
 )
 from src.db import connect_db, init_db
 
@@ -362,6 +365,54 @@ def test_normalize_questions_payload_keeps_backward_compatibility() -> None:
     assert normalized[0]["id"] == "mood"
     assert normalized[0]["analysisMode"] == "predictor_next_day"
     assert "children" not in normalized[0]
+
+
+def test_normalize_dashboard_plots_payload_accepts_key_direction_entries() -> None:
+    payload = [
+        {"key": "metric:sleepScore", "direction": "higher"},
+        {"key": "metric:stress", "direction": "lower"},
+    ]
+
+    normalized = _normalize_dashboard_plots_payload(payload)
+    assert normalized == payload
+
+
+def test_normalize_dashboard_plots_payload_supports_legacy_key_list() -> None:
+    payload = ["metric:stress", "question:mood"]
+
+    normalized = _normalize_dashboard_plots_payload(payload)
+    assert normalized == [
+        {"key": "metric:stress", "direction": "lower"},
+        {"key": "question:mood", "direction": "higher"},
+    ]
+
+
+def test_normalize_dashboard_plots_payload_rejects_invalid_direction() -> None:
+    payload = [{"key": "metric:sleepScore", "direction": "sideways"}]
+
+    assert _normalize_dashboard_plots_payload(payload) is None
+
+
+def test_dashboard_plot_settings_save_and_load_roundtrip(tmp_path: Path) -> None:
+    db_path = tmp_path / "garmin.db"
+    payload = [
+        {"key": "metric:recoveryIndex", "direction": "higher"},
+        {"key": "question:felt_energized_during_day", "direction": "lower"},
+    ]
+
+    saved = _save_dashboard_plots_payload(str(db_path), payload)
+    assert saved == payload
+
+    loaded = _load_dashboard_plots_payload(str(db_path))
+    assert loaded == payload
+
+
+def test_dashboard_plot_settings_load_defaults_when_missing(tmp_path: Path) -> None:
+    db_path = tmp_path / "garmin.db"
+
+    loaded = _load_dashboard_plots_payload(str(db_path))
+    assert loaded
+    assert loaded[0]["key"] == "metric:recoveryIndex"
 
 
 def test_as_clock_time_supports_iso_and_epoch_ms() -> None:

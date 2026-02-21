@@ -43,6 +43,17 @@ interface ImportApiResponse {
   days: number;
 }
 
+export type PlotDirection = "higher" | "lower";
+
+export interface DashboardPlotPreference {
+  key: string;
+  direction: PlotDirection;
+}
+
+interface DashboardPlotsApiResponse {
+  plots: DashboardPlotPreference[];
+}
+
 async function readApiError(response: Response, fallback: string): Promise<Error> {
   try {
     const payload = (await response.json()) as { error?: string; details?: string };
@@ -75,6 +86,32 @@ export async function fetchQuestionSettings(
     throw new Error(`Questions API failed: ${response.status}`);
   }
   return (await response.json()) as QuestionsApiResponse;
+}
+
+export async function fetchDashboardPlotSettings(
+  signal?: AbortSignal,
+): Promise<DashboardPlotsApiResponse> {
+  const response = await fetch("/api/dashboard-plots", { signal });
+  if (!response.ok) {
+    throw new Error(`Dashboard plot settings API failed: ${response.status}`);
+  }
+  return (await response.json()) as DashboardPlotsApiResponse;
+}
+
+export async function saveDashboardPlotSettings(
+  plots: DashboardPlotPreference[],
+  signal?: AbortSignal,
+): Promise<DashboardPlotsApiResponse> {
+  const response = await fetch("/api/dashboard-plots", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ plots }),
+    signal,
+  });
+  if (!response.ok) {
+    throw await readApiError(response, `Saving dashboard plot settings failed: ${response.status}`);
+  }
+  return (await response.json()) as DashboardPlotsApiResponse;
 }
 
 export async function saveQuestionSettings(
