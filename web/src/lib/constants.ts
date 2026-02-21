@@ -68,6 +68,12 @@ export const DEFAULT_SELECTED_METRICS: MetricKey[] = [
   "trainingReadiness",
 ];
 
+const YES_NORMAL_NO_OPTIONS = [
+  { id: "yes", label: "yes", score: 2 },
+  { id: "normal", label: "normal", score: 1 },
+  { id: "no", label: "no", score: 0 },
+];
+
 export const DEFAULT_QUESTIONS: CheckInQuestion[] = [
   {
     id: "caffeine_count",
@@ -129,22 +135,21 @@ export const DEFAULT_QUESTIONS: CheckInQuestion[] = [
     defaultIncluded: true,
   },
   {
-    id: "mood",
-    section: "Stress & Mind",
-    prompt: "Mood",
-    inputType: "slider",
-    analysisMode: "target_same_day",
-    min: 0,
-    max: 10,
-    step: 1,
+    id: "nutrition_fullness",
+    section: "Nutrition & Substances",
+    prompt: "Do you feel full?",
+    inputType: "multi-choice",
+    analysisMode: "predictor_next_day",
+    options: [...YES_NORMAL_NO_OPTIONS],
     defaultIncluded: true,
   },
   {
-    id: "notes",
+    id: "felt_energized_during_day",
     section: "Stress & Mind",
-    prompt: "Notes",
-    inputType: "text",
+    prompt: "Felt energized during the day",
+    inputType: "multi-choice",
     analysisMode: "target_same_day",
+    options: [...YES_NORMAL_NO_OPTIONS],
     defaultIncluded: true,
   },
 ];

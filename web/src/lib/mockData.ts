@@ -273,17 +273,17 @@ export function generateHistoryFromRecords(records: DailyRecord[]): CheckInEntry
 export function defaultDraftAnswers(
   questions = DEFAULT_QUESTIONS,
 ): Record<string, string | number | boolean> {
-  return Object.fromEntries(
-    questions.map((question) => {
-      if (question.inputType === "slider") {
-        return [question.id, question.min ?? 0];
-      }
-      if (question.inputType === "boolean") {
-        return [question.id, false];
-      }
-      return [question.id, ""];
-    }),
-  );
+  return questions.reduce<Record<string, string | number | boolean>>((accumulator, question) => {
+    if (question.inputType === "slider") {
+      accumulator[question.id] = question.min ?? 0;
+      return accumulator;
+    }
+    if (question.inputType === "boolean") {
+      return accumulator;
+    }
+    accumulator[question.id] = "";
+    return accumulator;
+  }, {});
 }
 
 export function rollingAverage(values: Array<number | null>, period: number): Array<number | null> {

@@ -12,10 +12,8 @@ import {
   AlertCircle,
   CirclePlus,
   CircleHelp,
-  Download,
   GripVertical,
   LoaderCircle,
-  Upload,
   X,
 } from "lucide-react";
 import {
@@ -153,6 +151,8 @@ const REMOVED_DEFAULT_QUESTION_IDS = new Set([
   "sleep_time",
   "screen_minutes",
   "thermal",
+  "mood",
+  "notes",
 ]);
 const CAFFEINE_QUESTION_ID = "caffeine_count";
 const CAFFEINE_LAST_TIME_CHILD_ID = "caffeine_last_time";
@@ -160,7 +160,10 @@ const ALCOHOL_QUESTION_ID = "alcohol_units";
 const ALCOHOL_LAST_TIME_CHILD_ID = "alcohol_last_time";
 const MEAL_FINISH_QUESTION_ID = "late_meal";
 const SLEEP_TIME_QUESTION_ID = "sleep_time";
+const FULLNESS_QUESTION_ID = "nutrition_fullness";
+const ENERGY_TARGET_QUESTION_ID = "felt_energized_during_day";
 const IMPORT_POLL_INTERVAL_MS = 5000;
+const DASHBOARD_REFRESH_INTERVAL_MS = 60000;
 const MAX_IMPORT_RANGE_DAYS = 365;
 
 function parseImportProgressMessage(message: string): {
@@ -254,10 +257,6 @@ function describeTodayVsAverage(
   };
 }
 
-function exportQuestions(questions: CheckInQuestion[]): string {
-  return JSON.stringify(questions, null, 2);
-}
-
 function formatMinutesAsClock(minutes: number): string {
   const bounded = Math.min(TIME_SLIDER_MINUTES.max, Math.max(TIME_SLIDER_MINUTES.min, minutes));
   const hours = Math.floor(bounded / 60);
@@ -326,6 +325,18 @@ function inferAlcoholScore(option: QuestionOption): number | null {
     return labelNumber;
   }
   return null;
+}
+
+function cloneQuestion(question: CheckInQuestion): CheckInQuestion {
+  return {
+    ...question,
+    options: question.options?.map((option) => ({ ...option })),
+    children: question.children?.map((child) => ({
+      ...child,
+      options: child.options?.map((option) => ({ ...option })),
+      condition: { ...child.condition },
+    })),
+  };
 }
 
 function migrateQuestionLibrary(questions: CheckInQuestion[]): CheckInQuestion[] {
@@ -397,50 +408,76 @@ function migrateQuestionLibrary(questions: CheckInQuestion[]): CheckInQuestion[]
         }
       }
 
+      if (nextQuestion.id === FULLNESS_QUESTION_ID) {
+        nextQuestion.section = "Nutrition & Substances";
+        nextQuestion.prompt = "Do you feel full?";
+        nextQuestion.inputType = "multi-choice";
+        nextQuestion.analysisMode = "predictor_next_day";
+        nextQuestion.options = [
+          { id: "yes", label: "yes", score: 2 },
+          { id: "normal", label: "normal", score: 1 },
+          { id: "no", label: "no", score: 0 },
+        ];
+      }
+
+      if (nextQuestion.id === ENERGY_TARGET_QUESTION_ID) {
+        nextQuestion.section = "Stress & Mind";
+        nextQuestion.prompt = "Felt energized during the day";
+        nextQuestion.inputType = "multi-choice";
+        nextQuestion.analysisMode = "target_same_day";
+        nextQuestion.options = [
+          { id: "yes", label: "yes", score: 2 },
+          { id: "normal", label: "normal", score: 1 },
+          { id: "no", label: "no", score: 0 },
+        ];
+      }
+
       return nextQuestion;
     });
+
+  const seenQuestionIds = new Set(nextQuestions.map((question) => question.id));
+  for (const defaultQuestion of DEFAULT_QUESTIONS) {
+    if (seenQuestionIds.has(defaultQuestion.id)) {
+      continue;
+    }
+    nextQuestions.push(cloneQuestion(defaultQuestion));
+  }
+
   return nextQuestions;
 }
 
-function safeParseQuestions(raw: string): CheckInQuestion[] | null {
-  try {
-    const parsed = JSON.parse(raw) as CheckInQuestion[];
-    if (!Array.isArray(parsed)) {
-      return null;
-    }
-    return parsed.filter((question) =>
-      typeof question.id === "string" &&
-      typeof question.prompt === "string" &&
-      typeof question.section === "string" &&
-      typeof question.inputType === "string",
-    ).map((question) => ({
-      ...question,
-      analysisMode: question.analysisMode ?? "predictor_next_day",
-      children: (question.children ?? [])
-        .filter((child) =>
-          typeof child.id === "string"
-          && typeof child.prompt === "string"
-          && typeof child.inputType === "string"
-          && typeof child.condition?.operator === "string",
-        )
-        .map((child) => ({
-          ...child,
-          analysisMode: child.analysisMode ?? question.analysisMode ?? "predictor_next_day",
-        })),
-    }));
-  } catch {
-    return null;
-  }
+function normalizeSectionName(section: string): string {
+  const trimmed = section.trim();
+  return trimmed || "General";
 }
 
 function sectionedQuestions(questions: CheckInQuestion[]): Record<string, CheckInQuestion[]> {
   return questions.reduce<Record<string, CheckInQuestion[]>>((accumulator, question) => {
-    if (!accumulator[question.section]) {
-      accumulator[question.section] = [];
+    const section = normalizeSectionName(question.section);
+    if (!accumulator[section]) {
+      accumulator[section] = [];
     }
-    accumulator[question.section].push(question);
+    accumulator[section].push(question);
     return accumulator;
   }, {});
+}
+
+function buildSectionList(questions: CheckInQuestion[]): string[] {
+  const sectionsByQuestionOrder: string[] = [];
+  const seen = new Set<string>();
+
+  for (const question of questions) {
+    const normalized = normalizeSectionName(question.section);
+    if (seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    sectionsByQuestionOrder.push(normalized);
+  }
+
+  const pinned = SECTION_ORDER.filter((section) => seen.has(section));
+  const custom = sectionsByQuestionOrder.filter((section) => !SECTION_ORDER.includes(section));
+  return [...pinned, ...custom];
 }
 
 function computeMetricSummary(records: DailyRecord[], metric: MetricKey, rangePreset: number): {
@@ -510,7 +547,6 @@ function App() {
   const [isScrolled, setIsScrolled] = useState(false);
   const [questionLibrary, setQuestionLibrary] = useState<CheckInQuestion[]>(DEFAULT_QUESTIONS);
   const [selectedQuestionId, setSelectedQuestionId] = useState(DEFAULT_QUESTIONS[0]?.id ?? "");
-  const [questionJsonDraft, setQuestionJsonDraft] = useState("");
   const [questionLoadState, setQuestionLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [questionSyncError, setQuestionSyncError] = useState<string | null>(null);
   const [isSavingQuestions, setIsSavingQuestions] = useState(false);
@@ -591,13 +627,13 @@ function App() {
   }, [loadDashboardData]);
 
   useEffect(() => {
-    if (importSummary.state !== "running") {
-      return;
-    }
     const controller = new AbortController();
+    const intervalMs = importSummary.state === "running"
+      ? IMPORT_POLL_INTERVAL_MS
+      : DASHBOARD_REFRESH_INTERVAL_MS;
     const intervalId = window.setInterval(() => {
       void loadDashboardData({ signal: controller.signal, setLoading: false });
-    }, IMPORT_POLL_INTERVAL_MS);
+    }, intervalMs);
     return () => {
       window.clearInterval(intervalId);
       controller.abort();
@@ -883,15 +919,52 @@ function App() {
   );
 
   const groupedQuestions = useMemo(() => sectionedQuestions(includedQuestions), [includedQuestions]);
+  const visibleSectionOrder = useMemo(
+    () => buildSectionList(includedQuestions),
+    [includedQuestions],
+  );
+  const editableSectionOptions = useMemo(
+    () => buildSectionList(questionLibrary),
+    [questionLibrary],
+  );
+  const selectedCheckinRecord = useMemo(
+    () => allRecords.find((record) => record.date === selectedCheckinDate) ?? null,
+    [allRecords, selectedCheckinDate],
+  );
+  const selectedCheckinEntry = checkinEntriesByDate[selectedCheckinDate];
+  const isSelectedDateSaved = Boolean(selectedCheckinEntry);
+  const selectedFellAsleepTime = useMemo(() => {
+    if (selectedCheckinRecord?.fellAsleepAt) {
+      return selectedCheckinRecord.fellAsleepAt;
+    }
+    const legacySleepTime = draftAnswers[SLEEP_TIME_QUESTION_ID];
+    return typeof legacySleepTime === "string" && legacySleepTime ? legacySleepTime : null;
+  }, [draftAnswers, selectedCheckinRecord]);
+  const selectedSteps = selectedCheckinRecord?.predictors.steps ?? null;
+  const selectedActivityLabel = useMemo(() => {
+    if (!selectedCheckinRecord) {
+      return "--";
+    }
+    if (selectedCheckinRecord.importGap) {
+      return "Unknown";
+    }
+    return selectedCheckinRecord.predictors.isTrainingDay
+      ? "Activity detected"
+      : "No activity logged";
+  }, [selectedCheckinRecord]);
+  const hasMealTimeAnswer = useMemo(() => {
+    const mealTime = draftAnswers[MEAL_FINISH_QUESTION_ID];
+    return typeof mealTime === "string" && parseClockTimeToMinutes(mealTime) !== null;
+  }, [draftAnswers]);
 
   const mealSleepGapValue = useMemo(() => {
     const mealTime = draftAnswers[MEAL_FINISH_QUESTION_ID];
-    const sleepTime = draftAnswers[SLEEP_TIME_QUESTION_ID];
+    const sleepTime = selectedFellAsleepTime;
     if (typeof mealTime !== "string" || typeof sleepTime !== "string") {
       return null;
     }
     return mealToSleepGapMinutes(mealTime, sleepTime);
-  }, [draftAnswers]);
+  }, [draftAnswers, selectedFellAsleepTime]);
 
   const todayDateLabel = new Date().toLocaleDateString(undefined, {
     weekday: "long",
@@ -1029,6 +1102,21 @@ function App() {
     );
   };
 
+  const renameQuestionSection = (source: string, target: string) => {
+    const sourceSection = normalizeSectionName(source);
+    const targetSection = normalizeSectionName(target);
+    if (sourceSection === targetSection) {
+      return;
+    }
+    setQuestionLibrary((previous) =>
+      previous.map((question) =>
+        normalizeSectionName(question.section) === sourceSection
+          ? { ...question, section: targetSection }
+          : question,
+      ),
+    );
+  };
+
   const removeQuestion = (questionId: string) => {
     setQuestionLibrary((previous) => {
       const next = previous.filter((question) => question.id !== questionId);
@@ -1122,7 +1210,17 @@ function App() {
                 value === candidate ? "bg-accent text-white" : "bg-subsurface text-ink",
               )}
               type="button"
-              onClick={() => updateDraftAnswer(question.id, candidate)}
+              onClick={() => {
+                if (value === candidate) {
+                  setDraftAnswers((previous) => {
+                    const nextAnswers = { ...previous };
+                    delete nextAnswers[question.id];
+                    return pruneHiddenChildAnswers(questionLibrary, nextAnswers);
+                  });
+                  return;
+                }
+                updateDraftAnswer(question.id, candidate);
+              }}
             >
               {candidate ? "Yes" : "No"}
             </button>
@@ -1514,7 +1612,17 @@ function App() {
 
         {activeView === "checkin" && (
           <section className="gsap-fade">
-            <article className="panel p-6 sm:p-8">
+            <article
+              className={clsx(
+                "panel p-6 transition-colors duration-300 sm:p-8",
+                isSelectedDateSaved && "border border-[#d7e6dc]",
+              )}
+              style={
+                isSelectedDateSaved
+                  ? { backgroundColor: "#edf5ef" }
+                  : undefined
+              }
+            >
               <div className="mb-6 flex items-center justify-between">
                 <div>
                   <h2 className="text-2xl font-semibold tracking-tight">Daily Check-In</h2>
@@ -1537,7 +1645,7 @@ function App() {
                     ? "Loading check-ins..."
                     : checkinSyncError
                       ? `SQLite sync failed: ${checkinSyncError}`
-                      : checkinEntriesByDate[selectedCheckinDate]
+                      : selectedCheckinEntry
                         ? "Loaded existing entry for this date."
                         : "No saved entry for this date yet."}
                 </p>
@@ -1545,7 +1653,7 @@ function App() {
               </div>
 
               <div className="space-y-5">
-                {SECTION_ORDER.map((section) => {
+                {visibleSectionOrder.map((section) => {
                   const questions = groupedQuestions[section];
                   if (!questions?.length) {
                     return null;
@@ -1577,6 +1685,30 @@ function App() {
                 })}
               </div>
 
+              <div className="mt-5 grid gap-4 md:grid-cols-3">
+                <div className="rounded-[22px] bg-subsurface p-4">
+                  <p className="text-xs uppercase tracking-[0.16em] text-muted">Predictor</p>
+                  <p className="mt-2 text-sm text-muted">Steps (Garmin)</p>
+                  <p className="metric-number mt-1 text-2xl font-semibold text-ink">
+                    {selectedSteps === null ? "--" : selectedSteps.toLocaleString()}
+                  </p>
+                </div>
+                <div className="rounded-[22px] bg-subsurface p-4">
+                  <p className="text-xs uppercase tracking-[0.16em] text-muted">Predictor</p>
+                  <p className="mt-2 text-sm text-muted">Activity (Garmin)</p>
+                  <p className="metric-number mt-1 text-2xl font-semibold text-ink">
+                    {selectedActivityLabel}
+                  </p>
+                </div>
+                <div className="rounded-[22px] bg-subsurface p-4">
+                  <p className="text-xs uppercase tracking-[0.16em] text-muted">Predictor</p>
+                  <p className="mt-2 text-sm text-muted">Fell asleep at (Garmin)</p>
+                  <p className="metric-number mt-1 text-2xl font-semibold text-ink">
+                    {selectedFellAsleepTime ?? "--:--"}
+                  </p>
+                </div>
+              </div>
+
               <div className="mt-5 rounded-[22px] bg-subsurface p-4">
                 <p className="text-xs uppercase tracking-[0.16em] text-muted">Derived Metric</p>
                 <p className="mt-2 text-sm text-muted">Time Between Eating And Sleep</p>
@@ -1584,7 +1716,11 @@ function App() {
                   {mealSleepGapValue === null ? "Unknown" : formatMinutesAsHours(mealSleepGapValue)}
                 </p>
                 <p className="mt-1 text-xs text-muted">
-                  Unknown until you log when you fell asleep.
+                  {!hasMealTimeAnswer
+                    ? "Add 'Finished eating at' to calculate this metric."
+                    : selectedFellAsleepTime
+                    ? "Computed from check-in meal time and Garmin sleep start."
+                    : "Updates after Garmin records sleep start time for this date."}
                 </p>
               </div>
 
@@ -1603,8 +1739,8 @@ function App() {
         )}
 
         {activeView === "settings" && (
-          <section className="panel gsap-fade grid gap-5 p-6 sm:grid-cols-2 sm:p-8">
-            <article className="rounded-[24px] bg-subsurface p-5 sm:col-span-2">
+          <section className="panel gsap-fade p-6 sm:p-8">
+            <article className="rounded-[24px] bg-subsurface p-5">
               <div className="mb-4 flex items-center justify-between">
                 <div>
                   <h3 className="text-lg font-semibold">Asked Questions</h3>
@@ -1655,6 +1791,8 @@ function App() {
                           />
                           {isSelected && (
                             <QuestionEditor
+                              availableSections={editableSectionOptions}
+                              onRenameSection={renameQuestionSection}
                               question={question}
                               onDelete={() => removeQuestion(question.id)}
                               onPatch={(patch) => updateQuestion(question.id, patch)}
@@ -1666,78 +1804,6 @@ function App() {
                   </div>
                 </SortableContext>
               </DndContext>
-
-              <div className="mt-5 rounded-2xl bg-panel p-3">
-                <div className="mb-2 flex gap-2">
-                  <button
-                    className="focusable min-h-11 rounded-capsule bg-subsurface px-4 text-sm shadow-soft"
-                    type="button"
-                    onClick={() => setQuestionJsonDraft(exportQuestions(questionLibrary))}
-                  >
-                    <span className="inline-flex items-center gap-2">
-                      <Download className="size-4" /> Export JSON
-                    </span>
-                  </button>
-                  <button
-                    className="focusable min-h-11 rounded-capsule bg-subsurface px-4 text-sm shadow-soft"
-                    type="button"
-                    onClick={() => {
-                      const parsed = safeParseQuestions(questionJsonDraft);
-                      if (parsed?.length) {
-                        const migrated = migrateQuestionLibrary(parsed);
-                        setQuestionLibrary(migrated);
-                        setSelectedQuestionId(migrated[0].id);
-                      }
-                    }}
-                  >
-                    <span className="inline-flex items-center gap-2">
-                      <Upload className="size-4" /> Import JSON
-                    </span>
-                  </button>
-                </div>
-                <textarea
-                  className="focusable min-h-28 w-full rounded-2xl bg-subsurface p-3 text-xs font-mono"
-                  placeholder="Paste or generate JSON"
-                  value={questionJsonDraft}
-                  onChange={(event) => setQuestionJsonDraft(event.target.value)}
-                />
-              </div>
-            </article>
-
-            <article className="rounded-[24px] bg-subsurface p-5">
-              <h3 className="text-lg font-semibold">Daily Import Schedule</h3>
-              <p className="mt-2 text-sm text-muted">Scheduled every day at 06:00 local. State sourced from sync runs.</p>
-              <div className="mt-4 rounded-2xl bg-panel p-4">
-                <p className="text-sm font-semibold">State: {IMPORT_STATUS_LABELS[importSummary.state]}</p>
-                <p className="metric-number text-sm text-muted">
-                  Last import {lastImportLabel}
-                </p>
-              </div>
-            </article>
-
-            <article className="rounded-[24px] bg-subsurface p-5">
-              <h3 className="text-lg font-semibold">Connection / Token</h3>
-              <p className="mt-2 text-sm text-muted">Placeholder only. Backend integration out of scope.</p>
-              <div className="mt-4 rounded-2xl bg-panel p-4 text-sm">Token status: Not connected</div>
-            </article>
-
-            <article className="rounded-[24px] bg-subsurface p-5">
-              <h3 className="text-lg font-semibold">Data Retention</h3>
-              <p className="mt-2 text-sm text-muted">Fixed retention: 365 days.</p>
-              <div className="mt-4 rounded-2xl bg-panel p-4 text-sm">Local-first. Single user.</div>
-            </article>
-
-            <article className="rounded-[24px] bg-subsurface p-5">
-              <h3 className="text-lg font-semibold">Export</h3>
-              <p className="mt-2 text-sm text-muted">CSV/JSON export UI stub.</p>
-              <div className="mt-4 flex gap-2">
-                <button className="focusable min-h-11 rounded-capsule bg-panel px-4 text-sm shadow-soft" type="button">
-                  Export CSV
-                </button>
-                <button className="focusable min-h-11 rounded-capsule bg-panel px-4 text-sm shadow-soft" type="button">
-                  Export JSON
-                </button>
-              </div>
             </article>
           </section>
         )}
@@ -1857,10 +1923,14 @@ const CONDITION_OPERATOR_META: Array<{
 ];
 
 function QuestionEditor({
+  availableSections,
+  onRenameSection,
   question,
   onPatch,
   onDelete,
 }: {
+  availableSections: string[];
+  onRenameSection: (source: string, target: string) => void;
   question: CheckInQuestion;
   onPatch: (patch: Partial<CheckInQuestion>) => void;
   onDelete: () => void;
@@ -1868,6 +1938,39 @@ function QuestionEditor({
   const children = question.children ?? [];
   const canAddChild = children.length < 3;
   const [showAnalysisHelp, setShowAnalysisHelp] = useState(false);
+  const [sectionEditorMode, setSectionEditorMode] = useState<"idle" | "add" | "rename">("idle");
+  const [sectionEditorValue, setSectionEditorValue] = useState("");
+  const inputTagClass = "text-[10px] uppercase tracking-[0.12em] text-muted";
+  const normalizedSection = normalizeSectionName(question.section);
+  const sectionOptions = availableSections.includes(normalizedSection)
+    ? availableSections
+    : [...availableSections, normalizedSection];
+
+  const closeSectionEditor = () => {
+    setSectionEditorMode("idle");
+    setSectionEditorValue("");
+  };
+
+  const openAddSectionEditor = () => {
+    setSectionEditorMode("add");
+    setSectionEditorValue("");
+  };
+
+  const openRenameSectionEditor = () => {
+    setSectionEditorMode("rename");
+    setSectionEditorValue(normalizedSection);
+  };
+
+  const submitSectionEditor = () => {
+    const nextSection = normalizeSectionName(sectionEditorValue);
+    if (sectionEditorMode === "add") {
+      onPatch({ section: nextSection });
+    }
+    if (sectionEditorMode === "rename") {
+      onRenameSection(normalizedSection, nextSection);
+    }
+    closeSectionEditor();
+  };
 
   const patchInputType = (
     nextType: InputType,
@@ -1959,27 +2062,36 @@ function QuestionEditor({
     if (field.inputType === "slider") {
       return (
         <div className="grid gap-2 sm:grid-cols-3">
-          <input
-            className="focusable min-h-11 rounded-2xl bg-panel px-3"
-            placeholder="Min"
-            type="number"
-            value={field.min ?? 0}
-            onChange={(event) => onFieldPatch({ min: Number(event.target.value) })}
-          />
-          <input
-            className="focusable min-h-11 rounded-2xl bg-panel px-3"
-            placeholder="Max"
-            type="number"
-            value={field.max ?? 10}
-            onChange={(event) => onFieldPatch({ max: Number(event.target.value) })}
-          />
-          <input
-            className="focusable min-h-11 rounded-2xl bg-panel px-3"
-            placeholder="Step"
-            type="number"
-            value={field.step ?? 1}
-            onChange={(event) => onFieldPatch({ step: Number(event.target.value) })}
-          />
+          <div className="space-y-1">
+            <p className={inputTagClass}>Minimum</p>
+            <input
+              className="focusable min-h-11 rounded-2xl bg-panel px-3"
+              placeholder="Min"
+              type="number"
+              value={field.min ?? 0}
+              onChange={(event) => onFieldPatch({ min: Number(event.target.value) })}
+            />
+          </div>
+          <div className="space-y-1">
+            <p className={inputTagClass}>Maximum</p>
+            <input
+              className="focusable min-h-11 rounded-2xl bg-panel px-3"
+              placeholder="Max"
+              type="number"
+              value={field.max ?? 10}
+              onChange={(event) => onFieldPatch({ max: Number(event.target.value) })}
+            />
+          </div>
+          <div className="space-y-1">
+            <p className={inputTagClass}>Step</p>
+            <input
+              className="focusable min-h-11 rounded-2xl bg-panel px-3"
+              placeholder="Step"
+              type="number"
+              value={field.step ?? 1}
+              onChange={(event) => onFieldPatch({ step: Number(event.target.value) })}
+            />
+          </div>
         </div>
       );
     }
@@ -1990,55 +2102,64 @@ function QuestionEditor({
         <div className="space-y-2">
           {options.map((option, index) => (
             <div key={`${field.id}_${index}`} className="grid gap-2 sm:grid-cols-[1fr_1fr_120px_auto]">
-              <input
-                className="focusable min-h-11 rounded-2xl bg-panel px-3"
-                placeholder="Label"
-                value={option.label}
-                onChange={(event) =>
-                  onFieldPatch({
-                    options: options.map((candidate, candidateIndex) =>
-                      candidateIndex === index
-                        ? { ...candidate, label: event.target.value }
-                        : candidate,
-                    ),
-                  })
-                }
-              />
-              <input
-                className="focusable min-h-11 rounded-2xl bg-panel px-3"
-                placeholder="Value id"
-                value={option.id}
-                onChange={(event) =>
-                  onFieldPatch({
-                    options: options.map((candidate, candidateIndex) =>
-                      candidateIndex === index
-                        ? { ...candidate, id: event.target.value }
-                        : candidate,
-                    ),
-                  })
-                }
-              />
-              <input
-                className="focusable min-h-11 rounded-2xl bg-panel px-3"
-                placeholder="Score"
-                type="number"
-                value={option.score ?? ""}
-                onChange={(event) => {
-                  const rawValue = event.target.value;
-                  onFieldPatch({
-                    options: options.map((candidate, candidateIndex) => {
-                      if (candidateIndex !== index) {
-                        return candidate;
-                      }
-                      if (rawValue === "") {
-                        return { ...candidate, score: undefined };
-                      }
-                      const score = Number(rawValue);
-                      return Number.isFinite(score) ? { ...candidate, score } : candidate;
-                    }),
-                  });
-                }}
-              />
+              <div className="space-y-1">
+                <p className={inputTagClass}>Option label</p>
+                <input
+                  className="focusable min-h-11 rounded-2xl bg-panel px-3"
+                  placeholder="Label"
+                  value={option.label}
+                  onChange={(event) =>
+                    onFieldPatch({
+                      options: options.map((candidate, candidateIndex) =>
+                        candidateIndex === index
+                          ? { ...candidate, label: event.target.value }
+                          : candidate,
+                      ),
+                    })
+                  }
+                />
+              </div>
+              <div className="space-y-1">
+                <p className={inputTagClass}>Option value id</p>
+                <input
+                  className="focusable min-h-11 rounded-2xl bg-panel px-3"
+                  placeholder="Value id"
+                  value={option.id}
+                  onChange={(event) =>
+                    onFieldPatch({
+                      options: options.map((candidate, candidateIndex) =>
+                        candidateIndex === index
+                          ? { ...candidate, id: event.target.value }
+                          : candidate,
+                      ),
+                    })
+                  }
+                />
+              </div>
+              <div className="space-y-1">
+                <p className={inputTagClass}>Option score</p>
+                <input
+                  className="focusable min-h-11 rounded-2xl bg-panel px-3"
+                  placeholder="Score"
+                  type="number"
+                  value={option.score ?? ""}
+                  onChange={(event) => {
+                    const rawValue = event.target.value;
+                    onFieldPatch({
+                      options: options.map((candidate, candidateIndex) => {
+                        if (candidateIndex !== index) {
+                          return candidate;
+                        }
+                        if (rawValue === "") {
+                          return { ...candidate, score: undefined };
+                        }
+                        const score = Number(rawValue);
+                        return Number.isFinite(score) ? { ...candidate, score } : candidate;
+                      }),
+                    });
+                  }}
+                />
+              </div>
               <button
                 className="focusable min-h-11 rounded-capsule bg-[color-mix(in_srgb,var(--error)_16%,white)] px-3 text-xs text-error"
                 type="button"
@@ -2080,48 +2201,115 @@ function QuestionEditor({
     <div className="mt-2 rounded-2xl bg-subsurface p-3">
       <p className="mb-2 text-sm font-semibold">Edit Question</p>
       <div className="space-y-3">
-        <input
-          className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
-          value={question.prompt}
-          onChange={(event) => onPatch({ prompt: event.target.value })}
-        />
-        <input
-          className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
-          placeholder="Input label (optional, e.g. Count)"
-          value={question.inputLabel ?? ""}
-          onChange={(event) =>
-            onPatch({ inputLabel: event.target.value.trim() ? event.target.value : undefined })
-          }
-        />
-        <div className="grid gap-2 sm:grid-cols-2">
-          <select
-            className="focusable min-h-11 rounded-2xl bg-panel px-3"
-            value={question.section}
-            onChange={(event) => onPatch({ section: event.target.value })}
-          >
-            {SECTION_ORDER.map((section) => (
-              <option key={section}>{section}</option>
-            ))}
-          </select>
-          <select
-            className="focusable min-h-11 rounded-2xl bg-panel px-3"
-            value={question.inputType}
-            onChange={(event) =>
-              onPatch(
-                patchInputType(
-                  event.target.value as InputType,
-                  question,
-                ) as Partial<CheckInQuestion>,
-              )
-            }
-          >
-            <option value="slider">slider</option>
-            <option value="multi-choice">multi-choice</option>
-            <option value="boolean">boolean</option>
-            <option value="time">time</option>
-            <option value="text">text</option>
-          </select>
+        <div className="space-y-1">
+          <p className={inputTagClass}>Question prompt</p>
+          <input
+            className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
+            value={question.prompt}
+            onChange={(event) => onPatch({ prompt: event.target.value })}
+          />
         </div>
+        <div className="space-y-1">
+          <p className={inputTagClass}>Input helper label (optional)</p>
+          <input
+            className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
+            placeholder="Input label (optional, e.g. Count)"
+            value={question.inputLabel ?? ""}
+            onChange={(event) =>
+              onPatch({ inputLabel: event.target.value.trim() ? event.target.value : undefined })
+            }
+          />
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <div className="space-y-1">
+            <p className={inputTagClass}>Section</p>
+            <select
+              className="focusable min-h-11 w-full rounded-2xl bg-panel px-3 sm:w-56"
+              value={normalizedSection}
+              onChange={(event) => onPatch({ section: event.target.value })}
+            >
+              {sectionOptions.map((section) => (
+                <option key={section} value={section}>
+                  {section}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <p className={inputTagClass}>Input type</p>
+            <select
+              className="focusable min-h-11 rounded-2xl bg-panel px-3"
+              value={question.inputType}
+              onChange={(event) =>
+                onPatch(
+                  patchInputType(
+                    event.target.value as InputType,
+                    question,
+                  ) as Partial<CheckInQuestion>,
+                )
+              }
+            >
+              <option value="slider">slider</option>
+              <option value="multi-choice">multi-choice</option>
+              <option value="boolean">boolean</option>
+              <option value="time">time</option>
+              <option value="text">text</option>
+            </select>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button
+            className="focusable min-h-11 w-full rounded-capsule bg-panel px-3 text-xs sm:w-56"
+            type="button"
+            onClick={openAddSectionEditor}
+          >
+            Add section option
+          </button>
+          <button
+            className="focusable min-h-11 w-full rounded-capsule bg-panel px-3 text-xs sm:w-56"
+            type="button"
+            onClick={openRenameSectionEditor}
+          >
+            Rename section option
+          </button>
+        </div>
+        {sectionEditorMode !== "idle" && (
+          <div className="rounded-2xl bg-panel p-3">
+            <p className={inputTagClass}>
+              {sectionEditorMode === "add" ? "New section option" : "Rename section option"}
+            </p>
+            <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+              <input
+                className="focusable min-h-11 flex-1 rounded-2xl bg-subsurface px-3"
+                placeholder="Section name"
+                value={sectionEditorValue}
+                onChange={(event) => setSectionEditorValue(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    submitSectionEditor();
+                  }
+                  if (event.key === "Escape") {
+                    closeSectionEditor();
+                  }
+                }}
+              />
+              <button
+                className="focusable min-h-11 rounded-capsule bg-accent px-4 text-sm font-semibold text-white"
+                type="button"
+                onClick={submitSectionEditor}
+              >
+                Save
+              </button>
+              <button
+                className="focusable min-h-11 rounded-capsule bg-subsurface px-4 text-sm"
+                type="button"
+                onClick={closeSectionEditor}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
         <div className="space-y-2">
           <div className="flex items-center gap-2">
             <p className="text-xs uppercase tracking-[0.14em] text-muted">Analysis mode</p>
@@ -2205,102 +2393,120 @@ function QuestionEditor({
                     </button>
                   </div>
                   <div className="space-y-2">
-                    <input
-                      className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
-                      placeholder="Child prompt"
-                      value={child.prompt}
-                      onChange={(event) => patchChild(child.id, { prompt: event.target.value })}
-                    />
-                    <input
-                      className="focusable min-h-11 w-full rounded-2xl bg-panel px-3 font-mono text-xs"
-                      placeholder="Child id"
-                      value={child.id}
-                      onChange={(event) => patchChild(child.id, { id: event.target.value })}
-                    />
+                    <div className="space-y-1">
+                      <p className={inputTagClass}>Child prompt</p>
+                      <input
+                        className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
+                        placeholder="Child prompt"
+                        value={child.prompt}
+                        onChange={(event) => patchChild(child.id, { prompt: event.target.value })}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <p className={inputTagClass}>Child id</p>
+                      <input
+                        className="focusable min-h-11 w-full rounded-2xl bg-panel px-3 font-mono text-xs"
+                        placeholder="Child id"
+                        value={child.id}
+                        onChange={(event) => patchChild(child.id, { id: event.target.value })}
+                      />
+                    </div>
                     <div className="grid gap-2 sm:grid-cols-2">
-                      <select
-                        className="focusable min-h-11 rounded-2xl bg-panel px-3"
-                        value={child.inputType}
-                        onChange={(event) =>
-                          patchChild(
-                            child.id,
-                            patchInputType(
-                              event.target.value as InputType,
-                              child,
-                            ) as Partial<CheckInQuestionChild>,
-                          )
-                        }
-                      >
-                        <option value="slider">slider</option>
-                        <option value="multi-choice">multi-choice</option>
-                        <option value="boolean">boolean</option>
-                        <option value="time">time</option>
-                        <option value="text">text</option>
-                      </select>
-                      <select
-                        className="focusable min-h-11 rounded-2xl bg-panel px-3"
-                        value={child.analysisMode}
-                        onChange={(event) =>
-                          patchChild(child.id, {
-                            analysisMode: event.target.value as CheckInQuestion["analysisMode"],
-                          })
-                        }
-                      >
-                        <option value="predictor_next_day">Predictor to next day</option>
-                        <option value="target_same_day">Target to same day</option>
-                      </select>
+                      <div className="space-y-1">
+                        <p className={inputTagClass}>Child input type</p>
+                        <select
+                          className="focusable min-h-11 rounded-2xl bg-panel px-3"
+                          value={child.inputType}
+                          onChange={(event) =>
+                            patchChild(
+                              child.id,
+                              patchInputType(
+                                event.target.value as InputType,
+                                child,
+                              ) as Partial<CheckInQuestionChild>,
+                            )
+                          }
+                        >
+                          <option value="slider">slider</option>
+                          <option value="multi-choice">multi-choice</option>
+                          <option value="boolean">boolean</option>
+                          <option value="time">time</option>
+                          <option value="text">text</option>
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <p className={inputTagClass}>Child analysis mode</p>
+                        <select
+                          className="focusable min-h-11 rounded-2xl bg-panel px-3"
+                          value={child.analysisMode}
+                          onChange={(event) =>
+                            patchChild(child.id, {
+                              analysisMode: event.target.value as CheckInQuestion["analysisMode"],
+                            })
+                          }
+                        >
+                          <option value="predictor_next_day">Predictor to next day</option>
+                          <option value="target_same_day">Target to same day</option>
+                        </select>
+                      </div>
                     </div>
                     {renderFieldMeta({
                       field: child,
                       onFieldPatch: (patch) => patchChild(child.id, patch),
                     })}
                     <div className="grid gap-2 sm:grid-cols-[220px_1fr]">
-                      <select
-                        className="focusable min-h-11 rounded-2xl bg-panel px-3"
-                        value={child.condition.operator}
-                        onChange={(event) =>
-                          updateConditionOperator(
-                            child,
-                            event.target.value as ChildConditionOperator,
-                          )
-                        }
-                      >
-                        {CONDITION_OPERATOR_META.map((operator) => (
-                          <option key={operator.value} value={operator.value}>
-                            {operator.label}
-                          </option>
-                        ))}
-                      </select>
-                      {conditionNeedsValue ? (
-                        <input
+                      <div className="space-y-1">
+                        <p className={inputTagClass}>Condition operator</p>
+                        <select
                           className="focusable min-h-11 rounded-2xl bg-panel px-3"
-                          placeholder="Condition value"
-                          type={
-                            child.condition.operator === "greater_than"
-                            || child.condition.operator === "at_least"
-                              ? "number"
-                              : "text"
+                          value={child.condition.operator}
+                          onChange={(event) =>
+                            updateConditionOperator(
+                              child,
+                              event.target.value as ChildConditionOperator,
+                            )
                           }
-                          value={child.condition.value ?? ""}
-                          onChange={(event) => {
-                            const nextValue =
+                        >
+                          {CONDITION_OPERATOR_META.map((operator) => (
+                            <option key={operator.value} value={operator.value}>
+                              {operator.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <p className={inputTagClass}>Condition value</p>
+                        {conditionNeedsValue ? (
+                          <input
+                            className="focusable min-h-11 rounded-2xl bg-panel px-3"
+                            placeholder="Condition value"
+                            type={
                               child.condition.operator === "greater_than"
                               || child.condition.operator === "at_least"
-                                ? Number(event.target.value)
-                                : event.target.value;
-                            patchChild(child.id, {
-                              condition: {
-                                ...child.condition,
-                                value: nextValue,
-                              },
-                            });
-                          }}
-                        />
-                      ) : (
-                        <p className="flex min-h-11 items-center rounded-2xl bg-panel px-3 text-xs text-muted">
-                          No condition value required.
-                        </p>
-                      )}
+                                ? "number"
+                                : "text"
+                            }
+                            value={child.condition.value ?? ""}
+                            onChange={(event) => {
+                              const nextValue =
+                                child.condition.operator === "greater_than"
+                                || child.condition.operator === "at_least"
+                                  ? Number(event.target.value)
+                                  : event.target.value;
+                              patchChild(child.id, {
+                                condition: {
+                                  ...child.condition,
+                                  value: nextValue,
+                                },
+                              });
+                            }}
+                          />
+                        ) : (
+                          <p className="flex min-h-11 items-center rounded-2xl bg-panel px-3 text-xs text-muted">
+                            No condition value required.
+                          </p>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
