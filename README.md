@@ -22,7 +22,7 @@ GARMIN_PASSWORD=your_password
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
 SMTP_USER=example@gmail.com
-SMTP_PASS=
+SMTP_PASS=<insert_pass>
 ```
 
 3. Start services:
