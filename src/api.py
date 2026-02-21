@@ -22,6 +22,13 @@ from src.db import (
     upsert_checkin_entry,
     upsert_setting_json,
 )
+from src.reminders import (
+    CHECKIN_REMINDER_SETTINGS_KEY,
+    CheckinReminderService,
+    ReminderServiceSettings,
+    default_checkin_reminder_settings,
+    normalize_checkin_reminder_settings,
+)
 from src.sync import run_sync
 
 logger = logging.getLogger(__name__)
@@ -70,6 +77,11 @@ class ApiSettings:
     garmin_email: str
     garmin_password: str
     default_sync_days: int
+    smtp_host: str
+    smtp_port: int
+    smtp_user: str
+    smtp_pass: str
+    timezone: str | None
 
 
 @dataclass(frozen=True)
@@ -685,8 +697,7 @@ def _normalize_dashboard_plots_payload(payload: Any) -> list[dict[str, str]] | N
             if direction_value is None:
                 direction = _default_plot_direction(plot_key)
             elif (
-                isinstance(direction_value, str)
-                and direction_value in PLOT_DIRECTIONS
+                isinstance(direction_value, str) and direction_value in PLOT_DIRECTIONS
             ):
                 direction = direction_value
             else:
@@ -749,6 +760,40 @@ def _save_dashboard_plots_payload(db_path: str, payload: Any) -> list[dict[str, 
     try:
         init_db(connection)
         upsert_setting_json(connection, DASHBOARD_PLOTS_SETTINGS_KEY, normalized)
+    finally:
+        connection.close()
+    return normalized
+
+
+def _normalize_checkin_reminder_settings_payload(
+    payload: Any,
+) -> dict[str, Any] | None:
+    return normalize_checkin_reminder_settings(payload)
+
+
+def _load_checkin_reminder_settings_payload(db_path: str) -> dict[str, Any]:
+    connection = connect_db(db_path)
+    try:
+        init_db(connection)
+        raw_payload = get_setting_json(connection, CHECKIN_REMINDER_SETTINGS_KEY)
+    finally:
+        connection.close()
+    normalized = _normalize_checkin_reminder_settings_payload(raw_payload)
+    if normalized is not None:
+        return normalized
+    return default_checkin_reminder_settings()
+
+
+def _save_checkin_reminder_settings_payload(
+    db_path: str, payload: Any
+) -> dict[str, Any]:
+    normalized = _normalize_checkin_reminder_settings_payload(payload)
+    if normalized is None:
+        raise ValueError("Invalid check-in reminder settings payload")
+    connection = connect_db(db_path)
+    try:
+        init_db(connection)
+        upsert_setting_json(connection, CHECKIN_REMINDER_SETTINGS_KEY, normalized)
     finally:
         connection.close()
     return normalized
@@ -1022,6 +1067,22 @@ class ApiHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, {"plots": plots})
             return
 
+        if parsed.path == "/api/checkin-reminder-settings":
+            try:
+                settings = _load_checkin_reminder_settings_payload(self.db_path)
+            except Exception as exc:  # pragma: no cover - runtime guard
+                logger.exception("Failed to load check-in reminder settings")
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {
+                        "error": "Failed to load check-in reminder settings",
+                        "details": str(exc),
+                    },
+                )
+                return
+            self._send_json(HTTPStatus.OK, settings)
+            return
+
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler signature
@@ -1151,17 +1212,55 @@ class ApiHandler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 self._send_json(
                     HTTPStatus.BAD_REQUEST,
-                    {"error": "Invalid dashboard plot settings payload", "details": str(exc)},
+                    {
+                        "error": "Invalid dashboard plot settings payload",
+                        "details": str(exc),
+                    },
                 )
                 return
             except Exception as exc:  # pragma: no cover - runtime guard
                 logger.exception("Failed to save dashboard plot settings")
                 self._send_json(
                     HTTPStatus.INTERNAL_SERVER_ERROR,
-                    {"error": "Failed to save dashboard plot settings", "details": str(exc)},
+                    {
+                        "error": "Failed to save dashboard plot settings",
+                        "details": str(exc),
+                    },
                 )
                 return
             self._send_json(HTTPStatus.OK, {"plots": normalized})
+            return
+
+        if parsed.path == "/api/checkin-reminder-settings":
+            settings_payload = (
+                raw_payload.get("settings")
+                if isinstance(raw_payload, dict) and "settings" in raw_payload
+                else raw_payload
+            )
+            try:
+                normalized = _save_checkin_reminder_settings_payload(
+                    self.db_path, settings_payload
+                )
+            except ValueError as exc:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {
+                        "error": "Invalid check-in reminder settings payload",
+                        "details": str(exc),
+                    },
+                )
+                return
+            except Exception as exc:  # pragma: no cover - runtime guard
+                logger.exception("Failed to save check-in reminder settings")
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {
+                        "error": "Failed to save check-in reminder settings",
+                        "details": str(exc),
+                    },
+                )
+                return
+            self._send_json(HTTPStatus.OK, normalized)
             return
 
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
@@ -1234,6 +1333,11 @@ def _build_settings() -> ApiSettings:
         garmin_email=env_settings.garmin_email,
         garmin_password=env_settings.garmin_password,
         default_sync_days=env_settings.default_sync_days,
+        smtp_host=env_settings.smtp_host,
+        smtp_port=env_settings.smtp_port,
+        smtp_user=env_settings.smtp_user,
+        smtp_pass=env_settings.smtp_pass,
+        timezone=env_settings.timezone,
     )
 
 
@@ -1250,15 +1354,29 @@ def main() -> int:
     handler = ApiHandler
     handler.db_path = settings.db_path
     handler.settings = settings
-
-    with ThreadingHTTPServer((settings.host, settings.port), handler) as server:
-        logger.info(
-            "Dashboard API listening on %s:%s (db=%s)",
-            settings.host,
-            settings.port,
-            settings.db_path,
+    reminder_service = CheckinReminderService(
+        ReminderServiceSettings(
+            db_path=settings.db_path,
+            smtp_host=settings.smtp_host,
+            smtp_port=settings.smtp_port,
+            smtp_user=settings.smtp_user,
+            smtp_pass=settings.smtp_pass,
+            recipient_email=settings.garmin_email,
         )
-        server.serve_forever()
+    )
+    reminder_service.start()
+
+    try:
+        with ThreadingHTTPServer((settings.host, settings.port), handler) as server:
+            logger.info(
+                "Dashboard API listening on %s:%s (db=%s)",
+                settings.host,
+                settings.port,
+                settings.db_path,
+            )
+            server.serve_forever()
+    finally:
+        reminder_service.stop()
 
     return 0
 

@@ -102,3 +102,8 @@ export interface ExploreSettings {
   scaleMode: "independent" | "normalized";
   lagDays: 0 | 1 | 2;
 }
+
+export interface CheckinReminderSettings {
+  enabled: boolean;
+  notifyAfter: string;
+}

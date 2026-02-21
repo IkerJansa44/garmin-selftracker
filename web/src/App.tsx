@@ -71,11 +71,13 @@ import {
   type QuestionFieldDefinition,
 } from "./lib/questions";
 import {
+  fetchCheckinReminderSettings,
   fetchCheckIns,
   fetchDashboardData,
   fetchDashboardPlotSettings,
   fetchQuestionSettings,
   saveCheckIn,
+  saveCheckinReminderSettings,
   saveDashboardPlotSettings,
   saveQuestionSettings,
   startDateRangeImport,
@@ -88,6 +90,7 @@ import {
   type CheckInQuestion,
   type CheckInQuestionChild,
   type CheckInEntry,
+  type CheckinReminderSettings,
   type CoverageState,
   type ChildConditionOperator,
   type DailyRecord,
@@ -218,6 +221,10 @@ const ENERGY_TARGET_QUESTION_ID = "felt_energized_during_day";
 const IMPORT_POLL_INTERVAL_MS = 5000;
 const DASHBOARD_REFRESH_INTERVAL_MS = 60000;
 const MAX_IMPORT_RANGE_DAYS = 365;
+const DEFAULT_CHECKIN_REMINDER_SETTINGS: CheckinReminderSettings = {
+  enabled: true,
+  notifyAfter: "22:30",
+};
 const GARMIN_PLOT_META: Record<GarminPlotKey, Omit<DashboardPlotVariableOption, "key">> = {
   steps: { label: "Steps", color: "#4f7e65", unit: "steps" },
   calories: { label: "Calories", color: "#8a5a4e", unit: "kcal" },
@@ -277,6 +284,26 @@ function normalizeDashboardPlotPreferences(
   }
 
   return normalized;
+}
+
+function normalizeCheckinReminderSettings(raw: unknown): CheckinReminderSettings {
+  if (!raw || typeof raw !== "object") {
+    return DEFAULT_CHECKIN_REMINDER_SETTINGS;
+  }
+  const payload = raw as Partial<CheckinReminderSettings>;
+  if (typeof payload.enabled !== "boolean") {
+    return DEFAULT_CHECKIN_REMINDER_SETTINGS;
+  }
+  if (
+    typeof payload.notifyAfter !== "string"
+    || !/^([01]\d|2[0-3]):([0-5]\d)$/.test(payload.notifyAfter)
+  ) {
+    return DEFAULT_CHECKIN_REMINDER_SETTINGS;
+  }
+  return {
+    enabled: payload.enabled,
+    notifyAfter: payload.notifyAfter,
+  };
 }
 
 function arePlotPreferencesEqual(
@@ -825,11 +852,20 @@ function App() {
   );
   const [isScrolled, setIsScrolled] = useState(false);
   const [questionLibrary, setQuestionLibrary] = useState<CheckInQuestion[]>(DEFAULT_QUESTIONS);
-  const [selectedQuestionId, setSelectedQuestionId] = useState(DEFAULT_QUESTIONS[0]?.id ?? "");
+  const [selectedQuestionId, setSelectedQuestionId] = useState("");
   const [questionLoadState, setQuestionLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [questionSyncError, setQuestionSyncError] = useState<string | null>(null);
   const [isSavingQuestions, setIsSavingQuestions] = useState(false);
   const lastSavedQuestionsRef = useRef<string>("[]");
+  const [checkinReminderSettings, setCheckinReminderSettings] = useState<CheckinReminderSettings>(
+    DEFAULT_CHECKIN_REMINDER_SETTINGS,
+  );
+  const [checkinReminderLoadState, setCheckinReminderLoadState] = useState<"loading" | "ready" | "error">("loading");
+  const [checkinReminderError, setCheckinReminderError] = useState<string | null>(null);
+  const [isSavingCheckinReminder, setIsSavingCheckinReminder] = useState(false);
+  const lastSavedCheckinReminderRef = useRef<string>(
+    JSON.stringify(DEFAULT_CHECKIN_REMINDER_SETTINGS),
+  );
   const [allRecords, setAllRecords] = useState<DailyRecord[]>([]);
   const [checkinEntriesByDate, setCheckinEntriesByDate] = useState<Record<string, CheckInEntry>>({});
   const [checkinSyncError, setCheckinSyncError] = useState<string | null>(null);
@@ -984,7 +1020,7 @@ function App() {
         const serializedSource = JSON.stringify(sourceQuestions);
         const serializedNext = JSON.stringify(nextQuestions);
         setQuestionLibrary(nextQuestions);
-        setSelectedQuestionId(nextQuestions[0]?.id ?? "");
+        setSelectedQuestionId("");
         lastSavedQuestionsRef.current =
           serializedSource === serializedNext ? serializedNext : serializedSource;
         setQuestionLoadState("ready");
@@ -1050,6 +1086,83 @@ function App() {
       controller.abort();
     };
   }, [questionLibrary, questionLoadState]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    const loadCheckinReminder = async () => {
+      setCheckinReminderLoadState("loading");
+      setCheckinReminderError(null);
+      try {
+        const payload = await fetchCheckinReminderSettings(controller.signal);
+        const normalized = normalizeCheckinReminderSettings(payload);
+        setCheckinReminderSettings(normalized);
+        lastSavedCheckinReminderRef.current = JSON.stringify(normalized);
+        setCheckinReminderLoadState("ready");
+      } catch (error) {
+        if (controller.signal.aborted) {
+          return;
+        }
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Failed to load check-in reminder settings from SQLite.";
+        setCheckinReminderError(message);
+        setCheckinReminderLoadState("error");
+      }
+    };
+
+    void loadCheckinReminder();
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    if (checkinReminderLoadState !== "ready") {
+      return;
+    }
+
+    const serializedSettings = JSON.stringify(checkinReminderSettings);
+    if (serializedSettings === lastSavedCheckinReminderRef.current) {
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => {
+      const saveReminderSettings = async () => {
+        setIsSavingCheckinReminder(true);
+        setCheckinReminderError(null);
+        try {
+          const payload = await saveCheckinReminderSettings(
+            checkinReminderSettings,
+            controller.signal,
+          );
+          const normalized = normalizeCheckinReminderSettings(payload);
+          setCheckinReminderSettings(normalized);
+          lastSavedCheckinReminderRef.current = JSON.stringify(normalized);
+        } catch (error) {
+          if (controller.signal.aborted) {
+            return;
+          }
+          const message =
+            error instanceof Error
+              ? error.message
+              : "Failed to save check-in reminder settings to SQLite.";
+          setCheckinReminderError(message);
+        } finally {
+          if (!controller.signal.aborted) {
+            setIsSavingCheckinReminder(false);
+          }
+        }
+      };
+
+      void saveReminderSettings();
+    }, 350);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      controller.abort();
+    };
+  }, [checkinReminderLoadState, checkinReminderSettings]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -2333,71 +2446,141 @@ function App() {
 
         {activeView === "settings" && (
           <section className="panel gsap-fade p-6 sm:p-8">
-            <article className="rounded-[24px] bg-subsurface p-5">
-              <div className="mb-4 flex items-center justify-between">
-                <div>
-                  <h3 className="text-lg font-semibold">Asked Questions</h3>
+            <div className="space-y-5">
+              <article className="rounded-[24px] bg-subsurface p-5">
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-lg font-semibold">Check-In Reminder</h3>
+                    <p
+                      className={clsx(
+                        "mt-1 text-sm",
+                        checkinReminderError ? "text-error" : "text-muted",
+                      )}
+                    >
+                      {checkinReminderLoadState === "loading"
+                        ? "Loading from SQLite..."
+                        : isSavingCheckinReminder
+                          ? "Saving to SQLite..."
+                          : checkinReminderError
+                            ? `SQLite sync failed: ${checkinReminderError}`
+                            : "Synced with SQLite."}
+                    </p>
+                  </div>
                   <p
                     className={clsx(
-                      "mt-1 text-sm",
-                      questionSyncError ? "text-error" : "text-muted",
+                      "rounded-capsule px-3 py-2 text-xs font-semibold",
+                      checkinReminderSettings.enabled
+                        ? "text-success bg-[color-mix(in_srgb,var(--success)_14%,white)]"
+                        : "text-muted bg-panel",
                     )}
                   >
-                    {questionLoadState === "loading"
-                      ? "Loading from SQLite..."
-                      : isSavingQuestions
-                        ? "Saving to SQLite..."
-                        : questionSyncError
-                          ? `SQLite sync failed: ${questionSyncError}`
-                          : "Synced with SQLite."}
+                    {checkinReminderSettings.enabled
+                      ? `Active · reminder after ${checkinReminderSettings.notifyAfter}`
+                      : "Inactive · reminder disabled"}
                   </p>
                 </div>
-                <button
-                  className="focusable min-h-11 rounded-capsule bg-panel px-4 text-sm shadow-soft"
-                  type="button"
-                  onClick={handleAddQuestion}
-                >
-                  <span className="inline-flex items-center gap-2">
-                    <CirclePlus className="size-4" /> Add
-                  </span>
-                </button>
-              </div>
 
-              <DndContext sensors={sensors} onDragEnd={handleQuestionSortEnd}>
-                <SortableContext
-                  items={questionLibrary.map((question) => question.id)}
-                  strategy={verticalListSortingStrategy}
-                >
-                  <div className="space-y-2">
-                    {questionLibrary.map((question) => {
-                      const isSelected = question.id === selectedQuestionId;
-                      return (
-                        <div key={question.id}>
-                          <SortableQuestionItem
-                            isSelected={isSelected}
-                            question={question}
-                            onSelect={() =>
-                              setSelectedQuestionId((previous) =>
-                                previous === question.id ? "" : question.id,
-                              )
-                            }
-                          />
-                          {isSelected && (
-                            <QuestionEditor
-                              availableSections={editableSectionOptions}
-                              onRenameSection={renameQuestionSection}
-                              question={question}
-                              onDelete={() => removeQuestion(question.id)}
-                              onPatch={(patch) => updateQuestion(question.id, patch)}
-                            />
-                          )}
-                        </div>
-                      );
-                    })}
+                <div className="grid gap-4 md:grid-cols-2">
+                  <label className="flex items-center justify-between rounded-2xl bg-panel p-4 text-sm font-medium">
+                    Enable email reminder
+                    <input
+                      checked={checkinReminderSettings.enabled}
+                      type="checkbox"
+                      onChange={(event) =>
+                        setCheckinReminderSettings((previous) => ({
+                          ...previous,
+                          enabled: event.target.checked,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className="space-y-2 rounded-2xl bg-panel p-4 text-sm">
+                    <span className="block text-xs uppercase tracking-[0.14em] text-muted">
+                      Notify after
+                    </span>
+                    <input
+                      className="focusable min-h-11 w-full rounded-2xl bg-subsurface px-3 disabled:cursor-not-allowed disabled:opacity-60"
+                      disabled={!checkinReminderSettings.enabled}
+                      step={60}
+                      type="time"
+                      value={checkinReminderSettings.notifyAfter}
+                      onChange={(event) =>
+                        setCheckinReminderSettings((previous) => ({
+                          ...previous,
+                          notifyAfter: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
+              </article>
+
+              <article className="rounded-[24px] bg-subsurface p-5">
+                <div className="mb-4 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-lg font-semibold">Asked Questions</h3>
+                    <p
+                      className={clsx(
+                        "mt-1 text-sm",
+                        questionSyncError ? "text-error" : "text-muted",
+                      )}
+                    >
+                      {questionLoadState === "loading"
+                        ? "Loading from SQLite..."
+                        : isSavingQuestions
+                          ? "Saving to SQLite..."
+                          : questionSyncError
+                            ? `SQLite sync failed: ${questionSyncError}`
+                            : "Synced with SQLite."}
+                    </p>
                   </div>
-                </SortableContext>
-              </DndContext>
-            </article>
+                  <button
+                    className="focusable min-h-11 rounded-capsule bg-panel px-4 text-sm shadow-soft"
+                    type="button"
+                    onClick={handleAddQuestion}
+                  >
+                    <span className="inline-flex items-center gap-2">
+                      <CirclePlus className="size-4" /> Add
+                    </span>
+                  </button>
+                </div>
+
+                <DndContext sensors={sensors} onDragEnd={handleQuestionSortEnd}>
+                  <SortableContext
+                    items={questionLibrary.map((question) => question.id)}
+                    strategy={verticalListSortingStrategy}
+                  >
+                    <div className="space-y-2">
+                      {questionLibrary.map((question) => {
+                        const isSelected = question.id === selectedQuestionId;
+                        return (
+                          <div key={question.id}>
+                            <SortableQuestionItem
+                              isSelected={isSelected}
+                              question={question}
+                              onSelect={() =>
+                                setSelectedQuestionId((previous) =>
+                                  previous === question.id ? "" : question.id,
+                                )
+                              }
+                            />
+                            {isSelected && (
+                              <QuestionEditor
+                                availableSections={editableSectionOptions}
+                                onRenameSection={renameQuestionSection}
+                                question={question}
+                                onDelete={() => removeQuestion(question.id)}
+                                onPatch={(patch) => updateQuestion(question.id, patch)}
+                              />
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </SortableContext>
+                </DndContext>
+              </article>
+            </div>
           </section>
         )}
       </main>
