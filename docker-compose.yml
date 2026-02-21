@@ -1,0 +1,17 @@
+services:
+  extractor:
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      SQLITE_DB_PATH: /data/garmin.db
+      DEFAULT_SYNC_DAYS: 2
+    volumes:
+      - sqlite_data:/data
+      - ./src:/app/src
+      - ./sql:/app/sql
+    command: ["python", "-m", "src.cli", "sync", "--days", "2"]
+
+volumes:
+  sqlite_data:
