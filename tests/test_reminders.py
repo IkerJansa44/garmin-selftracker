@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -22,17 +23,21 @@ from src.reminders import (
 def _build_service(
     db_path: Path,
     *,
+    smtp_host: str = "smtp.gmail.com",
+    smtp_user: str = "sender@example.com",
+    smtp_pass: str = "smtp-pass",
+    recipient_email: str = "recipient@example.com",
     now_fn: Callable[[], datetime],
-    send_email_fn: Callable[[str], None],
+    send_email_fn: Callable[[str], None] | None,
 ) -> CheckinReminderService:
     return CheckinReminderService(
         ReminderServiceSettings(
             db_path=str(db_path),
-            smtp_host="smtp.gmail.com",
+            smtp_host=smtp_host,
             smtp_port=587,
-            smtp_user="sender@example.com",
-            smtp_pass="smtp-pass",
-            recipient_email="recipient@example.com",
+            smtp_user=smtp_user,
+            smtp_pass=smtp_pass,
+            recipient_email=recipient_email,
         ),
         now_fn=now_fn,
         send_email_fn=send_email_fn,
@@ -174,3 +179,37 @@ def test_disabled_setting_does_not_send(tmp_path: Path) -> None:
     service.run_once()
 
     assert sent_hours == []
+
+
+def test_missing_smtp_config_skips_send_without_log_spam(
+    tmp_path: Path, caplog
+) -> None:
+    db_path = tmp_path / "garmin.db"
+    service = _build_service(
+        db_path,
+        smtp_host="",
+        smtp_user="",
+        smtp_pass="",
+        now_fn=lambda: datetime(2026, 2, 21, 23, 0),
+        send_email_fn=None,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        service.run_once()
+        service.run_once()
+
+    warning_records = [
+        record
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+        and "Check-in reminders are enabled but email cannot be sent" in record.message
+    ]
+    assert len(warning_records) == 1
+
+    connection = connect_db(str(db_path))
+    try:
+        init_db(connection)
+        last_sent = get_setting_json(connection, CHECKIN_REMINDER_LAST_SENT_KEY)
+        assert last_sent is None
+    finally:
+        connection.close()

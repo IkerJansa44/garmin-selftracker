@@ -111,6 +111,7 @@ class CheckinReminderService:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._thread_lock = threading.Lock()
+        self._smtp_missing_warning_emitted = False
 
     def start(self) -> None:
         with self._thread_lock:
@@ -163,6 +164,8 @@ class CheckinReminderService:
             last_sent_date = parse_last_sent_date(raw_last_sent)
             if last_sent_date == current_date:
                 return
+            if not self._can_send_email():
+                return
 
             try:
                 self._send_email(now_local.strftime("%H:%M"))
@@ -178,6 +181,32 @@ class CheckinReminderService:
             logger.info("Sent check-in reminder email for %s", current_date)
         finally:
             connection.close()
+
+    def _can_send_email(self) -> bool:
+        if self._send_email_fn is not None:
+            return True
+
+        missing_fields: list[str] = []
+        if not self._settings.smtp_host:
+            missing_fields.append("SMTP_HOST")
+        if not self._settings.smtp_user:
+            missing_fields.append("SMTP_USER")
+        if not self._settings.smtp_pass:
+            missing_fields.append("SMTP_PASS")
+        if not self._settings.recipient_email:
+            missing_fields.append("GARMIN_EMAIL")
+
+        if not missing_fields:
+            return True
+
+        if not self._smtp_missing_warning_emitted:
+            logger.warning(
+                "Check-in reminders are enabled but email cannot be sent until required "
+                "configuration is provided: %s",
+                ", ".join(missing_fields),
+            )
+            self._smtp_missing_warning_emitted = True
+        return False
 
     def _send_email(self, current_hour: str) -> None:
         if self._send_email_fn is not None:

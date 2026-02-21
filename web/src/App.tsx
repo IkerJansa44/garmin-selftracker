@@ -852,7 +852,7 @@ function App() {
   );
   const [isScrolled, setIsScrolled] = useState(false);
   const [questionLibrary, setQuestionLibrary] = useState<CheckInQuestion[]>(DEFAULT_QUESTIONS);
-  const [selectedQuestionId, setSelectedQuestionId] = useState(DEFAULT_QUESTIONS[0]?.id ?? "");
+  const [selectedQuestionId, setSelectedQuestionId] = useState("");
   const [questionLoadState, setQuestionLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [questionSyncError, setQuestionSyncError] = useState<string | null>(null);
   const [isSavingQuestions, setIsSavingQuestions] = useState(false);
@@ -1020,7 +1020,7 @@ function App() {
         const serializedSource = JSON.stringify(sourceQuestions);
         const serializedNext = JSON.stringify(nextQuestions);
         setQuestionLibrary(nextQuestions);
-        setSelectedQuestionId(nextQuestions[0]?.id ?? "");
+        setSelectedQuestionId("");
         lastSavedQuestionsRef.current =
           serializedSource === serializedNext ? serializedNext : serializedSource;
         setQuestionLoadState("ready");
