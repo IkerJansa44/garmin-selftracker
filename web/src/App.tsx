@@ -22,6 +22,7 @@ import {
   CartesianGrid,
   ComposedChart,
   Line,
+  ReferenceLine,
   ResponsiveContainer,
   Scatter,
   ScatterChart,
@@ -1345,6 +1346,15 @@ function App() {
                       <div className="mt-4 h-16">
                         <ResponsiveContainer>
                           <ComposedChart data={summary.sparklineData}>
+                            {summary.periodAverage !== null && (
+                              <ReferenceLine
+                                ifOverflow="extendDomain"
+                                stroke="rgba(18,18,18,0.45)"
+                                strokeDasharray="4 4"
+                                strokeWidth={1}
+                                y={summary.periodAverage}
+                              />
+                            )}
                             <Line
                               dataKey="value"
                               dot={false}
@@ -1543,7 +1553,7 @@ function App() {
                   return (
                     <div key={section} className="rounded-[22px] bg-subsurface p-4">
                       <h3 className="mb-3 text-sm font-semibold uppercase tracking-[0.16em] text-muted">{section}</h3>
-                      <div className="grid gap-4 md:grid-cols-2">
+                      <div className="grid items-start gap-4 md:grid-cols-2">
                         {questions.map((question) => (
                           <div key={question.id} className="rounded-2xl bg-panel p-4 shadow-soft">
                             <p className="mb-1 text-sm font-medium">{question.prompt}</p>
