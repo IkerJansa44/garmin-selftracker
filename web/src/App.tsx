@@ -4,8 +4,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type MutableRefObject,
-  type CSSProperties,
 } from "react";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
@@ -13,6 +11,7 @@ import clsx from "clsx";
 import {
   AlertCircle,
   CirclePlus,
+  CircleHelp,
   Download,
   GripVertical,
   LoaderCircle,
@@ -20,13 +19,9 @@ import {
   X,
 } from "lucide-react";
 import {
-  Bar,
-  BarChart,
   CartesianGrid,
   ComposedChart,
-  Legend,
   Line,
-  ReferenceArea,
   ResponsiveContainer,
   Scatter,
   ScatterChart,
@@ -38,8 +33,6 @@ import {
   DndContext,
   type DragEndEvent,
   PointerSensor,
-  useDraggable,
-  useDroppable,
   useSensor,
   useSensors,
 } from "@dnd-kit/core";
@@ -52,26 +45,34 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import {
   DEFAULT_QUESTIONS,
-  DEFAULT_SELECTED_METRICS,
   METRICS,
   RANGE_PRESETS,
   SECTION_ORDER,
 } from "./lib/constants";
 import {
   defaultDraftAnswers,
-  ema,
   formatReadableDate,
   formatTime,
-  histogram,
   mean,
-  pearsonCorrelation,
-  rollingAverage,
-  shiftSeries,
 } from "./lib/mockData";
 import { mealToSleepGapMinutes, parseClockTimeToMinutes } from "./lib/time";
 import {
+  buildCorrelationResult,
+  buildOutcomeOptions,
+  buildPredictorOptions,
+  getOptionLabel,
+  type OutcomeKey,
+  type PredictorKey,
+} from "./lib/correlation";
+import {
+  getVisibleChildren,
+  pruneHiddenChildAnswers,
+} from "./lib/questions";
+import {
+  fetchCheckIns,
   fetchDashboardData,
   fetchQuestionSettings,
+  saveCheckIn,
   saveQuestionSettings,
   startDateRangeImport,
   startRefreshImport,
@@ -79,17 +80,20 @@ import {
 import { usePersistentState } from "./lib/storage";
 import {
   type CheckInQuestion,
+  type CheckInQuestionChild,
+  type CheckInEntry,
   type CoverageState,
+  type ChildConditionOperator,
   type DailyRecord,
-  type ExploreSettings,
   type ImportState,
   type InputType,
   type MetricKey,
+  type QuestionOption,
 } from "./lib/types";
 
 gsap.registerPlugin(ScrollTrigger);
 
-type ViewKey = "dashboard" | "explore" | "lab" | "checkin" | "settings";
+type ViewKey = "dashboard" | "lab" | "checkin" | "settings";
 type MetricDirection = "higher" | "lower";
 
 const IMPORT_STATUS_LABELS: Record<ImportState, string> = {
@@ -111,15 +115,6 @@ const COVERAGE_META: Record<CoverageState, { label: string; tone: string }> = {
     label: "Missing",
     tone: "text-error bg-[color-mix(in_srgb,var(--error)_14%,white)]",
   },
-};
-
-const METRIC_LIMITS: Record<MetricKey, { min: number; max: number }> = {
-  recoveryIndex: { min: 30, max: 110 },
-  sleepScore: { min: 40, max: 100 },
-  restingHr: { min: 42, max: 72 },
-  stress: { min: 10, max: 85 },
-  bodyBattery: { min: 15, max: 100 },
-  trainingReadiness: { min: 20, max: 100 },
 };
 
 const DEFAULT_RANGE_PRESET = 7;
@@ -152,19 +147,51 @@ const EMPTY_COVERAGE: Record<MetricKey, CoverageState> = {
   trainingReadiness: "missing",
 };
 
-const LEGACY_METRIC_KEY_MAP: Record<string, MetricKey> = {
-  hrv: "recoveryIndex",
-};
 const GARMIN_ONLY_QUESTION_IDS = new Set(["training_intensity", "training_type"]);
 const REMOVED_DEFAULT_QUESTION_IDS = new Set([
   "sleep_time",
   "screen_minutes",
   "thermal",
 ]);
+const CAFFEINE_QUESTION_ID = "caffeine_count";
+const CAFFEINE_LAST_TIME_CHILD_ID = "caffeine_last_time";
+const ALCOHOL_QUESTION_ID = "alcohol_units";
+const ALCOHOL_LAST_TIME_CHILD_ID = "alcohol_last_time";
 const MEAL_FINISH_QUESTION_ID = "late_meal";
 const SLEEP_TIME_QUESTION_ID = "sleep_time";
 const IMPORT_POLL_INTERVAL_MS = 5000;
 const MAX_IMPORT_RANGE_DAYS = 365;
+
+function parseImportProgressMessage(message: string): {
+  completedDays: number;
+  totalDays: number;
+  etaLabel: string | null;
+} | null {
+  const segments = message
+    .split("·")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  const progressSegment = segments.find((segment) => /\d+\s*\/\s*\d+\s*days/i.test(segment));
+  if (!progressSegment) {
+    return null;
+  }
+
+  const progressMatch = progressSegment.match(/(\d+)\s*\/\s*(\d+)\s*days/i);
+  if (!progressMatch) {
+    return null;
+  }
+
+  const completedDays = Number(progressMatch[1]);
+  const totalDays = Number(progressMatch[2]);
+  if (!Number.isFinite(completedDays) || !Number.isFinite(totalDays) || totalDays <= 0) {
+    return null;
+  }
+
+  const lastSegment = segments[segments.length - 1] ?? "";
+  const etaLabel = lastSegment === progressSegment ? null : lastSegment;
+
+  return { completedDays, totalDays, etaLabel };
+}
 
 function normalizeRangePreset(raw: unknown, fallback: number): number {
   if (typeof raw !== "number") {
@@ -173,33 +200,12 @@ function normalizeRangePreset(raw: unknown, fallback: number): number {
   return RANGE_PRESETS.includes(raw as (typeof RANGE_PRESETS)[number]) ? raw : fallback;
 }
 
-function normalizeMetricSelection(raw: unknown, fallback: MetricKey[]): MetricKey[] {
-  if (!Array.isArray(raw)) {
-    return fallback;
-  }
-  const availableKeys = new Set<MetricKey>(METRICS.map((metric) => metric.key));
-  const normalized = raw
-    .map((metric) => (typeof metric === "string" ? (LEGACY_METRIC_KEY_MAP[metric] ?? metric) : null))
-    .filter((metric): metric is MetricKey => metric !== null && availableKeys.has(metric as MetricKey));
-  const deduplicated = Array.from(new Set(normalized));
-  return deduplicated.length ? deduplicated : fallback;
-}
-
 function getMetricLabel(metric: MetricKey): string {
   return METRICS.find((definition) => definition.key === metric)?.label ?? metric;
 }
 
 function getMetricColor(metric: MetricKey): string {
   return METRICS.find((definition) => definition.key === metric)?.color ?? "#cc5833";
-}
-
-function getMetricUnit(metric: MetricKey): string {
-  return METRICS.find((definition) => definition.key === metric)?.unit ?? "";
-}
-
-function normalizeValue(metric: MetricKey, value: number): number {
-  const limits = METRIC_LIMITS[metric];
-  return ((value - limits.min) / (limits.max - limits.min)) * 100;
 }
 
 function formatMetricValue(metric: MetricKey, value: number | null): string {
@@ -220,14 +226,6 @@ function formatMetricDelta(metric: MetricKey, value: number): string {
   }
   const amount = Math.abs(value).toFixed(definition.decimals);
   return definition.unit ? `${amount} ${definition.unit}` : amount;
-}
-
-function formatDelta(value: number | null): string {
-  if (value === null || Number.isNaN(value)) {
-    return "--";
-  }
-  const sign = value > 0 ? "+" : "";
-  return `${sign}${value.toFixed(1)}`;
 }
 
 function describeTodayVsAverage(
@@ -308,21 +306,97 @@ function rangeDaysInclusive(fromDate: string, toDate: string): number | null {
   return Math.floor((toParsed.getTime() - fromParsed.getTime()) / 86_400_000) + 1;
 }
 
+function inferAlcoholScore(option: QuestionOption): number | null {
+  const normalized = option.id.trim().toLowerCase();
+  if (normalized === "0") {
+    return 0;
+  }
+  if (normalized === "1") {
+    return 1;
+  }
+  if (normalized === "2") {
+    return 2;
+  }
+  if (normalized === "3plus" || normalized === "3+") {
+    return 3;
+  }
+  const labelNumber = Number(option.label);
+  if (Number.isFinite(labelNumber)) {
+    return labelNumber;
+  }
+  return null;
+}
+
 function migrateQuestionLibrary(questions: CheckInQuestion[]): CheckInQuestion[] {
   const nextQuestions = questions
     .filter((question) => !GARMIN_ONLY_QUESTION_IDS.has(question.id))
     .filter((question) => !REMOVED_DEFAULT_QUESTION_IDS.has(question.id))
     .map((question) => {
-      if (question.id !== MEAL_FINISH_QUESTION_ID) {
-        return question;
-      }
-      return {
-        id: MEAL_FINISH_QUESTION_ID,
-        section: "Nutrition & Substances",
-        prompt: "Finished eating at",
-        inputType: "time",
-        defaultIncluded: question.defaultIncluded,
+      const nextQuestion: CheckInQuestion = {
+        ...question,
+        analysisMode: question.analysisMode ?? "predictor_next_day",
       };
+
+      if (nextQuestion.id === MEAL_FINISH_QUESTION_ID) {
+        nextQuestion.section = "Nutrition & Substances";
+        nextQuestion.prompt = "Finished eating at";
+        nextQuestion.inputType = "time";
+      }
+
+      if (nextQuestion.id === CAFFEINE_QUESTION_ID) {
+        nextQuestion.prompt =
+          nextQuestion.prompt === "Caffeine (count)" ? "Caffeine" : nextQuestion.prompt;
+        nextQuestion.inputLabel = nextQuestion.inputLabel ?? "Count";
+        if (!nextQuestion.children?.length) {
+          nextQuestion.children = [
+            {
+              id: CAFFEINE_LAST_TIME_CHILD_ID,
+              prompt: "Last caffeine drink",
+              inputType: "time",
+              analysisMode: nextQuestion.analysisMode,
+              condition: {
+                operator: "greater_than",
+                value: 0,
+              },
+            },
+          ];
+        }
+      }
+
+      if (nextQuestion.id === ALCOHOL_QUESTION_ID) {
+        nextQuestion.prompt =
+          nextQuestion.prompt === "Alcohol (count)" ? "Alcohol" : nextQuestion.prompt;
+        nextQuestion.inputLabel = nextQuestion.inputLabel ?? "Count";
+        const migratedOptions = (nextQuestion.options ?? []).map((option) => {
+          if (typeof option.score === "number") {
+            return option;
+          }
+          const inferredScore = inferAlcoholScore(option);
+          return inferredScore === null ? option : { ...option, score: inferredScore };
+        });
+        nextQuestion.options = migratedOptions.length ? migratedOptions : [
+          { id: "0", label: "0", score: 0 },
+          { id: "1", label: "1", score: 1 },
+          { id: "2", label: "2", score: 2 },
+          { id: "3plus", label: "3+", score: 3 },
+        ];
+        if (!nextQuestion.children?.length) {
+          nextQuestion.children = [
+            {
+              id: ALCOHOL_LAST_TIME_CHILD_ID,
+              prompt: "Last alcohol drink",
+              inputType: "time",
+              analysisMode: nextQuestion.analysisMode,
+              condition: {
+                operator: "greater_than",
+                value: 0,
+              },
+            },
+          ];
+        }
+      }
+
+      return nextQuestion;
     });
   return nextQuestions;
 }
@@ -338,7 +412,21 @@ function safeParseQuestions(raw: string): CheckInQuestion[] | null {
       typeof question.prompt === "string" &&
       typeof question.section === "string" &&
       typeof question.inputType === "string",
-    );
+    ).map((question) => ({
+      ...question,
+      analysisMode: question.analysisMode ?? "predictor_next_day",
+      children: (question.children ?? [])
+        .filter((child) =>
+          typeof child.id === "string"
+          && typeof child.prompt === "string"
+          && typeof child.inputType === "string"
+          && typeof child.condition?.operator === "string",
+        )
+        .map((child) => ({
+          ...child,
+          analysisMode: child.analysisMode ?? question.analysisMode ?? "predictor_next_day",
+        })),
+    }));
   } catch {
     return null;
   }
@@ -393,38 +481,6 @@ function computeMetricSummary(records: DailyRecord[], metric: MetricKey, rangePr
   };
 }
 
-function buildHistogram(records: DailyRecord[], metric: MetricKey): Array<{ bucket: string; count: number }> {
-  const values = records
-    .map((record) => record.metrics[metric])
-    .filter((value): value is number => value !== null);
-  return histogram(values, 9);
-}
-
-function calculateRegression(xs: number[], ys: number[]): { slope: number; intercept: number } {
-  if (xs.length < 2) {
-    return { slope: 0, intercept: 0 };
-  }
-  const avgX = mean(xs);
-  const avgY = mean(ys);
-  let numerator = 0;
-  let denominator = 0;
-
-  for (let index = 0; index < xs.length; index += 1) {
-    numerator += (xs[index] - avgX) * (ys[index] - avgY);
-    denominator += (xs[index] - avgX) ** 2;
-  }
-
-  if (denominator === 0) {
-    return { slope: 0, intercept: avgY };
-  }
-
-  const slope = numerator / denominator;
-  return {
-    slope,
-    intercept: avgY - slope * avgX,
-  };
-}
-
 function SparklineTooltip({ active, payload }: { active?: boolean; payload?: Array<{ value: number }> }) {
   if (!active || !payload?.length) {
     return null;
@@ -439,9 +495,6 @@ function SparklineTooltip({ active, payload }: { active?: boolean; payload?: Arr
 function App() {
   const appRef = useRef<HTMLDivElement | null>(null);
   const heroRef = useRef<HTMLDivElement | null>(null);
-  const scrubberRef = useRef<HTMLDivElement | null>(null);
-  const chipDockARef = useRef<HTMLDivElement | null>(null);
-  const chipDockBRef = useRef<HTMLDivElement | null>(null);
 
   const [activeView, setActiveView] = useState<ViewKey>("dashboard");
   const [rangePreset, setRangePreset] = usePersistentState<number>(
@@ -449,29 +502,11 @@ function App() {
     DEFAULT_RANGE_PRESET,
     normalizeRangePreset,
   );
-  const [selectedMetrics, setSelectedMetrics] = usePersistentState<MetricKey[]>(
-    "ui.selectedMetrics",
-    DEFAULT_SELECTED_METRICS,
-    normalizeMetricSelection,
-  );
-  const [exploreSettings, setExploreSettings] = usePersistentState<ExploreSettings>(
-    "ui.exploreSettings",
-    {
-      smoothing: "none",
-      baselineBand: true,
-      importGaps: true,
-      scaleMode: "independent",
-      lagDays: 0,
-    },
-  );
   const [draftAnswers, setDraftAnswers] = usePersistentState<Record<string, string | number | boolean>>(
     "ui.checkinDraft",
     defaultDraftAnswers(),
   );
-  const [showQuickCheckin, setShowQuickCheckin] = useState(false);
   const [isScrolled, setIsScrolled] = useState(false);
-  const [scrubIndex, setScrubIndex] = useState(rangePreset - 1);
-  const [distributionMetric, setDistributionMetric] = useState<MetricKey>(selectedMetrics[0] ?? "sleepScore");
   const [questionLibrary, setQuestionLibrary] = useState<CheckInQuestion[]>(DEFAULT_QUESTIONS);
   const [selectedQuestionId, setSelectedQuestionId] = useState(DEFAULT_QUESTIONS[0]?.id ?? "");
   const [questionJsonDraft, setQuestionJsonDraft] = useState("");
@@ -480,6 +515,12 @@ function App() {
   const [isSavingQuestions, setIsSavingQuestions] = useState(false);
   const lastSavedQuestionsRef = useRef<string>("[]");
   const [allRecords, setAllRecords] = useState<DailyRecord[]>([]);
+  const [checkinEntriesByDate, setCheckinEntriesByDate] = useState<Record<string, CheckInEntry>>({});
+  const [checkinSyncError, setCheckinSyncError] = useState<string | null>(null);
+  const [isSavingCheckin, setIsSavingCheckin] = useState(false);
+  const [isLoadingCheckins, setIsLoadingCheckins] = useState(false);
+  const [selectedCheckinDate, setSelectedCheckinDate] = useState(() => formatIsoDateLocal(new Date()));
+  const [checkinSaveMessage, setCheckinSaveMessage] = useState<string | null>(null);
   const [importSummary, setImportSummary] = useState<{
     state: ImportState;
     lastImportAt: string | null;
@@ -491,15 +532,16 @@ function App() {
   });
   const [dataStatus, setDataStatus] = useState<"loading" | "ready" | "error">("loading");
   const [dataError, setDataError] = useState<string | null>(null);
-  const [correlationA, setCorrelationA] = useState<MetricKey>("sleepScore");
-  const [correlationB, setCorrelationB] = useState<MetricKey>("trainingReadiness");
+  const [predictorKey, setPredictorKey] = useState<PredictorKey>("garmin:steps");
+  const [outcomeKey, setOutcomeKey] = useState<OutcomeKey>("metric:sleepScore");
   const [weekdayOnly, setWeekdayOnly] = useState(false);
   const [trainingOnly, setTrainingOnly] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [isImportSubmitting, setIsImportSubmitting] = useState(false);
-  const [importFeedback, setImportFeedback] = useState<{
-    message: string;
-    tone: "success" | "error";
+  const [importFeedback, setImportFeedback] = useState<string | null>(null);
+  const [activeImportRange, setActiveImportRange] = useState<{
+    fromDate: string;
+    toDate: string;
   } | null>(null);
   const [importFromDate, setImportFromDate] = useState(() => {
     const end = new Date();
@@ -560,6 +602,56 @@ function App() {
       controller.abort();
     };
   }, [importSummary.state, loadDashboardData]);
+
+  useEffect(() => {
+    if (importSummary.state === "running") {
+      return;
+    }
+    setActiveImportRange(null);
+  }, [importSummary.state]);
+
+  useEffect(() => {
+    if (!allRecords.length) {
+      setCheckinEntriesByDate({});
+      return;
+    }
+    const controller = new AbortController();
+    const loadCheckins = async () => {
+      const firstDate = allRecords[0]?.date;
+      const lastDate = allRecords[allRecords.length - 1]?.date;
+      if (!firstDate || !lastDate) {
+        return;
+      }
+      const parsedFirstDate = parseIsoDate(firstDate);
+      if (!parsedFirstDate) {
+        return;
+      }
+      setIsLoadingCheckins(true);
+      setCheckinSyncError(null);
+      try {
+        const fromDate = formatIsoDateLocal(
+          new Date(parsedFirstDate.getTime() - 86_400_000),
+        );
+        const payload = await fetchCheckIns(fromDate, lastDate, controller.signal);
+        setCheckinEntriesByDate(
+          Object.fromEntries(payload.entries.map((entry) => [entry.date, entry])),
+        );
+      } catch (error) {
+        if (controller.signal.aborted) {
+          return;
+        }
+        const message =
+          error instanceof Error ? error.message : "Failed to load check-ins from SQLite.";
+        setCheckinSyncError(message);
+      } finally {
+        if (!controller.signal.aborted) {
+          setIsLoadingCheckins(false);
+        }
+      }
+    };
+    void loadCheckins();
+    return () => controller.abort();
+  }, [allRecords]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -644,6 +736,16 @@ function App() {
   }, [questionLibrary, questionLoadState]);
 
   useEffect(() => {
+    const defaults = defaultDraftAnswers(questionLibrary);
+    const entry = checkinEntriesByDate[selectedCheckinDate];
+    setDraftAnswers(entry ? { ...defaults, ...entry.answers } : defaults);
+  }, [checkinEntriesByDate, questionLibrary, selectedCheckinDate, setDraftAnswers]);
+
+  useEffect(() => {
+    setDraftAnswers((previous) => pruneHiddenChildAnswers(questionLibrary, previous));
+  }, [draftAnswers, questionLibrary, setDraftAnswers]);
+
+  useEffect(() => {
     const context = gsap.context(() => {
       gsap.from(".gsap-fade", {
         y: 20,
@@ -679,65 +781,22 @@ function App() {
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
-  useEffect(() => {
-    setScrubIndex(rangePreset - 1);
-  }, [rangePreset]);
+  const predictorOptions = useMemo(() => buildPredictorOptions(questionLibrary), [questionLibrary]);
+  const outcomeOptions = useMemo(() => buildOutcomeOptions(questionLibrary), [questionLibrary]);
 
   useEffect(() => {
-    const valid = selectedMetrics.filter((metric): metric is MetricKey =>
-      METRICS.some((definition) => definition.key === metric),
-    );
-    if (!valid.length) {
-      setSelectedMetrics([DEFAULT_SELECTED_METRICS[0]]);
+    if (!predictorOptions.length || predictorOptions.some((option) => option.key === predictorKey)) {
       return;
     }
-    if (valid.length !== selectedMetrics.length) {
-      setSelectedMetrics(valid);
-    }
-  }, [selectedMetrics, setSelectedMetrics]);
+    setPredictorKey(predictorOptions[0].key as PredictorKey);
+  }, [predictorKey, predictorOptions]);
 
   useEffect(() => {
-    if (!selectedMetrics.includes(distributionMetric)) {
-      setDistributionMetric(selectedMetrics[0] ?? "sleepScore");
-    }
-  }, [selectedMetrics, distributionMetric]);
-
-  useEffect(() => {
-    const dock = correlationA === correlationB ? chipDockBRef.current : chipDockARef.current;
-    if (!dock) {
+    if (!outcomeOptions.length || outcomeOptions.some((option) => option.key === outcomeKey)) {
       return;
     }
-
-    const context = gsap.context(() => {
-      gsap.fromTo(
-        dock,
-        { scale: 0.98, boxShadow: "0 0 0 rgba(204,88,51,0)" },
-        {
-          scale: 1,
-          boxShadow: "0 0 0 8px rgba(204,88,51,0)",
-          duration: 0.35,
-          ease: "power2.out",
-        },
-      );
-    }, dock);
-
-    return () => context.revert();
-  }, [correlationA, correlationB]);
-
-  useEffect(() => {
-    if (!scrubberRef.current) {
-      return;
-    }
-    const context = gsap.context(() => {
-      gsap.fromTo(
-        scrubberRef.current,
-        { scale: 0.996 },
-        { scale: 1, duration: 0.2, ease: "power2.out" },
-      );
-    }, scrubberRef);
-
-    return () => context.revert();
-  }, [scrubIndex]);
+    setOutcomeKey(outcomeOptions[0].key as OutcomeKey);
+  }, [outcomeKey, outcomeOptions]);
 
   const fallbackTodayRecord = useMemo<DailyRecord>(
     () => ({
@@ -748,6 +807,14 @@ function App() {
       importGap: true,
       importState: importSummary.state,
       fellAsleepAt: null,
+      predictors: {
+        steps: null,
+        calories: null,
+        stressAvg: null,
+        bodyBattery: null,
+        sleepSeconds: null,
+        isTrainingDay: false,
+      },
       metrics: EMPTY_METRICS,
       coverage: EMPTY_COVERAGE,
     }),
@@ -765,96 +832,30 @@ function App() {
     [records, rangePreset],
   );
 
-  const seriesData = useMemo(() => {
-    const data = records.map((record) => {
-      const row: Record<string, number | string | boolean | null> = {
-        date: record.date,
-        importGap: record.importGap,
-      };
-      selectedMetrics.forEach((metric) => {
-        row[metric] = record.metrics[metric];
-      });
-      return row;
-    });
-
-    selectedMetrics.forEach((metric) => {
-      const values = data.map((row) => (row[metric] as number | null) ?? null);
-      const smoothed = exploreSettings.smoothing === "ema7" ? ema(values, 7) : values;
-      smoothed.forEach((value, index) => {
-        const normalized = value === null ? null : normalizeValue(metric, value);
-        data[index][`${metric}_display`] =
-          exploreSettings.scaleMode === "normalized" ? normalized : value;
-      });
-
-      const baseline = rollingAverage(values, 14);
-      baseline.forEach((value, index) => {
-        data[index][`${metric}_baseline`] =
-          exploreSettings.scaleMode === "normalized" && value !== null
-            ? normalizeValue(metric, value)
-            : value;
-      });
-    });
-
-    return data;
-  }, [records, selectedMetrics, exploreSettings]);
-
-  const scrubRecord = records[Math.min(scrubIndex, records.length - 1)] ?? todayRecord;
-
-  const lagChartData = useMemo(() => {
-    const sourceMetric = selectedMetrics[0] ?? "sleepScore";
-    const compareMetric = selectedMetrics[1] ?? "trainingReadiness";
-    const sourceValues = records.map((record) => record.metrics[sourceMetric]);
-    const compareValues = records.map((record) => record.metrics[compareMetric]);
-    const shifted = shiftSeries(compareValues, exploreSettings.lagDays);
-
-    return records.map((record, index) => ({
-      date: record.date,
-      source: sourceValues[index],
-      shifted: shifted[index],
-    }));
-  }, [records, selectedMetrics, exploreSettings.lagDays]);
-
-  const histogramData = useMemo(
-    () => buildHistogram(records, distributionMetric),
-    [records, distributionMetric],
+  const checkinsByDateMap = useMemo(
+    () => new Map(Object.values(checkinEntriesByDate).map((entry) => [entry.date, entry])),
+    [checkinEntriesByDate],
   );
 
   const correlationData = useMemo(() => {
-    const pairs = [] as Array<{ x: number; y: number; date: string }>;
-    const lag = exploreSettings.lagDays;
-
-    for (let index = 0; index < records.length - lag; index += 1) {
-      const source = records[index];
-      const target = records[index + lag];
-
-      if (weekdayOnly && (source.weekday === 0 || source.weekday === 6)) {
-        continue;
-      }
-      if (trainingOnly && !source.isTrainingDay) {
-        continue;
-      }
-
-      const x = source.metrics[correlationA];
-      const y = target.metrics[correlationB];
-      if (x === null || y === null) {
-        continue;
-      }
-
-      pairs.push({ x, y, date: source.date });
-    }
-
-    const xs = pairs.map((pair) => pair.x);
-    const ys = pairs.map((pair) => pair.y);
-    const correlation = pearsonCorrelation(xs, ys);
-    const regression = calculateRegression(xs, ys);
-
-    return {
-      points: pairs,
-      correlation,
-      sampleCount: pairs.length,
-      regression,
-    };
-  }, [records, correlationA, correlationB, exploreSettings.lagDays, weekdayOnly, trainingOnly]);
+    return buildCorrelationResult({
+      records,
+      checkinsByDate: checkinsByDateMap,
+      questions: questionLibrary,
+      predictor: predictorKey,
+      outcome: outcomeKey,
+      weekdayOnly,
+      trainingOnly,
+    });
+  }, [
+    checkinsByDateMap,
+    outcomeKey,
+    predictorKey,
+    questionLibrary,
+    records,
+    trainingOnly,
+    weekdayOnly,
+  ]);
 
   const trendLineData = useMemo(() => {
     if (correlationData.points.length < 2) {
@@ -900,6 +901,24 @@ function App() {
     ? `${formatReadableDate(importSummary.lastImportAt.slice(0, 10))} ${formatTime(importSummary.lastImportAt)}`
     : "No completed import yet";
   const maxImportDate = formatIsoDateLocal(new Date());
+  const runningImportProgress = useMemo(
+    () =>
+      importSummary.state === "running"
+        ? parseImportProgressMessage(importSummary.message)
+        : null,
+    [importSummary.message, importSummary.state],
+  );
+  const runningImportProgressPercent = runningImportProgress
+    ? Math.max(
+        0,
+        Math.min(
+          100,
+          Math.round((runningImportProgress.completedDays / runningImportProgress.totalDays) * 100),
+        ),
+      )
+    : 0;
+  const runningImportEtaLabel = runningImportProgress?.etaLabel ?? "calculating...";
+  const runningImportRange = activeImportRange;
 
   const validateImportRange = (fromDate: string, toDate: string): string | null => {
     const fromParsed = parseIsoDate(fromDate);
@@ -932,14 +951,14 @@ function App() {
     setImportFeedback(null);
     try {
       const response = await startRefreshImport();
-      setImportFeedback({
-        tone: "success",
-        message: `Import started for ${response.days} day${response.days === 1 ? "" : "s"} (${response.fromDate} to ${response.toDate}).`,
+      setActiveImportRange({
+        fromDate: response.fromDate,
+        toDate: response.toDate,
       });
       await loadDashboardData({ setLoading: false });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to trigger refresh import.";
-      setImportFeedback({ tone: "error", message });
+      setImportFeedback(message);
     } finally {
       setIsImportSubmitting(false);
     }
@@ -948,42 +967,45 @@ function App() {
   const handleDateImport = async () => {
     const validationError = validateImportRange(importFromDate, importToDate);
     if (validationError) {
-      setImportFeedback({ tone: "error", message: validationError });
+      setImportFeedback(validationError);
       return;
     }
     setIsImportSubmitting(true);
     setImportFeedback(null);
     try {
       const response = await startDateRangeImport(importFromDate, importToDate);
-      setImportFeedback({
-        tone: "success",
-        message: `Import started for ${response.fromDate} to ${response.toDate}.`,
+      setActiveImportRange({
+        fromDate: response.fromDate,
+        toDate: response.toDate,
       });
       setShowImportModal(false);
       await loadDashboardData({ setLoading: false });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to trigger date range import.";
-      setImportFeedback({ tone: "error", message });
+      setImportFeedback(message);
     } finally {
       setIsImportSubmitting(false);
     }
   };
 
-  const handleToggleMetric = (metric: MetricKey) => {
-    setSelectedMetrics((previous) => {
-      if (previous.includes(metric)) {
-        if (previous.length === 1) {
-          return previous;
-        }
-        return previous.filter((entry) => entry !== metric);
-      }
-      return [...previous, metric];
-    });
-  };
-
-  const handleQuickSave = () => {
-    setShowQuickCheckin(false);
-    setDraftAnswers(defaultDraftAnswers());
+  const handleQuickSave = async () => {
+    setIsSavingCheckin(true);
+    setCheckinSaveMessage(null);
+    setCheckinSyncError(null);
+    try {
+      const payload = await saveCheckIn(selectedCheckinDate, draftAnswers);
+      setCheckinEntriesByDate((previous) => ({
+        ...previous,
+        [payload.entry.date]: payload.entry,
+      }));
+      setCheckinSaveMessage(`Saved check-in for ${formatReadableDate(payload.entry.date)}.`);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to save check-in to SQLite.";
+      setCheckinSyncError(message);
+    } finally {
+      setIsSavingCheckin(false);
+    }
   };
 
   const handleAddQuestion = () => {
@@ -993,6 +1015,7 @@ function App() {
       section: "Recovery",
       prompt: "New question",
       inputType: "text",
+      analysisMode: "predictor_next_day",
       defaultIncluded: true,
     };
     setQuestionLibrary((previous) => [...previous, question]);
@@ -1028,51 +1051,23 @@ function App() {
     });
   };
 
-  const handleCorrelationDragEnd = (event: DragEndEvent) => {
-    if (!event.over) {
-      return;
-    }
-    const metric = event.active.id as MetricKey;
-    if (event.over.id === "dock-a") {
-      setCorrelationA(metric);
-    }
-    if (event.over.id === "dock-b") {
-      setCorrelationB(metric);
-    }
-  };
-
-  const scrubberLabel = useMemo(() => {
-    if (!scrubRecord) {
-      return "";
-    }
-
-    const deltas = selectedMetrics
-      .map((metric) => {
-        const index = records.findIndex((record) => record.date === scrubRecord.date);
-        if (index <= 0) {
-          return `${getMetricLabel(metric)} --`;
-        }
-        const previous = records[index - 1].metrics[metric];
-        const current = scrubRecord.metrics[metric];
-        if (current === null || previous === null) {
-          return `${getMetricLabel(metric)} --`;
-        }
-        return `${getMetricLabel(metric)} ${formatDelta(current - previous)}`;
-      })
-      .join(" · ");
-
-    return `${formatReadableDate(scrubRecord.date)} · ${deltas}`;
-  }, [scrubRecord, selectedMetrics, records]);
-
   const topViewButtons: Array<{ key: ViewKey; label: string }> = [
     { key: "dashboard", label: "Dashboard" },
-    { key: "explore", label: "Explore" },
     { key: "lab", label: "Correlation" },
     { key: "checkin", label: "Check-In" },
     { key: "settings", label: "Settings" },
   ];
 
-  const renderQuestionInput = (question: CheckInQuestion) => {
+  const updateDraftAnswer = useCallback(
+    (fieldId: string, nextValue: string | number | boolean) => {
+      setDraftAnswers((previous) =>
+        pruneHiddenChildAnswers(questionLibrary, { ...previous, [fieldId]: nextValue }),
+      );
+    },
+    [questionLibrary, setDraftAnswers],
+  );
+
+  const renderQuestionInput = (question: CheckInQuestion | CheckInQuestionChild) => {
     const value = draftAnswers[question.id];
 
     if (question.inputType === "slider") {
@@ -1085,9 +1080,7 @@ function App() {
             step={question.step ?? 1}
             type="range"
             value={typeof value === "number" ? value : question.min ?? 0}
-            onChange={(event) =>
-              setDraftAnswers((previous) => ({ ...previous, [question.id]: Number(event.target.value) }))
-            }
+            onChange={(event) => updateDraftAnswer(question.id, Number(event.target.value))}
           />
           <div className="metric-number text-sm text-muted">{String(value ?? question.min ?? 0)}</div>
         </div>
@@ -1107,7 +1100,7 @@ function App() {
                   selected ? "bg-accent text-white" : "bg-subsurface text-ink",
                 )}
                 type="button"
-                onClick={() => setDraftAnswers((previous) => ({ ...previous, [question.id]: option.id }))}
+                onClick={() => updateDraftAnswer(question.id, option.id)}
               >
                 {option.label}
               </button>
@@ -1128,7 +1121,7 @@ function App() {
                 value === candidate ? "bg-accent text-white" : "bg-subsurface text-ink",
               )}
               type="button"
-              onClick={() => setDraftAnswers((previous) => ({ ...previous, [question.id]: candidate }))}
+              onClick={() => updateDraftAnswer(question.id, candidate)}
             >
               {candidate ? "Yes" : "No"}
             </button>
@@ -1153,10 +1146,7 @@ function App() {
             value={sliderMinutes}
             onChange={(event) => {
               const minutes = Number(event.target.value);
-              setDraftAnswers((previous) => ({
-                ...previous,
-                [question.id]: formatMinutesAsClock(minutes),
-              }));
+              updateDraftAnswer(question.id, formatMinutesAsClock(minutes));
             }}
           />
           <div className="metric-number text-sm text-muted">{clockValue}</div>
@@ -1169,7 +1159,7 @@ function App() {
         className="focusable min-h-24 w-full rounded-2xl bg-subsurface p-3"
         placeholder="Optional note"
         value={typeof value === "string" ? value : ""}
-        onChange={(event) => setDraftAnswers((previous) => ({ ...previous, [question.id]: event.target.value }))}
+        onChange={(event) => updateDraftAnswer(question.id, event.target.value)}
       />
     );
   };
@@ -1193,9 +1183,24 @@ function App() {
                 aria-hidden="true"
                 className="h-10 w-px shrink-0 bg-[rgba(18,18,18,0.14)]"
               />
-              <div className="shrink-0">
+              <div className="max-w-[360px] shrink-0 whitespace-normal">
                 <p className="text-xs uppercase tracking-[0.14em] text-muted">Import</p>
-                <p className="text-sm font-semibold">{importSummary.message}</p>
+                {importSummary.state === "running" && runningImportProgress && runningImportRange ? (
+                  <>
+                    <p className="text-sm font-semibold leading-snug">
+                      Importing from {runningImportRange.fromDate} to {runningImportRange.toDate} ETA{" "}
+                      {runningImportEtaLabel}
+                    </p>
+                    <div className="mt-2 h-2.5 w-full overflow-hidden rounded-capsule bg-subsurface">
+                      <div
+                        className="h-full rounded-capsule bg-[color-mix(in_srgb,var(--warning)_76%,white)] transition-[width] duration-500"
+                        style={{ width: `${runningImportProgressPercent}%` }}
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-sm font-semibold">{importSummary.message}</p>
+                )}
                 <p className="metric-number text-xs text-muted">
                   Last import {lastImportLabel}
                 </p>
@@ -1235,16 +1240,7 @@ function App() {
                   Import dates
                 </button>
               </div>
-              {importFeedback && (
-                <p
-                  className={clsx(
-                    "text-sm font-medium",
-                    importFeedback.tone === "success" ? "text-success" : "text-error",
-                  )}
-                >
-                  {importFeedback.message}
-                </p>
-              )}
+              {importFeedback && <p className="text-sm font-medium text-error">{importFeedback}</p>}
             </div>
             <div
               aria-hidden="true"
@@ -1395,426 +1391,114 @@ function App() {
           </section>
         )}
 
-        {activeView === "explore" && (
-          <section className="panel gsap-fade space-y-6 p-6 sm:p-8">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <h2 className="text-2xl font-semibold tracking-tight">Chart Canvas</h2>
-              <div className="flex flex-wrap gap-2">
-                {METRICS.map((metric) => {
-                  const active = selectedMetrics.includes(metric.key);
-                  return (
-                    <button
-                      key={metric.key}
-                      className={clsx(
-                        "focusable min-h-11 rounded-capsule px-4 text-sm font-semibold shadow-soft transition",
-                        active ? "bg-accent text-white" : "bg-subsurface text-muted",
-                      )}
-                      type="button"
-                      onClick={() => handleToggleMetric(metric.key)}
-                    >
-                      {metric.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="grid gap-3 rounded-[26px] bg-subsurface p-4 lg:grid-cols-6">
-              <div className="lg:col-span-2">
-                <label className="text-xs uppercase tracking-[0.16em] text-muted">Smoothing</label>
-                <div className="mt-2 flex gap-2">
-                  {[
-                    { key: "none", label: "None" },
-                    { key: "ema7", label: "7-day EMA" },
-                  ].map((option) => (
-                    <button
-                      key={option.key}
-                      className={clsx(
-                        "focusable min-h-11 rounded-capsule px-3 text-sm shadow-soft",
-                        exploreSettings.smoothing === option.key ? "bg-accent text-white" : "bg-panel",
-                      )}
-                      type="button"
-                      onClick={() =>
-                        setExploreSettings((previous) => ({
-                          ...previous,
-                          smoothing: option.key as ExploreSettings["smoothing"],
-                        }))
-                      }
-                    >
-                      {option.label}
-                    </button>
+        {activeView === "lab" && (
+          <section className="panel gsap-fade grid gap-5 p-6 sm:grid-cols-[340px_1fr] sm:p-8">
+            <aside className="space-y-4 rounded-[24px] bg-subsurface p-4">
+              <h2 className="text-xl font-semibold tracking-tight">Correlation Lab</h2>
+              <p className="text-sm text-muted">
+                Predictors are aligned to the previous day. Outcomes use the selected day.
+              </p>
+              <label className="space-y-2 text-sm">
+                <span className="block text-xs uppercase tracking-[0.16em] text-muted">Predictor (X)</span>
+                <select
+                  className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
+                  value={predictorKey}
+                  onChange={(event) => setPredictorKey(event.target.value as PredictorKey)}
+                >
+                  {predictorOptions.map((option) => (
+                    <option key={option.key} value={option.key}>{option.label}</option>
                   ))}
-                </div>
-              </div>
-
-              <ToggleBlock
-                checked={exploreSettings.baselineBand}
-                label="Baseline band"
-                onChange={(value) =>
-                  setExploreSettings((previous) => ({ ...previous, baselineBand: value }))
-                }
-              />
-              <ToggleBlock
-                checked={exploreSettings.importGaps}
-                label="Import gaps"
-                onChange={(value) => setExploreSettings((previous) => ({ ...previous, importGaps: value }))}
-              />
-              <div>
-                <label className="text-xs uppercase tracking-[0.16em] text-muted">Scale Mode</label>
-                <div className="mt-2 flex gap-2">
-                  {[
-                    { key: "independent", label: "Independent" },
-                    { key: "normalized", label: "Normalized" },
-                  ].map((mode) => (
-                    <button
-                      key={mode.key}
-                      className={clsx(
-                        "focusable min-h-11 rounded-capsule px-3 text-sm shadow-soft",
-                        exploreSettings.scaleMode === mode.key ? "bg-accent text-white" : "bg-panel",
-                      )}
-                      type="button"
-                      onClick={() =>
-                        setExploreSettings((previous) => ({
-                          ...previous,
-                          scaleMode: mode.key as ExploreSettings["scaleMode"],
-                        }))
-                      }
-                    >
-                      {mode.label}
-                    </button>
+                </select>
+              </label>
+              <label className="space-y-2 text-sm">
+                <span className="block text-xs uppercase tracking-[0.16em] text-muted">Outcome (Y)</span>
+                <select
+                  className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
+                  value={outcomeKey}
+                  onChange={(event) => setOutcomeKey(event.target.value as OutcomeKey)}
+                >
+                  {outcomeOptions.map((option) => (
+                    <option key={option.key} value={option.key}>{option.label}</option>
                   ))}
-                </div>
-              </div>
-              <div>
-                <label className="text-xs uppercase tracking-[0.16em] text-muted">Lag View</label>
-                <div className="mt-2 flex gap-2">
-                  {[0, 1, 2].map((lag) => (
-                    <button
-                      key={lag}
-                      className={clsx(
-                        "focusable min-h-11 rounded-capsule px-3 text-sm shadow-soft",
-                        exploreSettings.lagDays === lag ? "bg-accent text-white" : "bg-panel",
-                      )}
-                      type="button"
-                      onClick={() =>
-                        setExploreSettings((previous) => ({
-                          ...previous,
-                          lagDays: lag as 0 | 1 | 2,
-                        }))
-                      }
-                    >
-                      +{lag}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
+                </select>
+              </label>
+              <p className="rounded-2xl bg-panel p-3 text-xs text-muted">
+                Questions marked as target variables are outcomes only and stay on the same day.
+              </p>
+              <label className="flex items-center justify-between rounded-2xl bg-panel p-3 text-sm">
+                Weekdays only
+                <input
+                  checked={weekdayOnly}
+                  type="checkbox"
+                  onChange={(event) => setWeekdayOnly(event.target.checked)}
+                />
+              </label>
+              <label className="flex items-center justify-between rounded-2xl bg-panel p-3 text-sm">
+                Training days only
+                <input
+                  checked={trainingOnly}
+                  type="checkbox"
+                  onChange={(event) => setTrainingOnly(event.target.checked)}
+                />
+              </label>
+            </aside>
 
-            <article className="rounded-[26px] bg-panel p-5 shadow-soft">
-              <header className="mb-3 flex items-center justify-between">
-                <h3 className="text-lg font-semibold">Time Series</h3>
-                <p className="text-sm text-muted">Independent y-axis per metric by default</p>
+            <article className="rounded-[24px] bg-panel p-5 shadow-soft">
+              <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-semibold tracking-tight">
+                    {getOptionLabel(predictorOptions, predictorKey, predictorKey)} vs {getOptionLabel(outcomeOptions, outcomeKey, outcomeKey)}
+                  </h3>
+                  <p className="metric-number text-sm text-muted">
+                    r = {correlationData.correlation.toFixed(2)} · N={correlationData.sampleCount}
+                  </p>
+                </div>
+                {correlationData.sampleCount < 20 && (
+                  <p className="rounded-capsule bg-[color-mix(in_srgb,var(--warning)_16%,white)] px-3 py-2 text-sm text-warning">
+                    Low sample size (N={correlationData.sampleCount}). Interpret cautiously.
+                  </p>
+                )}
               </header>
-              <div className="h-[360px]">
+
+              <div className="h-[420px]">
                 <ResponsiveContainer>
-                  <ComposedChart data={seriesData} margin={{ top: 12, right: 24, left: 0, bottom: 0 }}>
-                    <CartesianGrid stroke="rgba(18,18,18,0.06)" strokeDasharray="2 8" vertical={false} />
+                  <ScatterChart>
+                    <CartesianGrid stroke="rgba(18,18,18,0.06)" strokeDasharray="3 6" />
                     <XAxis
-                      dataKey="date"
-                      tick={{ fill: "rgba(18,18,18,0.62)", fontSize: 12 }}
-                      tickLine={false}
+                      dataKey="x"
+                      name={getOptionLabel(predictorOptions, predictorKey, predictorKey)}
                       axisLine={false}
-                      minTickGap={24}
-                      tickFormatter={(value) => new Date(`${value}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                      tickLine={false}
+                      tick={{ fontSize: 12 }}
                     />
-                    {exploreSettings.scaleMode === "normalized" ? (
-                      <YAxis
-                        yAxisId="shared"
-                        domain={[0, 100]}
-                        tick={{ fill: "rgba(18,18,18,0.62)", fontSize: 12 }}
-                        axisLine={false}
-                        tickLine={false}
-                      />
-                    ) : (
-                      selectedMetrics.map((metric, index) => (
-                        <YAxis
-                          key={metric}
-                          yAxisId={metric}
-                          orientation={index % 2 === 0 ? "left" : "right"}
-                          hide={index > 1}
-                          domain={["auto", "auto"]}
-                          axisLine={false}
-                          tickLine={false}
-                          tick={{ fill: "rgba(18,18,18,0.62)", fontSize: 12 }}
-                        />
-                      ))
-                    )}
+                    <YAxis
+                      dataKey="y"
+                      name={getOptionLabel(outcomeOptions, outcomeKey, outcomeKey)}
+                      axisLine={false}
+                      tickLine={false}
+                      tick={{ fontSize: 12 }}
+                    />
                     <Tooltip
-                      contentStyle={{
-                        borderRadius: 20,
-                        border: "none",
-                        boxShadow: "0 12px 30px rgba(18,18,18,0.08)",
-                        background: "#fff",
+                      cursor={{ strokeDasharray: "3 4" }}
+                      formatter={(value: number, key) => [`${value.toFixed(1)}`, key]}
+                      labelFormatter={(label, payload) => {
+                        const date = payload?.[0]?.payload?.date;
+                        return date ? formatReadableDate(date) : String(label);
                       }}
-                      formatter={(value: number | null, key) => {
-                        const metric = String(key).replace("_display", "") as MetricKey;
-                        if (value === null) {
-                          return ["--", getMetricLabel(metric)];
-                        }
-                        if (exploreSettings.scaleMode === "normalized") {
-                          return [`${value.toFixed(1)}%`, getMetricLabel(metric)];
-                        }
-                        return [`${value.toFixed(1)} ${getMetricUnit(metric)}`, getMetricLabel(metric)];
-                      }}
-                      labelFormatter={(value) => formatReadableDate(String(value))}
                     />
-                    <Legend />
-                    {exploreSettings.importGaps &&
-                      seriesData
-                        .filter((entry) => entry.importGap)
-                        .map((entry) => (
-                          <ReferenceArea
-                            key={`gap-${entry.date}`}
-                            fill="rgba(176,88,79,0.10)"
-                            x1={entry.date as string}
-                            x2={entry.date as string}
-                          />
-                        ))}
-                    {selectedMetrics.map((metric) => (
-                      <Line
-                        key={metric}
-                        yAxisId={exploreSettings.scaleMode === "normalized" ? "shared" : metric}
-                        type="monotone"
-                        dataKey={`${metric}_display`}
-                        name={getMetricLabel(metric)}
-                        stroke={getMetricColor(metric)}
-                        dot={false}
-                        strokeWidth={2.25}
-                        isAnimationActive={false}
-                      />
-                    ))}
-                    {exploreSettings.baselineBand &&
-                      selectedMetrics.map((metric) => (
-                        <Line
-                          key={`${metric}-baseline`}
-                          yAxisId={exploreSettings.scaleMode === "normalized" ? "shared" : metric}
-                          type="monotone"
-                          dataKey={`${metric}_baseline`}
-                          name={`${getMetricLabel(metric)} baseline`}
-                          stroke="rgba(18,18,18,0.28)"
-                          strokeDasharray="3 8"
-                          dot={false}
-                          strokeWidth={1.1}
-                          isAnimationActive={false}
-                        />
-                      ))}
-                  </ComposedChart>
+                    <Scatter data={correlationData.points} fill={getMetricColor("sleepScore")} />
+                    <Scatter
+                      data={trendLineData}
+                      fill="transparent"
+                      line={{ stroke: "#CC5833", strokeWidth: 2 }}
+                      shape={() => null}
+                      legendType="none"
+                      name="Trend"
+                    />
+                  </ScatterChart>
                 </ResponsiveContainer>
               </div>
             </article>
-
-            <div className="grid gap-5 xl:grid-cols-2">
-              <article className="rounded-[26px] bg-panel p-5 shadow-soft">
-                <header className="mb-3 flex items-center justify-between">
-                  <h3 className="text-lg font-semibold">Distribution</h3>
-                  <select
-                    className="focusable min-h-11 rounded-capsule bg-subsurface px-3 text-sm"
-                    value={distributionMetric}
-                    onChange={(event) => setDistributionMetric(event.target.value as MetricKey)}
-                  >
-                    {selectedMetrics.map((metric) => (
-                      <option key={metric} value={metric}>
-                        {getMetricLabel(metric)}
-                      </option>
-                    ))}
-                  </select>
-                </header>
-                <div className="h-[240px]">
-                  <ResponsiveContainer>
-                    <BarChart data={histogramData}>
-                      <CartesianGrid stroke="rgba(18,18,18,0.05)" vertical={false} />
-                      <XAxis dataKey="bucket" tickLine={false} axisLine={false} tick={{ fontSize: 12 }} />
-                      <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12 }} />
-                      <Tooltip />
-                      <Bar dataKey="count" fill={getMetricColor(distributionMetric)} radius={[12, 12, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </article>
-
-              <article className="rounded-[26px] bg-panel p-5 shadow-soft">
-                <header className="mb-3 flex items-center justify-between">
-                  <h3 className="text-lg font-semibold">Lag View (+{exploreSettings.lagDays})</h3>
-                  <p className="text-sm text-muted">Source vs shifted comparison</p>
-                </header>
-                <div className="h-[240px]">
-                  <ResponsiveContainer>
-                    <ComposedChart data={lagChartData}>
-                      <CartesianGrid stroke="rgba(18,18,18,0.06)" vertical={false} />
-                      <XAxis dataKey="date" hide />
-                      <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12 }} />
-                      <Tooltip />
-                      <Line type="monotone" dataKey="source" stroke={getMetricColor(selectedMetrics[0] ?? "sleepScore")} dot={false} />
-                      <Line
-                        type="monotone"
-                        dataKey="shifted"
-                        stroke={getMetricColor(selectedMetrics[1] ?? "trainingReadiness")}
-                        strokeDasharray="6 4"
-                        dot={false}
-                      />
-                    </ComposedChart>
-                  </ResponsiveContainer>
-                </div>
-              </article>
-            </div>
-
-            <article ref={scrubberRef} className="rounded-[26px] bg-subsurface p-5 shadow-inset">
-              <div className="mb-3 flex items-center justify-between">
-                <h3 className="text-sm font-semibold uppercase tracking-[0.16em] text-muted">Ceramic Scrubber</h3>
-                <span className="metric-number text-sm text-ink">{scrubberLabel}</span>
-              </div>
-              <input
-                className="focusable h-12 w-full cursor-pointer accent-accent"
-                max={Math.max(records.length - 1, 0)}
-                min={0}
-                step={1}
-                type="range"
-                value={Math.min(scrubIndex, records.length - 1)}
-                onChange={(event) => setScrubIndex(Number(event.target.value))}
-              />
-            </article>
-          </section>
-        )}
-
-        {activeView === "lab" && (
-          <section className="panel gsap-fade grid gap-5 p-6 sm:grid-cols-[340px_1fr] sm:p-8">
-            <DndContext sensors={sensors} onDragEnd={handleCorrelationDragEnd}>
-              <aside className="space-y-4 rounded-[24px] bg-subsurface p-4">
-                <h2 className="text-xl font-semibold tracking-tight">Correlation Lab</h2>
-
-                <div>
-                  <p className="text-xs uppercase tracking-[0.16em] text-muted">Chip Dock</p>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {METRICS.map((metric) => (
-                      <DraggableMetricChip key={metric.key} metric={metric.key} />
-                    ))}
-                  </div>
-                </div>
-
-                <DropDock
-                  refObject={chipDockARef}
-                  title="A"
-                  metric={correlationA}
-                  dockId="dock-a"
-                />
-                <DropDock
-                  refObject={chipDockBRef}
-                  title="B"
-                  metric={correlationB}
-                  dockId="dock-b"
-                />
-
-                <div>
-                  <p className="text-xs uppercase tracking-[0.16em] text-muted">Lag</p>
-                  <div className="mt-2 flex gap-2">
-                    {[0, 1, 2].map((lag) => (
-                      <button
-                        key={lag}
-                        className={clsx(
-                          "focusable min-h-11 rounded-capsule px-4 text-sm shadow-soft",
-                          exploreSettings.lagDays === lag ? "bg-accent text-white" : "bg-panel",
-                        )}
-                        type="button"
-                        onClick={() =>
-                          setExploreSettings((previous) => ({
-                            ...previous,
-                            lagDays: lag as 0 | 1 | 2,
-                          }))
-                        }
-                      >
-                        +{lag}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <label className="flex items-center justify-between rounded-2xl bg-panel p-3 text-sm">
-                  Weekdays only
-                  <input
-                    checked={weekdayOnly}
-                    type="checkbox"
-                    onChange={(event) => setWeekdayOnly(event.target.checked)}
-                  />
-                </label>
-                <label className="flex items-center justify-between rounded-2xl bg-panel p-3 text-sm">
-                  Training days only
-                  <input
-                    checked={trainingOnly}
-                    type="checkbox"
-                    onChange={(event) => setTrainingOnly(event.target.checked)}
-                  />
-                </label>
-              </aside>
-
-              <article className="rounded-[24px] bg-panel p-5 shadow-soft">
-                <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-lg font-semibold tracking-tight">
-                      {getMetricLabel(correlationA)} vs {getMetricLabel(correlationB)}
-                    </h3>
-                    <p className="metric-number text-sm text-muted">
-                      r = {correlationData.correlation.toFixed(2)} · N={correlationData.sampleCount}
-                    </p>
-                  </div>
-                  {correlationData.sampleCount < 20 && (
-                    <p className="rounded-capsule bg-[color-mix(in_srgb,var(--warning)_16%,white)] px-3 py-2 text-sm text-warning">
-                      Low sample size (N={correlationData.sampleCount}). Interpret cautiously.
-                    </p>
-                  )}
-                </header>
-
-                <div className="h-[420px]">
-                  <ResponsiveContainer>
-                    <ScatterChart>
-                      <CartesianGrid stroke="rgba(18,18,18,0.06)" strokeDasharray="3 6" />
-                      <XAxis
-                        dataKey="x"
-                        name={getMetricLabel(correlationA)}
-                        unit={getMetricUnit(correlationA)}
-                        axisLine={false}
-                        tickLine={false}
-                        tick={{ fontSize: 12 }}
-                      />
-                      <YAxis
-                        dataKey="y"
-                        name={getMetricLabel(correlationB)}
-                        unit={getMetricUnit(correlationB)}
-                        axisLine={false}
-                        tickLine={false}
-                        tick={{ fontSize: 12 }}
-                      />
-                      <Tooltip
-                        cursor={{ strokeDasharray: "3 4" }}
-                        formatter={(value: number, key) => [`${value.toFixed(1)}`, key]}
-                        labelFormatter={(label, payload) => {
-                          const date = payload?.[0]?.payload?.date;
-                          return date ? formatReadableDate(date) : String(label);
-                        }}
-                      />
-                      <Scatter data={correlationData.points} fill={getMetricColor(correlationA)} />
-                      <Scatter
-                        data={trendLineData}
-                        fill="transparent"
-                        line={{ stroke: "#CC5833", strokeWidth: 2 }}
-                        shape={() => null}
-                        legendType="none"
-                        name="Trend"
-                      />
-                    </ScatterChart>
-                  </ResponsiveContainer>
-                </div>
-              </article>
-            </DndContext>
           </section>
         )}
 
@@ -1822,14 +1506,32 @@ function App() {
           <section className="gsap-fade">
             <article className="panel p-6 sm:p-8">
               <div className="mb-6 flex items-center justify-between">
-                <h2 className="text-2xl font-semibold tracking-tight">Today's Check-In</h2>
-                <button
-                  className="focusable min-h-11 rounded-capsule bg-subsurface px-4 text-sm font-semibold shadow-soft"
-                  type="button"
-                  onClick={() => setShowQuickCheckin(true)}
-                >
-                  Launch modal
-                </button>
+                <div>
+                  <h2 className="text-2xl font-semibold tracking-tight">Daily Check-In</h2>
+                  <p className="mt-1 text-sm text-muted">Date-linked entries saved in SQLite.</p>
+                </div>
+                <label className="space-y-1 text-sm">
+                  <span className="block text-xs uppercase tracking-[0.14em] text-muted">Entry date</span>
+                  <input
+                    className="focusable min-h-11 rounded-2xl bg-subsurface px-3"
+                    max={maxImportDate}
+                    type="date"
+                    value={selectedCheckinDate}
+                    onChange={(event) => setSelectedCheckinDate(event.target.value)}
+                  />
+                </label>
+              </div>
+              <div className="mb-4 rounded-2xl bg-subsurface px-4 py-3 text-sm">
+                <p className="text-muted">
+                  {isLoadingCheckins
+                    ? "Loading check-ins..."
+                    : checkinSyncError
+                      ? `SQLite sync failed: ${checkinSyncError}`
+                      : checkinEntriesByDate[selectedCheckinDate]
+                        ? "Loaded existing entry for this date."
+                        : "No saved entry for this date yet."}
+                </p>
+                {checkinSaveMessage && <p className="mt-1 text-success">{checkinSaveMessage}</p>}
               </div>
 
               <div className="space-y-5">
@@ -1844,8 +1546,19 @@ function App() {
                       <div className="grid gap-4 md:grid-cols-2">
                         {questions.map((question) => (
                           <div key={question.id} className="rounded-2xl bg-panel p-4 shadow-soft">
-                            <p className="mb-3 text-sm font-medium">{question.prompt}</p>
+                            <p className="mb-1 text-sm font-medium">{question.prompt}</p>
+                            {question.inputLabel && (
+                              <p className="mb-3 text-xs uppercase tracking-[0.16em] text-muted">
+                                {question.inputLabel}
+                              </p>
+                            )}
                             {renderQuestionInput(question)}
+                            {getVisibleChildren(question, draftAnswers).map((child) => (
+                              <div key={child.id} className="mt-4 border-t border-[rgba(18,18,18,0.08)] pt-4">
+                                <p className="mb-3 text-sm font-medium">{child.prompt}</p>
+                                {renderQuestionInput(child)}
+                              </div>
+                            ))}
                           </div>
                         ))}
                       </div>
@@ -1867,11 +1580,12 @@ function App() {
 
               <div className="mt-6 flex justify-end">
                 <button
-                  className="focusable min-h-11 rounded-capsule bg-accent px-6 text-sm font-semibold text-white shadow-soft"
+                  className="focusable min-h-11 rounded-capsule bg-accent px-6 text-sm font-semibold text-white shadow-soft disabled:cursor-not-allowed disabled:opacity-65"
+                  disabled={isSavingCheckin}
                   type="button"
-                  onClick={handleQuickSave}
+                  onClick={() => void handleQuickSave()}
                 >
-                  Save Check-In
+                  {isSavingCheckin ? "Saving..." : "Save Check-In"}
                 </button>
               </div>
             </article>
@@ -1923,7 +1637,11 @@ function App() {
                           <SortableQuestionItem
                             isSelected={isSelected}
                             question={question}
-                            onSelect={() => setSelectedQuestionId(question.id)}
+                            onSelect={() =>
+                              setSelectedQuestionId((previous) =>
+                                previous === question.id ? "" : question.id,
+                              )
+                            }
                           />
                           {isSelected && (
                             <QuestionEditor
@@ -2076,125 +1794,6 @@ function App() {
         </div>
       )}
 
-      {showQuickCheckin && (
-        <div className="fixed inset-0 z-[70] grid place-items-center bg-[rgba(18,18,18,0.2)] p-4 backdrop-blur-xs">
-          <div className="panel w-full max-w-2xl p-6">
-            <div className="mb-5 flex items-center justify-between">
-              <h2 className="text-xl font-semibold">Quick Today's Check-In</h2>
-              <button
-                className="focusable min-h-11 rounded-capsule bg-subsurface px-3"
-                type="button"
-                onClick={() => setShowQuickCheckin(false)}
-              >
-                <X className="size-4" />
-              </button>
-            </div>
-            <div className="max-h-[58vh] space-y-4 overflow-y-auto pr-1">
-              {includedQuestions.slice(0, 8).map((question) => (
-                <div key={question.id} className="rounded-2xl bg-subsurface p-3">
-                  <p className="mb-2 text-sm font-medium">{question.prompt}</p>
-                  {renderQuestionInput(question)}
-                </div>
-              ))}
-            </div>
-            <div className="mt-4 rounded-2xl bg-subsurface p-3">
-              <p className="text-xs uppercase tracking-[0.16em] text-muted">Derived Metric</p>
-              <p className="mt-1 text-sm text-muted">Time Between Eating And Sleep</p>
-              <p className="metric-number mt-1 text-xl font-semibold text-ink">
-                {mealSleepGapValue === null ? "Unknown" : formatMinutesAsHours(mealSleepGapValue)}
-              </p>
-              <p className="mt-1 text-xs text-muted">
-                Unknown until you log when you fell asleep.
-              </p>
-            </div>
-            <div className="mt-6 flex justify-end gap-2">
-              <button
-                className="focusable min-h-11 rounded-capsule bg-subsurface px-4 text-sm"
-                type="button"
-                onClick={() => setShowQuickCheckin(false)}
-              >
-                Cancel
-              </button>
-              <button
-                className="focusable min-h-11 rounded-capsule bg-accent px-5 text-sm font-semibold text-white"
-                type="button"
-                onClick={handleQuickSave}
-              >
-                Save Check-In
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ToggleBlock({
-  label,
-  checked,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (checked: boolean) => void;
-}) {
-  return (
-    <label className="flex items-center justify-between rounded-2xl bg-panel px-3 py-2">
-      <span className="text-sm">{label}</span>
-      <input checked={checked} type="checkbox" onChange={(event) => onChange(event.target.checked)} />
-    </label>
-  );
-}
-
-function DraggableMetricChip({ metric }: { metric: MetricKey }) {
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({ id: metric });
-  const style: CSSProperties = {
-    transform: CSS.Translate.toString(transform),
-    opacity: isDragging ? 0.7 : 1,
-  };
-
-  return (
-    <button
-      ref={setNodeRef}
-      className="focusable min-h-11 rounded-capsule bg-panel px-4 text-sm font-semibold shadow-soft"
-      style={style}
-      type="button"
-      {...listeners}
-      {...attributes}
-    >
-      {getMetricLabel(metric)}
-    </button>
-  );
-}
-
-function DropDock({
-  dockId,
-  title,
-  metric,
-  refObject,
-}: {
-  dockId: string;
-  title: string;
-  metric: MetricKey;
-  refObject: MutableRefObject<HTMLDivElement | null>;
-}) {
-  const { isOver, setNodeRef } = useDroppable({ id: dockId });
-
-  return (
-    <div
-      ref={(element) => {
-        setNodeRef(element);
-        refObject.current = element;
-      }}
-      className={clsx(
-        "relative rounded-2xl bg-panel p-3 transition",
-        isOver && "scale-[1.01] ring-2 ring-[color:var(--accent)]/35",
-      )}
-    >
-      <p className="text-xs uppercase tracking-[0.16em] text-muted">Dock {title}</p>
-      <p className="mt-1 text-sm font-semibold">{getMetricLabel(metric)}</p>
-      {isOver && <span className="pointer-events-none absolute inset-0 rounded-2xl border border-accent/30 animate-pulseSoft" />}
     </div>
   );
 }
@@ -2235,6 +1834,18 @@ function SortableQuestionItem({
   );
 }
 
+const CONDITION_OPERATOR_META: Array<{
+  value: ChildConditionOperator;
+  label: string;
+  requiresValue: boolean;
+}> = [
+  { value: "equals", label: "equals", requiresValue: true },
+  { value: "not_equals", label: "not equals", requiresValue: true },
+  { value: "greater_than", label: "greater than", requiresValue: true },
+  { value: "at_least", label: "at least", requiresValue: true },
+  { value: "non_empty", label: "non-empty", requiresValue: false },
+];
+
 function QuestionEditor({
   question,
   onPatch,
@@ -2244,61 +1855,211 @@ function QuestionEditor({
   onPatch: (patch: Partial<CheckInQuestion>) => void;
   onDelete: () => void;
 }) {
-  const optionsText = (question.options ?? []).map((option) => option.label).join(", ");
-  const [optionsDraft, setOptionsDraft] = useState(optionsText);
+  const children = question.children ?? [];
+  const canAddChild = children.length < 3;
+  const [showAnalysisHelp, setShowAnalysisHelp] = useState(false);
 
-  useEffect(() => {
-    setOptionsDraft((question.options ?? []).map((option) => option.label).join(", "));
-  }, [question.id]);
+  const patchInputType = (
+    nextType: InputType,
+    current: Pick<CheckInQuestion, "min" | "max" | "step" | "options" | "id">,
+  ) => {
+    if (nextType === "slider") {
+      return {
+        inputType: nextType,
+        min: current.min ?? 0,
+        max: current.max ?? 10,
+        step: current.step ?? 1,
+        options: undefined,
+      };
+    }
+    if (nextType === "multi-choice") {
+      return {
+        inputType: nextType,
+        min: undefined,
+        max: undefined,
+        step: undefined,
+        options: current.options?.length
+          ? current.options
+          : [{ id: `${current.id}_option_1`, label: "Option 1" }],
+      };
+    }
+    return {
+      inputType: nextType,
+      min: undefined,
+      max: undefined,
+      step: undefined,
+      options: undefined,
+    };
+  };
 
-  const parseOptionsDraft = (raw: string) =>
-    raw
-      .split(",")
-      .map((label) => label.trim())
-      .filter(Boolean)
-      .map((label, index) => ({ id: `${question.id}_${index}`, label }));
+  const patchChild = (childId: string, patch: Partial<CheckInQuestionChild>) => {
+    onPatch({
+      children: children.map((child) =>
+        child.id === childId ? { ...child, ...patch } : child,
+      ),
+    });
+  };
 
-  const renderTypeMeta = (inputType: InputType) => {
-    if (inputType === "slider") {
+  const removeChild = (childId: string) => {
+    onPatch({
+      children: children.filter((child) => child.id !== childId),
+    });
+  };
+
+  const addChild = () => {
+    if (!canAddChild) {
+      return;
+    }
+    const nextChild: CheckInQuestionChild = {
+      id: `${question.id}_child_${Date.now()}`,
+      prompt: "Conditional follow-up",
+      inputType: "text",
+      analysisMode: question.analysisMode,
+      condition: {
+        operator: "non_empty",
+      },
+    };
+    onPatch({ children: [...children, nextChild] });
+  };
+
+  const updateConditionOperator = (
+    child: CheckInQuestionChild,
+    operator: ChildConditionOperator,
+  ) => {
+    const operatorMeta = CONDITION_OPERATOR_META.find((entry) => entry.value === operator);
+    const nextCondition = { ...child.condition, operator };
+    if (!operatorMeta?.requiresValue) {
+      delete nextCondition.value;
+    } else if (nextCondition.value === undefined) {
+      nextCondition.value =
+        operator === "greater_than" || operator === "at_least" ? 0 : "";
+    }
+    patchChild(child.id, { condition: nextCondition });
+  };
+
+  const renderFieldMeta = ({
+    field,
+    onFieldPatch,
+  }: {
+    field: Pick<CheckInQuestionChild, "id" | "inputType" | "min" | "max" | "step" | "options">;
+    onFieldPatch: (
+      patch: Partial<Pick<CheckInQuestionChild, "min" | "max" | "step" | "options">>,
+    ) => void;
+  }) => {
+    if (field.inputType === "slider") {
       return (
         <div className="grid gap-2 sm:grid-cols-3">
           <input
             className="focusable min-h-11 rounded-2xl bg-panel px-3"
             placeholder="Min"
             type="number"
-            value={question.min ?? 0}
-            onChange={(event) => onPatch({ min: Number(event.target.value) })}
+            value={field.min ?? 0}
+            onChange={(event) => onFieldPatch({ min: Number(event.target.value) })}
           />
           <input
             className="focusable min-h-11 rounded-2xl bg-panel px-3"
             placeholder="Max"
             type="number"
-            value={question.max ?? 10}
-            onChange={(event) => onPatch({ max: Number(event.target.value) })}
+            value={field.max ?? 10}
+            onChange={(event) => onFieldPatch({ max: Number(event.target.value) })}
           />
           <input
             className="focusable min-h-11 rounded-2xl bg-panel px-3"
             placeholder="Step"
             type="number"
-            value={question.step ?? 1}
-            onChange={(event) => onPatch({ step: Number(event.target.value) })}
+            value={field.step ?? 1}
+            onChange={(event) => onFieldPatch({ step: Number(event.target.value) })}
           />
         </div>
       );
     }
 
-    if (inputType === "multi-choice") {
+    if (field.inputType === "multi-choice") {
+      const options = field.options ?? [];
       return (
-        <textarea
-          className="focusable min-h-20 w-full rounded-2xl bg-panel p-3 text-sm"
-          placeholder="Option 1, Option 2"
-          value={optionsDraft}
-          onChange={(event) => {
-            const nextDraft = event.target.value;
-            setOptionsDraft(nextDraft);
-            onPatch({ options: parseOptionsDraft(nextDraft) });
-          }}
-        />
+        <div className="space-y-2">
+          {options.map((option, index) => (
+            <div key={`${field.id}_${index}`} className="grid gap-2 sm:grid-cols-[1fr_1fr_120px_auto]">
+              <input
+                className="focusable min-h-11 rounded-2xl bg-panel px-3"
+                placeholder="Label"
+                value={option.label}
+                onChange={(event) =>
+                  onFieldPatch({
+                    options: options.map((candidate, candidateIndex) =>
+                      candidateIndex === index
+                        ? { ...candidate, label: event.target.value }
+                        : candidate,
+                    ),
+                  })
+                }
+              />
+              <input
+                className="focusable min-h-11 rounded-2xl bg-panel px-3"
+                placeholder="Value id"
+                value={option.id}
+                onChange={(event) =>
+                  onFieldPatch({
+                    options: options.map((candidate, candidateIndex) =>
+                      candidateIndex === index
+                        ? { ...candidate, id: event.target.value }
+                        : candidate,
+                    ),
+                  })
+                }
+              />
+              <input
+                className="focusable min-h-11 rounded-2xl bg-panel px-3"
+                placeholder="Score"
+                type="number"
+                value={option.score ?? ""}
+                onChange={(event) => {
+                  const rawValue = event.target.value;
+                  onFieldPatch({
+                    options: options.map((candidate, candidateIndex) => {
+                      if (candidateIndex !== index) {
+                        return candidate;
+                      }
+                      if (rawValue === "") {
+                        return { ...candidate, score: undefined };
+                      }
+                      const score = Number(rawValue);
+                      return Number.isFinite(score) ? { ...candidate, score } : candidate;
+                    }),
+                  });
+                }}
+              />
+              <button
+                className="focusable min-h-11 rounded-capsule bg-[color-mix(in_srgb,var(--error)_16%,white)] px-3 text-xs text-error"
+                type="button"
+                onClick={() =>
+                  onFieldPatch({
+                    options: options.filter((_, candidateIndex) => candidateIndex !== index),
+                  })
+                }
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+          <button
+            className="focusable min-h-11 rounded-capsule bg-subsurface px-4 text-xs"
+            type="button"
+            onClick={() =>
+              onFieldPatch({
+                options: [
+                  ...options,
+                  {
+                    id: `${field.id}_option_${options.length + 1}`,
+                    label: `Option ${options.length + 1}`,
+                  },
+                ],
+              })
+            }
+          >
+            Add option
+          </button>
+        </div>
       );
     }
 
@@ -2308,11 +2069,19 @@ function QuestionEditor({
   return (
     <div className="mt-2 rounded-2xl bg-subsurface p-3">
       <p className="mb-2 text-sm font-semibold">Edit Question</p>
-      <div className="space-y-2">
+      <div className="space-y-3">
         <input
           className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
           value={question.prompt}
           onChange={(event) => onPatch({ prompt: event.target.value })}
+        />
+        <input
+          className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
+          placeholder="Input label (optional, e.g. Count)"
+          value={question.inputLabel ?? ""}
+          onChange={(event) =>
+            onPatch({ inputLabel: event.target.value.trim() ? event.target.value : undefined })
+          }
         />
         <div className="grid gap-2 sm:grid-cols-2">
           <select
@@ -2327,7 +2096,14 @@ function QuestionEditor({
           <select
             className="focusable min-h-11 rounded-2xl bg-panel px-3"
             value={question.inputType}
-            onChange={(event) => onPatch({ inputType: event.target.value as InputType })}
+            onChange={(event) =>
+              onPatch(
+                patchInputType(
+                  event.target.value as InputType,
+                  question,
+                ) as Partial<CheckInQuestion>,
+              )
+            }
           >
             <option value="slider">slider</option>
             <option value="multi-choice">multi-choice</option>
@@ -2336,50 +2112,197 @@ function QuestionEditor({
             <option value="text">text</option>
           </select>
         </div>
-        {renderTypeMeta(question.inputType)}
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <p className="text-xs uppercase tracking-[0.14em] text-muted">Analysis mode</p>
+            <div
+              className="relative"
+              onMouseEnter={() => setShowAnalysisHelp(true)}
+              onMouseLeave={() => setShowAnalysisHelp(false)}
+            >
+              <button
+                aria-label="Analysis mode help"
+                className="focusable rounded-capsule bg-panel p-1 text-muted transition hover:text-ink"
+                type="button"
+                onBlur={() => setShowAnalysisHelp(false)}
+                onClick={() => setShowAnalysisHelp((previous) => !previous)}
+                onFocus={() => setShowAnalysisHelp(true)}
+              >
+                <CircleHelp className="size-4" />
+              </button>
+              {showAnalysisHelp && (
+                <div className="pointer-events-none absolute left-0 top-8 z-20 w-72 rounded-2xl bg-panel p-3 text-xs text-muted shadow-soft">
+                  <p>
+                    <strong>Predictor to next day:</strong> behavior on day D aligned to outcomes
+                    on day D+1.
+                  </p>
+                  <p className="mt-2">
+                    <strong>Target to same day:</strong> outcome or subjective state recorded for
+                    day D itself.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+          <select
+            className="focusable min-h-11 rounded-2xl bg-panel px-3"
+            value={question.analysisMode}
+            onChange={(event) =>
+              onPatch({
+                analysisMode: event.target.value as CheckInQuestion["analysisMode"],
+              })
+            }
+          >
+            <option value="predictor_next_day">Predictor to next day</option>
+            <option value="target_same_day">Target to same day</option>
+          </select>
+        </div>
+        {renderFieldMeta({
+          field: question,
+          onFieldPatch: (patch) => onPatch(patch as Partial<CheckInQuestion>),
+        })}
 
         <div className="rounded-2xl bg-panel p-3">
-          <p className="mb-2 text-xs uppercase tracking-[0.14em] text-muted">Preview</p>
-          <div className="rounded-2xl bg-subsurface p-3">
-            <p className="mb-2 text-sm font-medium">{question.prompt}</p>
-            {question.inputType === "slider" && (
-              <input className="h-11 w-full accent-accent" disabled type="range" />
-            )}
-            {question.inputType === "multi-choice" && (
-              <div className="flex flex-wrap gap-2">
-                {(question.options ?? [{ id: "opt", label: "Option" }]).map((option) => (
-                  <span key={option.id} className="rounded-capsule bg-panel px-3 py-2 text-xs">
-                    {option.label}
-                  </span>
-                ))}
-              </div>
-            )}
-            {question.inputType === "boolean" && (
-              <div className="flex gap-2 text-xs">
-                <span className="rounded-capsule bg-panel px-3 py-2">Yes</span>
-                <span className="rounded-capsule bg-panel px-3 py-2">No</span>
-              </div>
-            )}
-            {question.inputType === "time" && (
-              <div className="space-y-2">
-                <input
-                  className="h-11 w-full accent-accent"
-                  disabled
-                  max={TIME_SLIDER_MINUTES.max}
-                  min={TIME_SLIDER_MINUTES.min}
-                  step={TIME_STEP_MINUTES}
-                  type="range"
-                  value={TIME_SLIDER_MINUTES.min}
-                />
-                <p className="metric-number text-xs text-muted">00:00</p>
-              </div>
-            )}
-            {question.inputType === "text" && (
-              <textarea className="min-h-20 w-full rounded-2xl bg-panel p-3 text-sm" disabled />
+          <div className="mb-3 flex items-center justify-between">
+            <p className="text-xs uppercase tracking-[0.14em] text-muted">Conditional fields</p>
+            <button
+              className="focusable min-h-11 rounded-capsule bg-subsurface px-4 text-xs disabled:cursor-not-allowed disabled:opacity-55"
+              disabled={!canAddChild}
+              type="button"
+              onClick={addChild}
+            >
+              Add child
+            </button>
+          </div>
+          <p className="mb-3 text-xs text-muted">
+            Show up to 3 child fields. Conditions evaluate only against the parent answer.
+          </p>
+          <div className="space-y-3">
+            {children.map((child) => {
+              const operatorMeta = CONDITION_OPERATOR_META.find(
+                (entry) => entry.value === child.condition.operator,
+              );
+              const conditionNeedsValue = operatorMeta?.requiresValue ?? false;
+              return (
+                <div key={child.id} className="rounded-2xl bg-subsurface p-3">
+                  <div className="mb-2 flex justify-end">
+                    <button
+                      className="focusable min-h-11 rounded-capsule bg-[color-mix(in_srgb,var(--error)_16%,white)] px-3 text-xs text-error"
+                      type="button"
+                      onClick={() => removeChild(child.id)}
+                    >
+                      Remove child
+                    </button>
+                  </div>
+                  <div className="space-y-2">
+                    <input
+                      className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
+                      placeholder="Child prompt"
+                      value={child.prompt}
+                      onChange={(event) => patchChild(child.id, { prompt: event.target.value })}
+                    />
+                    <input
+                      className="focusable min-h-11 w-full rounded-2xl bg-panel px-3 font-mono text-xs"
+                      placeholder="Child id"
+                      value={child.id}
+                      onChange={(event) => patchChild(child.id, { id: event.target.value })}
+                    />
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <select
+                        className="focusable min-h-11 rounded-2xl bg-panel px-3"
+                        value={child.inputType}
+                        onChange={(event) =>
+                          patchChild(
+                            child.id,
+                            patchInputType(
+                              event.target.value as InputType,
+                              child,
+                            ) as Partial<CheckInQuestionChild>,
+                          )
+                        }
+                      >
+                        <option value="slider">slider</option>
+                        <option value="multi-choice">multi-choice</option>
+                        <option value="boolean">boolean</option>
+                        <option value="time">time</option>
+                        <option value="text">text</option>
+                      </select>
+                      <select
+                        className="focusable min-h-11 rounded-2xl bg-panel px-3"
+                        value={child.analysisMode}
+                        onChange={(event) =>
+                          patchChild(child.id, {
+                            analysisMode: event.target.value as CheckInQuestion["analysisMode"],
+                          })
+                        }
+                      >
+                        <option value="predictor_next_day">Predictor to next day</option>
+                        <option value="target_same_day">Target to same day</option>
+                      </select>
+                    </div>
+                    {renderFieldMeta({
+                      field: child,
+                      onFieldPatch: (patch) => patchChild(child.id, patch),
+                    })}
+                    <div className="grid gap-2 sm:grid-cols-[220px_1fr]">
+                      <select
+                        className="focusable min-h-11 rounded-2xl bg-panel px-3"
+                        value={child.condition.operator}
+                        onChange={(event) =>
+                          updateConditionOperator(
+                            child,
+                            event.target.value as ChildConditionOperator,
+                          )
+                        }
+                      >
+                        {CONDITION_OPERATOR_META.map((operator) => (
+                          <option key={operator.value} value={operator.value}>
+                            {operator.label}
+                          </option>
+                        ))}
+                      </select>
+                      {conditionNeedsValue ? (
+                        <input
+                          className="focusable min-h-11 rounded-2xl bg-panel px-3"
+                          placeholder="Condition value"
+                          type={
+                            child.condition.operator === "greater_than"
+                            || child.condition.operator === "at_least"
+                              ? "number"
+                              : "text"
+                          }
+                          value={child.condition.value ?? ""}
+                          onChange={(event) => {
+                            const nextValue =
+                              child.condition.operator === "greater_than"
+                              || child.condition.operator === "at_least"
+                                ? Number(event.target.value)
+                                : event.target.value;
+                            patchChild(child.id, {
+                              condition: {
+                                ...child.condition,
+                                value: nextValue,
+                              },
+                            });
+                          }}
+                        />
+                      ) : (
+                        <p className="flex min-h-11 items-center rounded-2xl bg-panel px-3 text-xs text-muted">
+                          No condition value required.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+            {!children.length && (
+              <p className="rounded-2xl bg-subsurface px-3 py-2 text-xs text-muted">
+                No child fields configured.
+              </p>
             )}
           </div>
         </div>
-
       </div>
       <div className="mt-3 flex justify-end">
         <button

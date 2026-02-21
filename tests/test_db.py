@@ -7,9 +7,12 @@ from src.db import (
     connect_db,
     create_sync_run,
     finalize_sync_run,
+    get_checkin_entries,
     get_setting_json,
     init_db,
+    update_sync_run_progress,
     upsert_activity,
+    upsert_checkin_entry,
     upsert_daily_metrics,
     upsert_raw_payload,
     upsert_setting_json,
@@ -138,5 +141,65 @@ def test_setting_json_roundtrip(tmp_path: Path) -> None:
 
     stored = get_setting_json(conn, "checkin_questions")
     assert stored == [{"id": "q2", "prompt": "Question 2"}]
+
+    conn.close()
+
+
+def test_update_sync_run_progress_updates_running_row(tmp_path: Path) -> None:
+    db_path = tmp_path / "garmin.db"
+    conn = connect_db(str(db_path))
+    init_db(conn)
+
+    run_id = create_sync_run(conn, days_requested=3)
+    update_sync_run_progress(conn, run_id, days_succeeded=2)
+    conn.commit()
+
+    row = conn.execute(
+        """
+        SELECT status, days_requested, days_succeeded
+        FROM sync_runs
+        WHERE id = ?
+        """,
+        (run_id,),
+    ).fetchone()
+    assert row is not None
+    assert row["status"] == "running"
+    assert row["days_requested"] == 3
+    assert row["days_succeeded"] == 2
+
+    conn.close()
+
+
+def test_checkin_entries_upsert_and_query(tmp_path: Path) -> None:
+    db_path = tmp_path / "garmin.db"
+    conn = connect_db(str(db_path))
+    init_db(conn)
+
+    upsert_checkin_entry(
+        conn,
+        checkin_date="2026-02-20",
+        answers={"energy": 7, "late_meal": "21:30"},
+    )
+    upsert_checkin_entry(
+        conn,
+        checkin_date="2026-02-20",
+        answers={"energy": 8, "late_meal": "20:50"},
+    )
+    upsert_checkin_entry(
+        conn,
+        checkin_date="2026-02-21",
+        answers={"energy": 6, "late_meal": "22:10"},
+    )
+
+    entries = get_checkin_entries(
+        conn,
+        from_date="2026-02-20",
+        to_date="2026-02-21",
+    )
+    assert len(entries) == 2
+    assert entries[0]["date"] == "2026-02-20"
+    assert entries[0]["answers"] == {"energy": 8, "late_meal": "20:50"}
+    assert entries[1]["date"] == "2026-02-21"
+    assert entries[1]["answers"] == {"energy": 6, "late_meal": "22:10"}
 
     conn.close()

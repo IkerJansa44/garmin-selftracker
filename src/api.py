@@ -4,6 +4,7 @@ import argparse
 import errno
 import json
 import logging
+import math
 import threading
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -13,12 +14,33 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from src.config import SettingsError, load_settings
-from src.db import connect_db, get_setting_json, init_db, upsert_setting_json
+from src.db import (
+    connect_db,
+    get_checkin_entries,
+    get_setting_json,
+    init_db,
+    upsert_checkin_entry,
+    upsert_setting_json,
+)
 from src.sync import run_sync
 
 logger = logging.getLogger(__name__)
 QUESTION_SETTINGS_KEY = "checkin_questions"
 QUESTION_INPUT_TYPES = {"slider", "multi-choice", "boolean", "time", "text"}
+QUESTION_ANALYSIS_MODES = {"predictor_next_day", "target_same_day"}
+QUESTION_CHILD_CONDITION_OPERATORS = {
+    "equals",
+    "not_equals",
+    "greater_than",
+    "at_least",
+    "non_empty",
+}
+QUESTION_CHILD_CONDITIONS_WITH_VALUE = {
+    "equals",
+    "not_equals",
+    "greater_than",
+    "at_least",
+}
 MAX_IMPORT_RANGE_DAYS = 365
 
 
@@ -120,6 +142,27 @@ def _parse_iso_date(raw_value: Any, *, field_name: str) -> date:
         return date.fromisoformat(raw_value)
     except ValueError as exc:
         raise ValueError(f"{field_name} must be YYYY-MM-DD") from exc
+
+
+def _parse_date_range_query(
+    query: dict[str, list[str]],
+    *,
+    from_field: str = "fromDate",
+    to_field: str = "toDate",
+    max_range_days: int = MAX_IMPORT_RANGE_DAYS,
+) -> tuple[date, date]:
+    from_values = query.get(from_field)
+    to_values = query.get(to_field)
+    start_date = _parse_iso_date(
+        from_values[0] if from_values else None, field_name=from_field
+    )
+    end_date = _parse_iso_date(to_values[0] if to_values else None, field_name=to_field)
+    if start_date > end_date:
+        raise ValueError(f"{from_field} must be on or before {to_field}")
+    span_days = (end_date - start_date).days + 1
+    if span_days > max_range_days:
+        raise ValueError(f"Date range cannot exceed {max_range_days} days")
+    return start_date, end_date
 
 
 def _parse_import_request(
@@ -266,6 +309,80 @@ def _as_clock_time(value: Any) -> str | None:
         return None
 
 
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    try:
+        return datetime.fromisoformat(stripped.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _format_eta_seconds(seconds: float) -> str:
+    rounded_seconds = int(round(seconds))
+    if rounded_seconds < 60:
+        return "<1 min left"
+
+    total_minutes = max(1, rounded_seconds // 60)
+    if total_minutes < 60:
+        return f"~{total_minutes} min left"
+
+    hours, minutes = divmod(total_minutes, 60)
+    if minutes == 0:
+        return f"~{hours}h left"
+    return f"~{hours}h {minutes}m left"
+
+
+def _import_status_message(
+    *,
+    state: str,
+    started_at: Any,
+    days_requested: Any,
+    days_succeeded: Any,
+    now_utc: datetime | None = None,
+) -> str:
+    default_message = "Daily import scheduled · 06:00 local"
+    if state != "running":
+        return default_message
+
+    requested_days = _as_int(days_requested) or 0
+    if requested_days <= 0:
+        return "Import in progress"
+
+    succeeded_days = _as_int(days_succeeded) or 0
+    completed_days = min(max(succeeded_days, 0), requested_days)
+    remaining_days = max(0, requested_days - completed_days)
+    progress_message = f"Import in progress · {completed_days}/{requested_days} days"
+
+    if remaining_days == 0:
+        return f"{progress_message} · Finalizing"
+    if completed_days == 0:
+        return progress_message
+
+    started_at_datetime = _parse_iso_datetime(started_at)
+    if started_at_datetime is None:
+        return progress_message
+    if started_at_datetime.tzinfo is None:
+        started_at_datetime = started_at_datetime.replace(tzinfo=timezone.utc)
+
+    current_time = now_utc or datetime.now(timezone.utc)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=timezone.utc)
+
+    elapsed_seconds = (
+        current_time.astimezone(timezone.utc)
+        - started_at_datetime.astimezone(timezone.utc)
+    ).total_seconds()
+    if elapsed_seconds <= 0:
+        return progress_message
+
+    eta_seconds = (elapsed_seconds / completed_days) * remaining_days
+    return f"{progress_message} · {_format_eta_seconds(eta_seconds)}"
+
+
 def _metric_payload(row: Any | None) -> tuple[dict[str, int | None], dict[str, str]]:
     if row is None:
         metrics = {
@@ -301,7 +418,7 @@ def _metric_payload(row: Any | None) -> tuple[dict[str, int | None], dict[str, s
     return metrics, coverage
 
 
-def _normalize_question_option(raw: Any) -> dict[str, str] | None:
+def _normalize_question_option(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
     option_id = raw.get("id")
@@ -310,35 +427,80 @@ def _normalize_question_option(raw: Any) -> dict[str, str] | None:
         return None
     if not isinstance(label, str) or not label.strip():
         return None
-    return {"id": option_id.strip(), "label": label.strip()}
+    normalized: dict[str, Any] = {"id": option_id.strip(), "label": label.strip()}
+    if "score" in raw:
+        score = raw.get("score")
+        if isinstance(score, bool) or not isinstance(score, (int, float)):
+            return None
+        if not math.isfinite(float(score)):
+            return None
+        normalized["score"] = score
+    return normalized
 
 
-def _normalize_question(raw: Any) -> dict[str, Any] | None:
+def _normalize_child_condition(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
-    question_id = raw.get("id")
-    section = raw.get("section")
+    operator = raw.get("operator")
+    if (
+        not isinstance(operator, str)
+        or operator not in QUESTION_CHILD_CONDITION_OPERATORS
+    ):
+        return None
+
+    normalized: dict[str, Any] = {"operator": operator}
+    value = raw.get("value")
+
+    if operator in QUESTION_CHILD_CONDITIONS_WITH_VALUE:
+        if value is None:
+            return None
+        if operator in {"greater_than", "at_least"}:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return None
+            if not math.isfinite(float(value)):
+                return None
+        elif not isinstance(value, (str, int, float, bool)):
+            return None
+        normalized["value"] = value
+        return normalized
+
+    if value is not None:
+        if not isinstance(value, (str, int, float, bool)):
+            return None
+        normalized["value"] = value
+    return normalized
+
+
+def _normalize_question_child(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    child_id = raw.get("id")
     prompt = raw.get("prompt")
     input_type = raw.get("inputType")
-    default_included = raw.get("defaultIncluded")
+    analysis_mode = raw.get("analysisMode", "predictor_next_day")
 
-    if not isinstance(question_id, str) or not question_id.strip():
-        return None
-    if not isinstance(section, str) or not section.strip():
+    if not isinstance(child_id, str) or not child_id.strip():
         return None
     if not isinstance(prompt, str) or not prompt.strip():
         return None
     if not isinstance(input_type, str) or input_type not in QUESTION_INPUT_TYPES:
         return None
-    if not isinstance(default_included, bool):
+    if (
+        not isinstance(analysis_mode, str)
+        or analysis_mode not in QUESTION_ANALYSIS_MODES
+    ):
+        return None
+
+    condition = _normalize_child_condition(raw.get("condition"))
+    if condition is None:
         return None
 
     normalized: dict[str, Any] = {
-        "id": question_id.strip(),
-        "section": section.strip(),
+        "id": child_id.strip(),
         "prompt": prompt.strip(),
         "inputType": input_type,
-        "defaultIncluded": default_included,
+        "analysisMode": analysis_mode,
+        "condition": condition,
     }
 
     if input_type == "slider":
@@ -365,6 +527,90 @@ def _normalize_question(raw: Any) -> dict[str, Any] | None:
     return normalized
 
 
+def _normalize_question(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    question_id = raw.get("id")
+    section = raw.get("section")
+    prompt = raw.get("prompt")
+    input_type = raw.get("inputType")
+    default_included = raw.get("defaultIncluded")
+    analysis_mode = raw.get("analysisMode", "predictor_next_day")
+    input_label = raw.get("inputLabel")
+
+    if not isinstance(question_id, str) or not question_id.strip():
+        return None
+    if not isinstance(section, str) or not section.strip():
+        return None
+    if not isinstance(prompt, str) or not prompt.strip():
+        return None
+    if not isinstance(input_type, str) or input_type not in QUESTION_INPUT_TYPES:
+        return None
+    if not isinstance(default_included, bool):
+        return None
+    if (
+        not isinstance(analysis_mode, str)
+        or analysis_mode not in QUESTION_ANALYSIS_MODES
+    ):
+        return None
+
+    normalized: dict[str, Any] = {
+        "id": question_id.strip(),
+        "section": section.strip(),
+        "prompt": prompt.strip(),
+        "inputType": input_type,
+        "defaultIncluded": default_included,
+        "analysisMode": analysis_mode,
+    }
+
+    if input_label is not None:
+        if not isinstance(input_label, str) or not input_label.strip():
+            return None
+        normalized["inputLabel"] = input_label.strip()
+
+    if input_type == "slider":
+        for key in ("min", "max", "step"):
+            value = raw.get(key)
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return None
+            normalized[key] = value
+
+    if input_type == "multi-choice":
+        options_raw = raw.get("options", [])
+        if not isinstance(options_raw, list):
+            return None
+        options = []
+        for option_raw in options_raw:
+            option = _normalize_question_option(option_raw)
+            if option is None:
+                return None
+            options.append(option)
+        normalized["options"] = options
+
+    children_raw = raw.get("children")
+    if children_raw is not None:
+        if not isinstance(children_raw, list):
+            return None
+        if len(children_raw) > 3:
+            return None
+        children = []
+        seen_child_ids: set[str] = set()
+        for raw_child in children_raw:
+            child = _normalize_question_child(raw_child)
+            if child is None:
+                return None
+            child_id = str(child["id"])
+            if child_id in seen_child_ids:
+                return None
+            seen_child_ids.add(child_id)
+            children.append(child)
+        normalized["children"] = children
+
+    return normalized
+
+
 def _normalize_questions_payload(payload: Any) -> list[dict[str, Any]] | None:
     if not isinstance(payload, list):
         return None
@@ -378,6 +624,11 @@ def _normalize_questions_payload(payload: Any) -> list[dict[str, Any]] | None:
         if question_id in seen_ids:
             return None
         seen_ids.add(question_id)
+        for child in question.get("children", []):
+            child_id = str(child["id"])
+            if child_id in seen_ids:
+                return None
+            seen_ids.add(child_id)
         normalized.append(question)
     return normalized
 
@@ -408,6 +659,60 @@ def _save_questions_payload(db_path: str, payload: Any) -> list[dict[str, Any]]:
     return normalized
 
 
+def _normalize_answers_payload(payload: Any) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    normalized: dict[str, Any] = {}
+    for key, value in payload.items():
+        if not isinstance(key, str) or not key.strip():
+            return None
+        if isinstance(value, str):
+            normalized[key.strip()] = value
+            continue
+        if isinstance(value, bool):
+            normalized[key.strip()] = value
+            continue
+        if isinstance(value, (int, float)):
+            normalized[key.strip()] = value
+            continue
+        return None
+    return normalized
+
+
+def _load_checkins_payload(
+    db_path: str, from_date: date, to_date: date
+) -> list[dict[str, Any]]:
+    connection = connect_db(db_path)
+    try:
+        init_db(connection)
+        return get_checkin_entries(
+            connection,
+            from_date=from_date.isoformat(),
+            to_date=to_date.isoformat(),
+        )
+    finally:
+        connection.close()
+
+
+def _save_checkin_payload(db_path: str, payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("Check-in payload must be a JSON object")
+    checkin_date = _parse_iso_date(payload.get("date"), field_name="date")
+    answers_payload = _normalize_answers_payload(payload.get("answers"))
+    if answers_payload is None:
+        raise ValueError("answers must be an object of scalar values")
+    connection = connect_db(db_path)
+    try:
+        init_db(connection)
+        return upsert_checkin_entry(
+            connection,
+            checkin_date=checkin_date.isoformat(),
+            answers=answers_payload,
+        )
+    finally:
+        connection.close()
+
+
 def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
     end_date = date.today()
     start_date = end_date - timedelta(days=days - 1)
@@ -419,6 +724,8 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
         """
         SELECT
             metric_date,
+            steps,
+            calories,
             resting_heart_rate,
             body_battery,
             stress_avg,
@@ -452,7 +759,7 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
 
     latest_run = connection.execute(
         """
-        SELECT status, started_at, ended_at
+        SELECT status, started_at, ended_at, days_requested, days_succeeded
         FROM sync_runs
         ORDER BY id DESC
         LIMIT 1
@@ -464,6 +771,7 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
     if latest_run is None:
         summary_state = "ok" if metric_rows else "failed"
         last_import_at = None
+        import_status_message = "Daily import scheduled · 06:00 local"
     else:
         raw_status = str(latest_run["status"])
         summary_state = "ok"
@@ -472,6 +780,12 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
         elif raw_status == "failed":
             summary_state = "failed"
         last_import_at = latest_run["ended_at"] or latest_run["started_at"]
+        import_status_message = _import_status_message(
+            state=summary_state,
+            started_at=latest_run["started_at"],
+            days_requested=latest_run["days_requested"],
+            days_succeeded=latest_run["days_succeeded"],
+        )
 
     records: list[dict[str, Any]] = []
     for offset in range(days):
@@ -501,6 +815,14 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
                 "importGap": row is None,
                 "importState": import_state,
                 "fellAsleepAt": _as_clock_time(row["fell_asleep_at"]) if row else None,
+                "predictors": {
+                    "steps": _as_int(row["steps"]) if row else None,
+                    "calories": _as_int(row["calories"]) if row else None,
+                    "stressAvg": _as_float(row["stress_avg"]) if row else None,
+                    "bodyBattery": _as_int(row["body_battery"]) if row else None,
+                    "sleepSeconds": _as_int(row["sleep_seconds"]) if row else None,
+                    "isTrainingDay": date_key in training_days,
+                },
                 "metrics": metrics,
                 "coverage": coverage,
             }
@@ -511,7 +833,7 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
         "importStatus": {
             "state": summary_state,
             "lastImportAt": last_import_at,
-            "message": "Daily import scheduled · 06:00 local",
+            "message": import_status_message,
         },
         "meta": {
             "source": "sqlite",
@@ -563,6 +885,30 @@ class ApiHandler(BaseHTTPRequestHandler):
                 )
                 return
             self._send_json(HTTPStatus.OK, {"questions": payload})
+            return
+
+        if parsed.path == "/api/checkins":
+            query = parse_qs(parsed.query)
+            try:
+                from_date, to_date = _parse_date_range_query(
+                    query,
+                    max_range_days=MAX_IMPORT_RANGE_DAYS + 1,
+                )
+                entries = _load_checkins_payload(self.db_path, from_date, to_date)
+            except ValueError as exc:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "Invalid check-in range", "details": str(exc)},
+                )
+                return
+            except Exception as exc:  # pragma: no cover - runtime guard
+                logger.exception("Failed to load check-ins")
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"error": "Failed to load check-ins", "details": str(exc)},
+                )
+                return
+            self._send_json(HTTPStatus.OK, {"entries": entries})
             return
 
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
@@ -635,34 +981,55 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:  # noqa: N802 - stdlib handler signature
         parsed = urlparse(self.path)
-        if parsed.path != "/api/questions":
-            self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
-            return
 
         raw_payload = self._read_json_body()
         if raw_payload is None:
             return
-        questions_payload = (
-            raw_payload.get("questions")
-            if isinstance(raw_payload, dict)
-            else raw_payload
-        )
-        try:
-            normalized = _save_questions_payload(self.db_path, questions_payload)
-        except ValueError as exc:
-            self._send_json(
-                HTTPStatus.BAD_REQUEST,
-                {"error": "Invalid question settings payload", "details": str(exc)},
+
+        if parsed.path == "/api/questions":
+            questions_payload = (
+                raw_payload.get("questions")
+                if isinstance(raw_payload, dict)
+                else raw_payload
             )
+            try:
+                normalized = _save_questions_payload(self.db_path, questions_payload)
+            except ValueError as exc:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "Invalid question settings payload", "details": str(exc)},
+                )
+                return
+            except Exception as exc:  # pragma: no cover - runtime guard
+                logger.exception("Failed to save question settings")
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"error": "Failed to save question settings", "details": str(exc)},
+                )
+                return
+            self._send_json(HTTPStatus.OK, {"questions": normalized})
             return
-        except Exception as exc:  # pragma: no cover - runtime guard
-            logger.exception("Failed to save question settings")
-            self._send_json(
-                HTTPStatus.INTERNAL_SERVER_ERROR,
-                {"error": "Failed to save question settings", "details": str(exc)},
-            )
+
+        if parsed.path == "/api/checkins":
+            try:
+                entry = _save_checkin_payload(self.db_path, raw_payload)
+            except ValueError as exc:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "Invalid check-in payload", "details": str(exc)},
+                )
+                return
+            except Exception as exc:  # pragma: no cover - runtime guard
+                logger.exception("Failed to save check-in")
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"error": "Failed to save check-in", "details": str(exc)},
+                )
+                return
+            self._send_json(HTTPStatus.OK, {"entry": entry})
             return
-        self._send_json(HTTPStatus.OK, {"questions": normalized})
+
+        self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
         logger.info("API %s - %s", self.address_string(), format % args)

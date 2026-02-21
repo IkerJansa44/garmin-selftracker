@@ -9,6 +9,7 @@ from src.db import (
     create_sync_run,
     finalize_sync_run,
     init_db,
+    update_sync_run_progress,
     upsert_activity,
     upsert_daily_metrics,
     upsert_raw_payload,
@@ -77,8 +78,13 @@ def run_sync(
             for activity in normalize_activities(day_payload):
                 upsert_activity(connection, activity)
 
-            connection.commit()
             days_succeeded += 1
+            update_sync_run_progress(
+                connection,
+                run_id=run_id,
+                days_succeeded=days_succeeded,
+            )
+            connection.commit()
             logger.info("Synced %s", day.isoformat())
     except Exception as exc:
         connection.rollback()

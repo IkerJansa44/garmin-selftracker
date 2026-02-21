@@ -54,3 +54,10 @@ CREATE TABLE IF NOT EXISTS app_settings (
     value_json TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS checkin_entries (
+    checkin_date TEXT PRIMARY KEY,
+    answers_json TEXT NOT NULL,
+    completed_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);

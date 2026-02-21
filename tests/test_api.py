@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from http import HTTPStatus
 from pathlib import Path
 
@@ -12,8 +12,11 @@ from src.api import (
     ImportJobManager,
     ImportRequest,
     _as_clock_time,
+    _import_status_message,
+    _load_checkins_payload,
     _normalize_questions_payload,
     _parse_import_request,
+    _save_checkin_payload,
 )
 from src.db import connect_db, init_db
 
@@ -110,7 +113,10 @@ def test_normalize_questions_payload_accepts_valid_payload() -> None:
     ]
 
     normalized = _normalize_questions_payload(payload)
-    assert normalized == payload
+    assert normalized is not None
+    assert normalized[0]["analysisMode"] == "predictor_next_day"
+    assert normalized[1]["analysisMode"] == "predictor_next_day"
+    assert normalized[1]["options"] == payload[1]["options"]
 
 
 def test_normalize_questions_payload_rejects_duplicate_ids() -> None:
@@ -134,9 +140,264 @@ def test_normalize_questions_payload_rejects_duplicate_ids() -> None:
     assert _normalize_questions_payload(payload) is None
 
 
+def test_normalize_questions_payload_rejects_invalid_analysis_mode() -> None:
+    payload = [
+        {
+            "id": "energy",
+            "section": "Recovery",
+            "prompt": "How was your energy?",
+            "inputType": "slider",
+            "defaultIncluded": True,
+            "analysisMode": "invalid-mode",
+        }
+    ]
+
+    assert _normalize_questions_payload(payload) is None
+
+
+def test_normalize_questions_payload_accepts_children_and_scores() -> None:
+    payload = [
+        {
+            "id": "alcohol_units",
+            "section": "Nutrition",
+            "prompt": "Alcohol",
+            "inputLabel": "Count",
+            "inputType": "multi-choice",
+            "analysisMode": "predictor_next_day",
+            "options": [
+                {"id": "0", "label": "0", "score": 0},
+                {"id": "3plus", "label": "3+", "score": 3},
+            ],
+            "children": [
+                {
+                    "id": "alcohol_last_time",
+                    "prompt": "Last alcohol drink",
+                    "inputType": "time",
+                    "analysisMode": "predictor_next_day",
+                    "condition": {"operator": "greater_than", "value": 0},
+                }
+            ],
+            "defaultIncluded": True,
+        }
+    ]
+
+    normalized = _normalize_questions_payload(payload)
+    assert normalized is not None
+    child = normalized[0]["children"][0]
+    assert child["condition"] == {"operator": "greater_than", "value": 0}
+    assert normalized[0]["options"][1]["score"] == 3
+
+
+def test_normalize_questions_payload_rejects_invalid_child_operator() -> None:
+    payload = [
+        {
+            "id": "caffeine_count",
+            "section": "Nutrition",
+            "prompt": "Caffeine",
+            "inputType": "slider",
+            "min": 0,
+            "max": 8,
+            "step": 1,
+            "children": [
+                {
+                    "id": "caffeine_last_time",
+                    "prompt": "Last caffeine drink",
+                    "inputType": "time",
+                    "analysisMode": "predictor_next_day",
+                    "condition": {"operator": "bad_operator"},
+                }
+            ],
+            "defaultIncluded": True,
+        }
+    ]
+
+    assert _normalize_questions_payload(payload) is None
+
+
+def test_normalize_questions_payload_rejects_more_than_three_children() -> None:
+    payload = [
+        {
+            "id": "energy",
+            "section": "Recovery",
+            "prompt": "Energy",
+            "inputType": "slider",
+            "min": 0,
+            "max": 10,
+            "step": 1,
+            "children": [
+                {
+                    "id": "energy_child_1",
+                    "prompt": "1",
+                    "inputType": "boolean",
+                    "analysisMode": "target_same_day",
+                    "condition": {"operator": "non_empty"},
+                },
+                {
+                    "id": "energy_child_2",
+                    "prompt": "2",
+                    "inputType": "boolean",
+                    "analysisMode": "target_same_day",
+                    "condition": {"operator": "non_empty"},
+                },
+                {
+                    "id": "energy_child_3",
+                    "prompt": "3",
+                    "inputType": "boolean",
+                    "analysisMode": "target_same_day",
+                    "condition": {"operator": "non_empty"},
+                },
+                {
+                    "id": "energy_child_4",
+                    "prompt": "4",
+                    "inputType": "boolean",
+                    "analysisMode": "target_same_day",
+                    "condition": {"operator": "non_empty"},
+                },
+            ],
+            "defaultIncluded": True,
+        }
+    ]
+
+    assert _normalize_questions_payload(payload) is None
+
+
+def test_normalize_questions_payload_rejects_duplicate_child_ids() -> None:
+    payload = [
+        {
+            "id": "alcohol_units",
+            "section": "Nutrition",
+            "prompt": "Alcohol",
+            "inputType": "multi-choice",
+            "options": [{"id": "0", "label": "0"}],
+            "children": [
+                {
+                    "id": "duplicate_child",
+                    "prompt": "A",
+                    "inputType": "time",
+                    "analysisMode": "predictor_next_day",
+                    "condition": {"operator": "greater_than", "value": 0},
+                },
+                {
+                    "id": "duplicate_child",
+                    "prompt": "B",
+                    "inputType": "time",
+                    "analysisMode": "predictor_next_day",
+                    "condition": {"operator": "greater_than", "value": 0},
+                },
+            ],
+            "defaultIncluded": True,
+        }
+    ]
+
+    assert _normalize_questions_payload(payload) is None
+
+
+def test_normalize_questions_payload_rejects_invalid_option_score() -> None:
+    payload = [
+        {
+            "id": "alcohol_units",
+            "section": "Nutrition",
+            "prompt": "Alcohol",
+            "inputType": "multi-choice",
+            "options": [{"id": "3plus", "label": "3+", "score": "bad"}],
+            "defaultIncluded": True,
+        }
+    ]
+
+    assert _normalize_questions_payload(payload) is None
+
+
+def test_normalize_questions_payload_rejects_parent_child_id_collision() -> None:
+    payload = [
+        {
+            "id": "caffeine_count",
+            "section": "Nutrition",
+            "prompt": "Caffeine",
+            "inputType": "slider",
+            "min": 0,
+            "max": 8,
+            "step": 1,
+            "children": [
+                {
+                    "id": "mood",
+                    "prompt": "Last caffeine drink",
+                    "inputType": "time",
+                    "analysisMode": "predictor_next_day",
+                    "condition": {"operator": "greater_than", "value": 0},
+                }
+            ],
+            "defaultIncluded": True,
+        },
+        {
+            "id": "mood",
+            "section": "Recovery",
+            "prompt": "Mood",
+            "inputType": "slider",
+            "min": 0,
+            "max": 10,
+            "step": 1,
+            "defaultIncluded": True,
+        },
+    ]
+
+    assert _normalize_questions_payload(payload) is None
+
+
+def test_normalize_questions_payload_keeps_backward_compatibility() -> None:
+    payload = [
+        {
+            "id": "mood",
+            "section": "Stress & Mind",
+            "prompt": "Mood",
+            "inputType": "slider",
+            "min": 0,
+            "max": 10,
+            "step": 1,
+            "defaultIncluded": True,
+        }
+    ]
+
+    normalized = _normalize_questions_payload(payload)
+    assert normalized is not None
+    assert normalized[0]["id"] == "mood"
+    assert normalized[0]["analysisMode"] == "predictor_next_day"
+    assert "children" not in normalized[0]
+
+
 def test_as_clock_time_supports_iso_and_epoch_ms() -> None:
     assert _as_clock_time("2026-02-21T23:47:00+00:00") == "23:47"
     assert _as_clock_time(1_700_000_000_000) == "22:13"
+
+
+def test_import_status_message_shows_progress_with_eta() -> None:
+    message = _import_status_message(
+        state="running",
+        started_at="2026-02-21T06:00:00+00:00",
+        days_requested=4,
+        days_succeeded=2,
+        now_utc=datetime(2026, 2, 21, 6, 20, tzinfo=timezone.utc),
+    )
+    assert message == "Import in progress · 2/4 days · ~20 min left"
+
+
+def test_import_status_message_handles_no_completed_days() -> None:
+    message = _import_status_message(
+        state="running",
+        started_at="2026-02-21T06:00:00+00:00",
+        days_requested=3,
+        days_succeeded=0,
+    )
+    assert message == "Import in progress · 0/3 days"
+
+
+def test_import_status_message_returns_default_when_not_running() -> None:
+    message = _import_status_message(
+        state="ok",
+        started_at="2026-02-21T06:00:00+00:00",
+        days_requested=3,
+        days_succeeded=3,
+    )
+    assert message == "Daily import scheduled · 06:00 local"
 
 
 def test_parse_import_request_refresh_uses_default_days() -> None:
@@ -196,6 +457,27 @@ def test_parse_import_request_rejects_invalid_payload(
             default_sync_days=2,
             today=date(2026, 2, 21),
         )
+
+
+def test_checkins_save_and_load_roundtrip(tmp_path: Path) -> None:
+    db_path = tmp_path / "garmin.db"
+    payload = {
+        "date": "2026-02-20",
+        "answers": {"energy": 8, "late_meal": "21:15", "alcohol": 0},
+    }
+
+    saved = _save_checkin_payload(str(db_path), payload)
+    assert saved["date"] == "2026-02-20"
+    assert saved["answers"]["energy"] == 8
+
+    loaded = _load_checkins_payload(
+        str(db_path),
+        from_date=date(2026, 2, 20),
+        to_date=date(2026, 2, 20),
+    )
+    assert len(loaded) == 1
+    assert loaded[0]["date"] == "2026-02-20"
+    assert loaded[0]["answers"]["late_meal"] == "21:15"
 
 
 def test_import_job_manager_rejects_when_sync_run_already_running(

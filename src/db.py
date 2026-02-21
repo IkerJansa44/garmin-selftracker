@@ -73,6 +73,22 @@ def finalize_sync_run(
     connection.commit()
 
 
+def update_sync_run_progress(
+    connection: sqlite3.Connection,
+    run_id: int,
+    *,
+    days_succeeded: int,
+) -> None:
+    connection.execute(
+        """
+        UPDATE sync_runs
+        SET days_succeeded = ?
+        WHERE id = ?
+        """,
+        (days_succeeded, run_id),
+    )
+
+
 def upsert_raw_payload(
     connection: sqlite3.Connection,
     *,
@@ -209,3 +225,63 @@ def upsert_setting_json(connection: sqlite3.Connection, key: str, value: Any) ->
         (key, json.dumps(value), utc_now()),
     )
     connection.commit()
+
+
+def upsert_checkin_entry(
+    connection: sqlite3.Connection,
+    *,
+    checkin_date: str,
+    answers: dict[str, Any],
+    completed_at: str | None = None,
+) -> dict[str, Any]:
+    completed_timestamp = completed_at or utc_now()
+    updated_at = utc_now()
+    connection.execute(
+        """
+        INSERT INTO checkin_entries (checkin_date, answers_json, completed_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(checkin_date) DO UPDATE SET
+            answers_json = excluded.answers_json,
+            completed_at = excluded.completed_at,
+            updated_at = excluded.updated_at
+        """,
+        (
+            checkin_date,
+            json.dumps(answers),
+            completed_timestamp,
+            updated_at,
+        ),
+    )
+    connection.commit()
+    return {
+        "date": checkin_date,
+        "answers": answers,
+        "completedAt": completed_timestamp,
+    }
+
+
+def get_checkin_entries(
+    connection: sqlite3.Connection,
+    *,
+    from_date: str,
+    to_date: str,
+) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT checkin_date, answers_json, completed_at
+        FROM checkin_entries
+        WHERE checkin_date BETWEEN ? AND ?
+        ORDER BY checkin_date
+        """,
+        (from_date, to_date),
+    ).fetchall()
+    entries: list[dict[str, Any]] = []
+    for row in rows:
+        entries.append(
+            {
+                "date": str(row["checkin_date"]),
+                "answers": json.loads(str(row["answers_json"])),
+                "completedAt": str(row["completed_at"]),
+            }
+        )
+    return entries

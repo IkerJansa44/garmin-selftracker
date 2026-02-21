@@ -8,6 +8,13 @@ export type MetricKey =
 
 export type CoverageState = "complete" | "partial" | "missing";
 export type ImportState = "ok" | "running" | "failed";
+export type AnalysisMode = "predictor_next_day" | "target_same_day";
+export type ChildConditionOperator =
+  | "equals"
+  | "not_equals"
+  | "greater_than"
+  | "at_least"
+  | "non_empty";
 
 export interface CheckInFactors {
   trainingIntensity: number;
@@ -29,6 +36,14 @@ export interface DailyRecord {
   importGap: boolean;
   importState: ImportState;
   fellAsleepAt?: string | null;
+  predictors: {
+    steps: number | null;
+    calories: number | null;
+    stressAvg: number | null;
+    bodyBattery: number | null;
+    sleepSeconds: number | null;
+    isTrainingDay: boolean;
+  };
   metrics: Record<MetricKey, number | null>;
   coverage: Record<MetricKey, CoverageState>;
   checkInFactors?: CheckInFactors;
@@ -39,22 +54,42 @@ export type InputType = "slider" | "multi-choice" | "boolean" | "time" | "text";
 export interface QuestionOption {
   id: string;
   label: string;
+  score?: number;
+}
+
+export interface ChildCondition {
+  operator: ChildConditionOperator;
+  value?: string | number | boolean;
+}
+
+export interface CheckInQuestionChild {
+  id: string;
+  prompt: string;
+  inputType: InputType;
+  analysisMode: AnalysisMode;
+  min?: number;
+  max?: number;
+  step?: number;
+  options?: QuestionOption[];
+  condition: ChildCondition;
 }
 
 export interface CheckInQuestion {
   id: string;
   section: string;
   prompt: string;
+  inputLabel?: string;
   inputType: InputType;
+  analysisMode: AnalysisMode;
   min?: number;
   max?: number;
   step?: number;
   options?: QuestionOption[];
+  children?: CheckInQuestionChild[];
   defaultIncluded: boolean;
 }
 
 export interface CheckInEntry {
-  id: string;
   date: string;
   answers: Record<string, string | number | boolean>;
   completedAt: string;

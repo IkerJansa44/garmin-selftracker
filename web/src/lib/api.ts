@@ -1,4 +1,9 @@
-import { type CheckInQuestion, type DailyRecord, type ImportState } from "./types";
+import {
+  type CheckInEntry,
+  type CheckInQuestion,
+  type DailyRecord,
+  type ImportState,
+} from "./types";
 
 interface ImportStatusSummary {
   state: ImportState;
@@ -20,6 +25,14 @@ export interface DashboardApiResponse {
 
 export interface QuestionsApiResponse {
   questions: CheckInQuestion[];
+}
+
+interface CheckInsApiResponse {
+  entries: CheckInEntry[];
+}
+
+interface CheckInSaveApiResponse {
+  entry: CheckInEntry;
 }
 
 interface ImportApiResponse {
@@ -78,6 +91,38 @@ export async function saveQuestionSettings(
     throw new Error(`Saving questions failed: ${response.status}`);
   }
   return (await response.json()) as QuestionsApiResponse;
+}
+
+export async function fetchCheckIns(
+  fromDate: string,
+  toDate: string,
+  signal?: AbortSignal,
+): Promise<CheckInsApiResponse> {
+  const response = await fetch(
+    `/api/checkins?fromDate=${encodeURIComponent(fromDate)}&toDate=${encodeURIComponent(toDate)}`,
+    { signal },
+  );
+  if (!response.ok) {
+    throw new Error(`Check-ins API failed: ${response.status}`);
+  }
+  return (await response.json()) as CheckInsApiResponse;
+}
+
+export async function saveCheckIn(
+  date: string,
+  answers: Record<string, string | number | boolean>,
+  signal?: AbortSignal,
+): Promise<CheckInSaveApiResponse> {
+  const response = await fetch("/api/checkins", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ date, answers }),
+    signal,
+  });
+  if (!response.ok) {
+    throw await readApiError(response, `Saving check-in failed: ${response.status}`);
+  }
+  return (await response.json()) as CheckInSaveApiResponse;
 }
 
 export async function startRefreshImport(signal?: AbortSignal): Promise<ImportApiResponse> {

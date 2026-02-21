@@ -223,6 +223,14 @@ export function generateMockRecords(totalDays = TOTAL_DAYS): DailyRecord[] {
       isTrainingDay: currentFactors.trainingIntensity >= 6,
       importGap,
       importState: normalizeImportState(dayIndex, importGap),
+      predictors: {
+        steps: currentFactors.trainingIntensity * 1200 + Math.round(noise(dayIndex + 71) * 2500),
+        calories: 1700 + currentFactors.trainingIntensity * 120,
+        stressAvg: metrics.stress,
+        bodyBattery: metrics.bodyBattery,
+        sleepSeconds: metrics.sleepScore === null ? null : metrics.sleepScore * 300,
+        isTrainingDay: currentFactors.trainingIntensity >= 6,
+      },
       metrics,
       coverage,
       checkInFactors: currentFactors,
@@ -237,20 +245,20 @@ export function generateHistoryFromRecords(records: DailyRecord[]): CheckInEntry
     .slice(-42)
     .filter((record, index) => index % 3 !== 0)
     .map((record, index) => {
-      const alcoholLabel =
-        record.checkInFactors.alcoholUnits >= 3
-          ? "3+"
-          : String(record.checkInFactors.alcoholUnits);
+      const alcoholUnits = record.checkInFactors.alcoholUnits;
+      const alcoholLabel = alcoholUnits >= 3 ? "3plus" : String(alcoholUnits);
+      const caffeineCount = record.checkInFactors.caffeineCount;
       const mealFinishTime = record.checkInFactors.lateMeal ? "21:15" : "19:30";
       const sleepTime = record.checkInFactors.lateMeal ? "23:30" : "22:45";
 
       return {
-        id: `checkin-${record.date}`,
         date: record.date,
         completedAt: `${record.date}T21:${String((index * 7) % 59).padStart(2, "0")}:00Z`,
         answers: {
-          caffeine_count: record.checkInFactors.caffeineCount,
+          caffeine_count: caffeineCount,
+          ...(caffeineCount > 0 ? { caffeine_last_time: "15:30" } : {}),
           alcohol_units: alcoholLabel,
+          ...(alcoholUnits > 0 ? { alcohol_last_time: "20:45" } : {}),
           late_meal: mealFinishTime,
           sleep_time: sleepTime,
           screen_minutes: record.checkInFactors.lateScreenMinutes,
@@ -262,9 +270,11 @@ export function generateHistoryFromRecords(records: DailyRecord[]): CheckInEntry
     });
 }
 
-export function defaultDraftAnswers(): Record<string, string | number | boolean> {
+export function defaultDraftAnswers(
+  questions = DEFAULT_QUESTIONS,
+): Record<string, string | number | boolean> {
   return Object.fromEntries(
-    DEFAULT_QUESTIONS.map((question) => {
+    questions.map((question) => {
       if (question.inputType === "slider") {
         return [question.id, question.min ?? 0];
       }
