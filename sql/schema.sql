@@ -61,3 +61,20 @@ CREATE TABLE IF NOT EXISTS checkin_entries (
     completed_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS analysis_values (
+    analysis_date TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('predictor', 'target')),
+    feature_key TEXT NOT NULL,
+    value_num REAL,
+    value_text TEXT,
+    value_bool INTEGER,
+    source_date TEXT NOT NULL,
+    lag_days INTEGER NOT NULL,
+    alignment_rule TEXT NOT NULL,
+    refreshed_at TEXT NOT NULL,
+    PRIMARY KEY (analysis_date, role, feature_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_analysis_values_feature
+ON analysis_values (feature_key, role, analysis_date);

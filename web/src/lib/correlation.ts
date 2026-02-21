@@ -1,7 +1,7 @@
 import { mean, pearsonCorrelation } from "./mockData";
 import { flattenQuestionFields, type QuestionFieldDefinition } from "./questions";
 import {
-  type CheckInEntry,
+  type AnalysisValueRecord,
   type CheckInQuestion,
   type DailyRecord,
   type DerivedPredictorDefinition,
@@ -76,12 +76,6 @@ const OUTCOME_LABELS: Record<MetricKey, string> = {
   bodyBattery: "Body Battery",
   trainingReadiness: "Training Readiness",
 };
-
-function shiftIsoDate(isoDate: string, offsetDays: number): string {
-  const [year, month, day] = isoDate.split("-").map((value) => Number(value));
-  const shifted = new Date(Date.UTC(year, month - 1, day + offsetDays));
-  return shifted.toISOString().slice(0, 10);
-}
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
@@ -312,25 +306,60 @@ function parseQuestionValue(question: QuestionFieldDefinition, value: unknown): 
   return null;
 }
 
+type AnalysisValueIndex = {
+  predictorByDate: Map<string, Map<string, AnalysisValueRecord>>;
+  targetByDate: Map<string, Map<string, AnalysisValueRecord>>;
+};
+
+function buildAnalysisValueIndex(values: AnalysisValueRecord[]): AnalysisValueIndex {
+  const predictorByDate = new Map<string, Map<string, AnalysisValueRecord>>();
+  const targetByDate = new Map<string, Map<string, AnalysisValueRecord>>();
+  for (const value of values) {
+    const roleMap = value.role === "predictor" ? predictorByDate : targetByDate;
+    const byFeature = roleMap.get(value.analysisDate) ?? new Map<string, AnalysisValueRecord>();
+    byFeature.set(value.featureKey, value);
+    roleMap.set(value.analysisDate, byFeature);
+  }
+  return { predictorByDate, targetByDate };
+}
+
+function analysisScalarValue(value: AnalysisValueRecord | undefined): unknown {
+  if (!value) {
+    return null;
+  }
+  if (value.valueBool !== null) {
+    return value.valueBool;
+  }
+  if (value.valueNum !== null) {
+    return value.valueNum;
+  }
+  return value.valueText;
+}
+
+function analysisNumericValue(value: AnalysisValueRecord | undefined): number | null {
+  if (!value) {
+    return null;
+  }
+  if (typeof value.valueNum === "number" && Number.isFinite(value.valueNum)) {
+    return value.valueNum;
+  }
+  if (typeof value.valueBool === "boolean") {
+    return value.valueBool ? 1 : 0;
+  }
+  return null;
+}
+
 function parseBasePredictorValue(
   predictor: BasePredictorKey,
-  recordsByDate: Map<string, DailyRecord>,
-  checkinsByDate: Map<string, CheckInEntry>,
+  analysisValueIndex: AnalysisValueIndex,
   questionsById: Map<string, QuestionFieldDefinition>,
   outcomeDate: string,
 ): number | null {
-  const predictorDate = shiftIsoDate(outcomeDate, -1);
-  const predictorRecord = recordsByDate.get(predictorDate);
+  const predictorValuesByFeature = analysisValueIndex.predictorByDate.get(outcomeDate);
   if (predictor.startsWith("garmin:")) {
-    if (!predictorRecord) {
-      return null;
-    }
     const key = predictor.slice(7) as GarminPredictorKey;
-    if (key === "isTrainingDay") {
-      return predictorRecord.predictors.isTrainingDay ? 1 : 0;
-    }
-    const value = predictorRecord.predictors[key];
-    if (typeof value !== "number" || !Number.isFinite(value)) {
+    const value = analysisNumericValue(predictorValuesByFeature?.get(`garmin:${key}`));
+    if (value === null) {
       return null;
     }
     if (key === "sleepSeconds") {
@@ -344,8 +373,10 @@ function parseBasePredictorValue(
   if (!question || question.analysisMode !== "predictor_next_day") {
     return null;
   }
-  const entry = checkinsByDate.get(predictorDate);
-  return parseQuestionValue(question, entry?.answers[questionId]);
+  return parseQuestionValue(
+    question,
+    analysisScalarValue(predictorValuesByFeature?.get(`question:${questionId}`)),
+  );
 }
 
 function derivedBinIndex(value: number, cutPoints: number[]): number {
@@ -358,8 +389,7 @@ function derivedBinIndex(value: number, cutPoints: number[]): number {
 
 function parsePredictorValue(
   predictor: PredictorKey,
-  recordsByDate: Map<string, DailyRecord>,
-  checkinsByDate: Map<string, CheckInEntry>,
+  analysisValueIndex: AnalysisValueIndex,
   questionsById: Map<string, QuestionFieldDefinition>,
   derivedById: Map<string, DerivedPredictorDefinition>,
   outcomeDate: string,
@@ -372,8 +402,7 @@ function parsePredictorValue(
     }
     const sourceValue = parseBasePredictorValue(
       definition.sourceKey as BasePredictorKey,
-      recordsByDate,
-      checkinsByDate,
+      analysisValueIndex,
       questionsById,
       outcomeDate,
     );
@@ -385,8 +414,7 @@ function parsePredictorValue(
 
   return parseBasePredictorValue(
     predictor,
-    recordsByDate,
-    checkinsByDate,
+    analysisValueIndex,
     questionsById,
     outcomeDate,
   );
@@ -394,21 +422,23 @@ function parsePredictorValue(
 
 function parseOutcomeValue(
   outcome: OutcomeKey,
-  record: DailyRecord,
-  checkinsByDate: Map<string, CheckInEntry>,
+  analysisValueIndex: AnalysisValueIndex,
   questionsById: Map<string, QuestionFieldDefinition>,
+  outcomeDate: string,
 ): number | null {
+  const targetValuesByFeature = analysisValueIndex.targetByDate.get(outcomeDate);
   if (outcome.startsWith("metric:")) {
-    const metric = outcome.slice(7) as MetricKey;
-    return record.metrics[metric];
+    return analysisNumericValue(targetValuesByFeature?.get(outcome));
   }
   const questionId = outcome.slice(9);
   const question = questionsById.get(questionId);
   if (!question || question.analysisMode !== "target_same_day") {
     return null;
   }
-  const entry = checkinsByDate.get(record.date);
-  return parseQuestionValue(question, entry?.answers[questionId]);
+  return parseQuestionValue(
+    question,
+    analysisScalarValue(targetValuesByFeature?.get(`question:${questionId}`)),
+  );
 }
 
 function buildContinuousPair(
@@ -689,20 +719,20 @@ export function calculateQuantileCutPoints(values: number[], bins: number): numb
 
 export function buildPredictorDistribution({
   records,
-  checkinsByDate,
+  analysisValues,
   questions,
   predictor,
   weekdayOnly,
   trainingOnly,
 }: {
   records: DailyRecord[];
-  checkinsByDate: Map<string, CheckInEntry>;
+  analysisValues: AnalysisValueRecord[];
   questions: CheckInQuestion[];
   predictor: BasePredictorKey;
   weekdayOnly: boolean;
   trainingOnly: boolean;
 }): number[] {
-  const recordsByDate = new Map(records.map((record) => [record.date, record]));
+  const analysisValueIndex = buildAnalysisValueIndex(analysisValues);
   const questionFields = flattenQuestionFields(questions);
   const questionsById = new Map(questionFields.map((question) => [question.id, question]));
   const values: number[] = [];
@@ -716,8 +746,7 @@ export function buildPredictorDistribution({
     }
     const value = parseBasePredictorValue(
       predictor,
-      recordsByDate,
-      checkinsByDate,
+      analysisValueIndex,
       questionsById,
       record.date,
     );
@@ -732,20 +761,20 @@ export function buildPredictorDistribution({
 
 export function buildCorrelationCatalog({
   records,
-  checkinsByDate,
+  analysisValues,
   questions,
   derivedPredictors,
   weekdayOnly,
   trainingOnly,
 }: {
   records: DailyRecord[];
-  checkinsByDate: Map<string, CheckInEntry>;
+  analysisValues: AnalysisValueRecord[];
   questions: CheckInQuestion[];
   derivedPredictors: DerivedPredictorDefinition[];
   weekdayOnly: boolean;
   trainingOnly: boolean;
 }): CorrelationPairResult[] {
-  const recordsByDate = new Map(records.map((record) => [record.date, record]));
+  const analysisValueIndex = buildAnalysisValueIndex(analysisValues);
   const questionFields = flattenQuestionFields(questions);
   const questionsById = new Map(questionFields.map((question) => [question.id, question]));
   const derivedById = new Map(derivedPredictors.map((definition) => [definition.id, definition]));
@@ -770,13 +799,17 @@ export function buildCorrelationCatalog({
         }
         const x = parsePredictorValue(
           predictor,
-          recordsByDate,
-          checkinsByDate,
+          analysisValueIndex,
           questionsById,
           derivedById,
           record.date,
         );
-        const y = parseOutcomeValue(outcome, record, checkinsByDate, questionsById);
+        const y = parseOutcomeValue(
+          outcome,
+          analysisValueIndex,
+          questionsById,
+          record.date,
+        );
         if (x === null || y === null) {
           continue;
         }
@@ -837,7 +870,7 @@ export function findCorrelationPair(
 
 export function buildCorrelationResult({
   records,
-  checkinsByDate,
+  analysisValues,
   questions,
   predictor,
   outcome,
@@ -846,7 +879,7 @@ export function buildCorrelationResult({
   trainingOnly,
 }: {
   records: DailyRecord[];
-  checkinsByDate: Map<string, CheckInEntry>;
+  analysisValues: AnalysisValueRecord[];
   questions: CheckInQuestion[];
   predictor: PredictorKey;
   outcome: OutcomeKey;
@@ -854,7 +887,7 @@ export function buildCorrelationResult({
   weekdayOnly: boolean;
   trainingOnly: boolean;
 }): CorrelationResult {
-  const recordsByDate = new Map(records.map((record) => [record.date, record]));
+  const analysisValueIndex = buildAnalysisValueIndex(analysisValues);
   const questionFields = flattenQuestionFields(questions);
   const questionsById = new Map(questionFields.map((question) => [question.id, question]));
   const derivedById = new Map(derivedPredictors.map((definition) => [definition.id, definition]));
@@ -869,13 +902,17 @@ export function buildCorrelationResult({
     }
     const x = parsePredictorValue(
       predictor,
-      recordsByDate,
-      checkinsByDate,
+      analysisValueIndex,
       questionsById,
       derivedById,
       record.date,
     );
-    const y = parseOutcomeValue(outcome, record, checkinsByDate, questionsById);
+    const y = parseOutcomeValue(
+      outcome,
+      analysisValueIndex,
+      questionsById,
+      record.date,
+    );
     if (x === null || y === null) {
       continue;
     }

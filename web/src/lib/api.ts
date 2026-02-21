@@ -1,4 +1,5 @@
 import {
+  type AnalysisValueRecord,
   type CheckInEntry,
   type DerivedPredictorDefinition,
   type CheckinReminderSettings,
@@ -35,6 +36,10 @@ export interface DerivedPredictorsApiResponse {
 
 interface CheckInsApiResponse {
   entries: CheckInEntry[];
+}
+
+interface CorrelationValuesApiResponse {
+  values: AnalysisValueRecord[];
 }
 
 interface CheckInSaveApiResponse {
@@ -175,6 +180,21 @@ export async function fetchCheckIns(
     throw new Error(`Check-ins API failed: ${response.status}`);
   }
   return (await response.json()) as CheckInsApiResponse;
+}
+
+export async function fetchCorrelationValues(
+  fromDate: string,
+  toDate: string,
+  signal?: AbortSignal,
+): Promise<CorrelationValuesApiResponse> {
+  const response = await fetch(
+    `/api/correlation/values?fromDate=${encodeURIComponent(fromDate)}&toDate=${encodeURIComponent(toDate)}`,
+    { signal },
+  );
+  if (!response.ok) {
+    throw new Error(`Correlation values API failed: ${response.status}`);
+  }
+  return (await response.json()) as CorrelationValuesApiResponse;
 }
 
 export async function saveCheckIn(

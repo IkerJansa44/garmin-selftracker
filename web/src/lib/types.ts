@@ -36,6 +36,7 @@ export interface DailyRecord {
   importGap: boolean;
   importState: ImportState;
   fellAsleepAt?: string | null;
+  fellAsleepAtIso?: string | null;
   predictors: {
     steps: number | null;
     calories: number | null;
@@ -93,6 +94,20 @@ export interface CheckInEntry {
   date: string;
   answers: Record<string, string | number | boolean>;
   completedAt: string;
+}
+
+export type AnalysisValueRole = "predictor" | "target";
+
+export interface AnalysisValueRecord {
+  analysisDate: string;
+  role: AnalysisValueRole;
+  featureKey: string;
+  valueNum: number | null;
+  valueText: string | null;
+  valueBool: boolean | null;
+  sourceDate: string;
+  lagDays: number;
+  alignmentRule: string;
 }
 
 export interface ExploreSettings {

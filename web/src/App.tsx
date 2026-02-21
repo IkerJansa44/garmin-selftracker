@@ -70,6 +70,7 @@ import {
   type OutcomeKey,
   type PredictorKey,
 } from "./lib/correlation";
+import { sleepMetricDateForPredictorDate } from "./lib/dateAlignment";
 import {
   flattenQuestionFields,
   getVisibleChildren,
@@ -79,6 +80,7 @@ import {
 import {
   fetchCheckinReminderSettings,
   fetchCheckIns,
+  fetchCorrelationValues,
   fetchDashboardData,
   fetchDashboardPlotSettings,
   fetchDerivedPredictors,
@@ -99,6 +101,7 @@ import {
   type CheckInQuestionChild,
   type CheckInEntry,
   type CheckinReminderSettings,
+  type AnalysisValueRecord,
   type CoverageState,
   type ChildConditionOperator,
   type DailyRecord,
@@ -626,6 +629,25 @@ function formatMinutesAsHours(minutes: number | null): string {
   return `${hours}h ${remainingMinutes}m`;
 }
 
+function formatSecondsAsHours(seconds: number | null): string {
+  if (seconds === null || !Number.isFinite(seconds)) {
+    return "--";
+  }
+  return formatMinutesAsHours(Math.round(seconds / 60));
+}
+
+function formatIsoClockTimeLocal(value: string): string | null {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return parsed.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
 function formatIsoDateLocal(value: Date): string {
   const year = value.getFullYear();
   const month = String(value.getMonth() + 1).padStart(2, "0");
@@ -1026,6 +1048,7 @@ function App() {
     JSON.stringify(DEFAULT_CHECKIN_REMINDER_SETTINGS),
   );
   const [allRecords, setAllRecords] = useState<DailyRecord[]>([]);
+  const [analysisValues, setAnalysisValues] = useState<AnalysisValueRecord[]>([]);
   const [checkinEntriesByDate, setCheckinEntriesByDate] = useState<Record<string, CheckInEntry>>({});
   const [checkinSyncError, setCheckinSyncError] = useState<string | null>(null);
   const [isSavingCheckin, setIsSavingCheckin] = useState(false);
@@ -1174,6 +1197,36 @@ function App() {
     void loadCheckins();
     return () => controller.abort();
   }, [allRecords]);
+
+  const loadCorrelationValues = useCallback(
+    async (signal?: AbortSignal) => {
+      if (!allRecords.length) {
+        setAnalysisValues([]);
+        return;
+      }
+      const firstDate = allRecords[0]?.date;
+      const lastDate = allRecords[allRecords.length - 1]?.date;
+      if (!firstDate || !lastDate) {
+        return;
+      }
+      try {
+        const payload = await fetchCorrelationValues(firstDate, lastDate, signal);
+        setAnalysisValues(payload.values);
+      } catch {
+        if (signal?.aborted) {
+          return;
+        }
+        setAnalysisValues([]);
+      }
+    },
+    [allRecords],
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadCorrelationValues(controller.signal);
+    return () => controller.abort();
+  }, [loadCorrelationValues]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1734,14 +1787,14 @@ function App() {
     () =>
       buildCorrelationCatalog({
         records: correlationRecords,
-        checkinsByDate: checkinsByDateMap,
+        analysisValues,
         questions: questionLibrary,
         derivedPredictors,
         weekdayOnly: false,
         trainingOnly: false,
       }),
     [
-      checkinsByDateMap,
+      analysisValues,
       correlationRecords,
       derivedPredictors,
       questionLibrary,
@@ -1832,14 +1885,14 @@ function App() {
     () =>
       buildPredictorDistribution({
         records: correlationRecords,
-        checkinsByDate: checkinsByDateMap,
+        analysisValues,
         questions: questionLibrary,
         predictor: selectedDerivedSource,
         weekdayOnly: false,
         trainingOnly: false,
       }),
     [
-      checkinsByDateMap,
+      analysisValues,
       correlationRecords,
       questionLibrary,
       selectedDerivedSource,
@@ -1953,13 +2006,26 @@ function App() {
   );
   const selectedCheckinEntry = checkinEntriesByDate[selectedCheckinDate];
   const isSelectedDateSaved = Boolean(selectedCheckinEntry);
+  const selectedPredictorSourceDate = selectedCheckinRecord?.date ?? selectedCheckinDate;
+  const selectedSleepMetricDate = sleepMetricDateForPredictorDate(selectedPredictorSourceDate);
+  const selectedSleepRecord = useMemo(
+    () => allRecords.find((record) => record.date === selectedSleepMetricDate) ?? null,
+    [allRecords, selectedSleepMetricDate],
+  );
   const selectedFellAsleepTime = useMemo(() => {
-    if (selectedCheckinRecord?.fellAsleepAt) {
-      return selectedCheckinRecord.fellAsleepAt;
+    if (selectedSleepRecord?.fellAsleepAtIso) {
+      const formatted = formatIsoClockTimeLocal(selectedSleepRecord.fellAsleepAtIso);
+      if (formatted) {
+        return formatted;
+      }
+    }
+    if (selectedSleepRecord?.fellAsleepAt) {
+      return selectedSleepRecord.fellAsleepAt;
     }
     const legacySleepTime = draftAnswers[SLEEP_TIME_QUESTION_ID];
     return typeof legacySleepTime === "string" && legacySleepTime ? legacySleepTime : null;
-  }, [draftAnswers, selectedCheckinRecord]);
+  }, [draftAnswers, selectedSleepRecord]);
+  const selectedSleepDuration = selectedSleepRecord?.predictors.sleepSeconds ?? null;
   const selectedSteps = selectedCheckinRecord?.predictors.steps ?? null;
   const selectedActivityLabel = useMemo(() => {
     if (!selectedCheckinRecord) {
@@ -2092,6 +2158,7 @@ function App() {
         ...previous,
         [payload.entry.date]: payload.entry,
       }));
+      await loadCorrelationValues();
       setCheckinSaveMessage(`Saved check-in for ${formatReadableDate(payload.entry.date)}.`);
     } catch (error) {
       const message =
@@ -3205,12 +3272,15 @@ function App() {
                 })}
               </div>
 
-              <div className="mt-5 grid gap-4 md:grid-cols-3">
+              <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                 <div className="rounded-[22px] bg-subsurface p-4">
                   <p className="text-xs uppercase tracking-[0.16em] text-muted">Predictor</p>
                   <p className="mt-2 text-sm text-muted">Steps (Garmin)</p>
                   <p className="metric-number mt-1 text-2xl font-semibold text-ink">
                     {selectedSteps === null ? "--" : selectedSteps.toLocaleString()}
+                  </p>
+                  <p className="mt-1 text-xs text-muted">
+                    Source date: {selectedPredictorSourceDate}
                   </p>
                 </div>
                 <div className="rounded-[22px] bg-subsurface p-4">
@@ -3219,12 +3289,28 @@ function App() {
                   <p className="metric-number mt-1 text-2xl font-semibold text-ink">
                     {selectedActivityLabel}
                   </p>
+                  <p className="mt-1 text-xs text-muted">
+                    Source date: {selectedPredictorSourceDate}
+                  </p>
                 </div>
                 <div className="rounded-[22px] bg-subsurface p-4">
                   <p className="text-xs uppercase tracking-[0.16em] text-muted">Predictor</p>
                   <p className="mt-2 text-sm text-muted">Fell asleep at (Garmin)</p>
                   <p className="metric-number mt-1 text-2xl font-semibold text-ink">
                     {selectedFellAsleepTime ?? "--:--"}
+                  </p>
+                  <p className="mt-1 text-xs text-muted">
+                    Source date: {selectedPredictorSourceDate}
+                  </p>
+                </div>
+                <div className="rounded-[22px] bg-subsurface p-4">
+                  <p className="text-xs uppercase tracking-[0.16em] text-muted">Predictor</p>
+                  <p className="mt-2 text-sm text-muted">Sleep Duration (Garmin)</p>
+                  <p className="metric-number mt-1 text-2xl font-semibold text-ink">
+                    {formatSecondsAsHours(selectedSleepDuration)}
+                  </p>
+                  <p className="mt-1 text-xs text-muted">
+                    Source date: {selectedPredictorSourceDate}
                   </p>
                 </div>
               </div>
