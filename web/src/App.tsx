@@ -817,6 +817,7 @@ function App() {
   const [showAddPlotMenu, setShowAddPlotMenu] = useState(false);
   const addPlotMenuRef = useRef<HTMLDivElement | null>(null);
   const [plotSearchQuery, setPlotSearchQuery] = useState("");
+  const [addPlotSearchQuery, setAddPlotSearchQuery] = useState("");
   const [pendingAddPlot, setPendingAddPlot] = useState<DashboardPlotVariableOption | null>(null);
   const [draftAnswers, setDraftAnswers] = usePersistentState<Record<string, string | number | boolean>>(
     "ui.checkinDraft",
@@ -1196,6 +1197,12 @@ function App() {
   }, [activeView, showAddPlotMenu]);
 
   useEffect(() => {
+    if (!showAddPlotMenu) {
+      setAddPlotSearchQuery("");
+    }
+  }, [showAddPlotMenu]);
+
+  useEffect(() => {
     if (activeView !== "dashboard" && pendingAddPlot) {
       setPendingAddPlot(null);
     }
@@ -1309,7 +1316,7 @@ function App() {
 
   const addableDashboardPlotOptions = useMemo(() => {
     const selected = new Set(dashboardPlotPreferences.map((plot) => plot.key));
-    const query = plotSearchQuery.trim().toLowerCase();
+    const query = addPlotSearchQuery.trim().toLowerCase();
     return dashboardPlotOptions.filter((option) => {
       if (selected.has(option.key)) {
         return false;
@@ -1319,7 +1326,7 @@ function App() {
       }
       return option.label.toLowerCase().includes(query) || option.key.toLowerCase().includes(query);
     });
-  }, [dashboardPlotOptions, dashboardPlotPreferences, plotSearchQuery]);
+  }, [addPlotSearchQuery, dashboardPlotOptions, dashboardPlotPreferences]);
   const dashboardPlots = useMemo<DashboardPlot[]>(
     () =>
       dashboardPlotPreferences
@@ -1965,6 +1972,13 @@ function App() {
                   </button>
                   {showAddPlotMenu && (
                     <div className="absolute right-0 top-full z-20 mt-2 w-72 rounded-2xl bg-panel p-2 shadow-soft">
+                      <input
+                        className="focusable mb-2 min-h-10 w-full rounded-xl bg-subsurface px-3 text-sm"
+                        placeholder="Search plots"
+                        type="search"
+                        value={addPlotSearchQuery}
+                        onChange={(event) => setAddPlotSearchQuery(event.target.value)}
+                      />
                       {addableDashboardPlotOptions.length ? (
                         <div className="space-y-1">
                           {addableDashboardPlotOptions.map((option) => (
@@ -1979,7 +1993,11 @@ function App() {
                           ))}
                         </div>
                       ) : (
-                        <p className="px-2 py-2 text-sm text-muted">All variables are already plotted.</p>
+                        <p className="px-2 py-2 text-sm text-muted">
+                          {addPlotSearchQuery.trim()
+                            ? "No plots match your search."
+                            : "All variables are already plotted."}
+                        </p>
                       )}
                     </div>
                   )}
