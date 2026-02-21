@@ -121,6 +121,64 @@ function buildCheckins(days: number): Map<string, CheckInEntry> {
   return entries;
 }
 
+function buildModerateAnovaRecords(days: number): DailyRecord[] {
+  return Array.from({ length: days }, (_, index) => {
+    const priorGroup = index === 0 ? 0 : (index - 1) % 3;
+    const noise = (index % 5) - 2;
+    const sleepScore = 50 + noise + priorGroup * 0.8;
+    return {
+      date: buildDate(index),
+      dayIndex: index,
+      weekday: index % 7,
+      isTrainingDay: index % 2 === 0,
+      importGap: false,
+      importState: "ok",
+      fellAsleepAt: null,
+      predictors: {
+        steps: 7000 + index * 100,
+        calories: 2100 + (index % 4) * 120,
+        stressAvg: 25 + (index % 5),
+        bodyBattery: 70 - (index % 3),
+        sleepSeconds: 25000 + (index % 4) * 900,
+        isTrainingDay: index % 2 === 0,
+      },
+      metrics: {
+        recoveryIndex: sleepScore - 3,
+        sleepScore,
+        restingHr: 48 + priorGroup,
+        stress: 28 + priorGroup,
+        bodyBattery: 70 - priorGroup,
+        trainingReadiness: sleepScore - 4,
+      },
+      coverage: {
+        recoveryIndex: "complete",
+        sleepScore: "complete",
+        restingHr: "complete",
+        stress: "complete",
+        bodyBattery: "complete",
+        trainingReadiness: "complete",
+      },
+    };
+  });
+}
+
+function buildThreeBinCheckins(days: number): Map<string, CheckInEntry> {
+  const entries = new Map<string, CheckInEntry>();
+  const caffeinePattern = [0, 1, 3];
+  for (let index = 0; index < days; index += 1) {
+    entries.set(buildDate(index), {
+      date: buildDate(index),
+      completedAt: `${buildDate(index)}T21:00:00+00:00`,
+      answers: {
+        caffeine_count: caffeinePattern[index % caffeinePattern.length],
+        late_meal: "21:15",
+        energy: 5,
+      },
+    });
+  }
+  return entries;
+}
+
 describe("correlation helpers", () => {
   it("builds predictor and outcome options with expanded metric outcomes", () => {
     const predictors = buildPredictorOptions(QUESTIONS);
@@ -222,6 +280,45 @@ describe("correlation helpers", () => {
 
     expect(values.length).toBe(29);
     expect(values.every((value) => value > 4 && value < 12)).toBe(true);
+  });
+
+  it("keeps ANOVA p-values accurate in the F-CDF complement branch", () => {
+    const records = buildModerateAnovaRecords(61);
+    const checkinsByDate = buildThreeBinCheckins(61);
+    const derived: DerivedPredictorDefinition[] = [
+      {
+        id: "caffeine_three_bins",
+        name: "Caffeine three bins",
+        sourceKey: "question:caffeine_count",
+        mode: "threshold",
+        cutPoints: [1, 2],
+        labels: ["<1", "1", ">=2"],
+      },
+    ];
+
+    const catalog = buildCorrelationCatalog({
+      records,
+      checkinsByDate,
+      questions: QUESTIONS,
+      derivedPredictors: derived,
+      weekdayOnly: false,
+      trainingOnly: false,
+    });
+    const pair = findCorrelationPair(catalog, "derived:caffeine_three_bins", "metric:sleepScore");
+
+    expect(pair).not.toBeNull();
+    expect(pair?.testType).toBe("categorical");
+    expect(pair?.categoryCounts).toEqual([20, 20, 20]);
+
+    const fStatistic = pair?.fStatistic ?? 0;
+    const df2 = (pair?.sampleCount ?? 0) - 3;
+    const complementThreshold = (2 * df2) / (df2 + 2);
+    expect(fStatistic).toBeGreaterThan(complementThreshold);
+
+    const expectedTail = (df2 / (df2 + 2 * fStatistic)) ** (df2 / 2);
+    expect(pair?.pValue).not.toBeNull();
+    expect(pair?.pValue).toBeGreaterThan(0);
+    expect(pair?.pValue).toBeCloseTo(expectedTail, 6);
   });
 
   it("classifies low sample pairs as exploratory/insufficient", () => {

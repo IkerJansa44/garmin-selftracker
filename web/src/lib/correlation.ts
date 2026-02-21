@@ -199,7 +199,7 @@ function regularizedIncompleteBeta(x: number, alpha: number, beta: number): numb
   }
 
   return 1 - (
-    (Math.exp(beta * Math.log(x) + alpha * Math.log(1 - x) - logBeta) / beta)
+    (Math.exp(alpha * Math.log(x) + beta * Math.log(1 - x) - logBeta) / beta)
     * betaContinuedFraction(1 - x, beta, alpha)
   );
 }
