@@ -117,3 +117,8 @@ export interface DerivedPredictorDefinition {
 export interface DerivedPredictorPayload {
   definitions: DerivedPredictorDefinition[];
 }
+
+export interface CheckinReminderSettings {
+  enabled: boolean;
+  notifyAfter: string;
+}

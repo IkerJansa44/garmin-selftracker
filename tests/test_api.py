@@ -13,15 +13,18 @@ from src.api import (
     ImportRequest,
     _as_clock_time,
     _load_derived_predictors_payload,
+    _load_checkin_reminder_settings_payload,
     _import_status_message,
     _load_checkins_payload,
     _load_dashboard_plots_payload,
+    _normalize_checkin_reminder_settings_payload,
     _normalize_dashboard_plots_payload,
     _normalize_derived_predictors_payload,
     _normalize_questions_payload,
     _parse_import_request,
     _save_derived_predictors_payload,
     _save_checkin_payload,
+    _save_checkin_reminder_settings_payload,
     _save_dashboard_plots_payload,
 )
 from src.db import connect_db, init_db
@@ -396,6 +399,48 @@ def test_normalize_dashboard_plots_payload_rejects_invalid_direction() -> None:
     assert _normalize_dashboard_plots_payload(payload) is None
 
 
+def test_normalize_checkin_reminder_settings_payload_accepts_valid_payload() -> None:
+    payload = {"enabled": True, "notifyAfter": "22:30"}
+
+    normalized = _normalize_checkin_reminder_settings_payload(payload)
+    assert normalized == payload
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"notifyAfter": "22:30"},
+        {"enabled": True},
+        {"enabled": "yes", "notifyAfter": "22:30"},
+        {"enabled": True, "notifyAfter": "24:00"},
+        {"enabled": True, "notifyAfter": "22:75"},
+        {"enabled": True, "notifyAfter": "bad"},
+    ],
+)
+def test_normalize_checkin_reminder_settings_payload_rejects_invalid_payload(
+    payload: object,
+) -> None:
+    assert _normalize_checkin_reminder_settings_payload(payload) is None
+
+
+def test_checkin_reminder_settings_load_defaults_when_missing(tmp_path: Path) -> None:
+    db_path = tmp_path / "garmin.db"
+
+    loaded = _load_checkin_reminder_settings_payload(str(db_path))
+    assert loaded == {"enabled": True, "notifyAfter": "22:30"}
+
+
+def test_checkin_reminder_settings_save_and_load_roundtrip(tmp_path: Path) -> None:
+    db_path = tmp_path / "garmin.db"
+    payload = {"enabled": False, "notifyAfter": "21:15"}
+
+    saved = _save_checkin_reminder_settings_payload(str(db_path), payload)
+    assert saved == payload
+
+    loaded = _load_checkin_reminder_settings_payload(str(db_path))
+    assert loaded == payload
+
+
 def test_dashboard_plot_settings_save_and_load_roundtrip(tmp_path: Path) -> None:
     db_path = tmp_path / "garmin.db"
     payload = [
@@ -669,6 +714,11 @@ def test_import_job_manager_rejects_when_sync_run_already_running(
         garmin_email="user@example.com",
         garmin_password="secret",
         default_sync_days=2,
+        smtp_host="smtp.example.com",
+        smtp_port=587,
+        smtp_user="smtp-user",
+        smtp_pass="smtp-pass",
+        timezone="Europe/Madrid",
     )
     request = ImportRequest(
         mode="refresh",

@@ -1,6 +1,7 @@
 import {
   type CheckInEntry,
   type DerivedPredictorDefinition,
+  type CheckinReminderSettings,
   type CheckInQuestion,
   type DailyRecord,
   type ImportState,
@@ -191,6 +192,35 @@ export async function saveCheckIn(
     throw await readApiError(response, `Saving check-in failed: ${response.status}`);
   }
   return (await response.json()) as CheckInSaveApiResponse;
+}
+
+export async function fetchCheckinReminderSettings(
+  signal?: AbortSignal,
+): Promise<CheckinReminderSettings> {
+  const response = await fetch("/api/checkin-reminder-settings", { signal });
+  if (!response.ok) {
+    throw new Error(`Check-in reminder settings API failed: ${response.status}`);
+  }
+  return (await response.json()) as CheckinReminderSettings;
+}
+
+export async function saveCheckinReminderSettings(
+  settings: CheckinReminderSettings,
+  signal?: AbortSignal,
+): Promise<CheckinReminderSettings> {
+  const response = await fetch("/api/checkin-reminder-settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+    signal,
+  });
+  if (!response.ok) {
+    throw await readApiError(
+      response,
+      `Saving check-in reminder settings failed: ${response.status}`,
+    );
+  }
+  return (await response.json()) as CheckinReminderSettings;
 }
 
 export async function startRefreshImport(signal?: AbortSignal): Promise<ImportApiResponse> {

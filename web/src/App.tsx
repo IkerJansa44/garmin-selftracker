@@ -38,6 +38,7 @@ import {
 import {
   SortableContext,
   arrayMove,
+  rectSortingStrategy,
   useSortable,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
@@ -70,25 +71,34 @@ import {
   type PredictorKey,
 } from "./lib/correlation";
 import {
+  flattenQuestionFields,
   getVisibleChildren,
   pruneHiddenChildAnswers,
+  type QuestionFieldDefinition,
 } from "./lib/questions";
 import {
+  fetchCheckinReminderSettings,
   fetchCheckIns,
   fetchDashboardData,
+  fetchDashboardPlotSettings,
   fetchDerivedPredictors,
   fetchQuestionSettings,
   saveCheckIn,
+  saveCheckinReminderSettings,
+  saveDashboardPlotSettings,
   saveDerivedPredictors,
   saveQuestionSettings,
   startDateRangeImport,
   startRefreshImport,
+  type DashboardPlotPreference as ApiDashboardPlotPreference,
+  type PlotDirection,
 } from "./lib/api";
 import { usePersistentState } from "./lib/storage";
 import {
   type CheckInQuestion,
   type CheckInQuestionChild,
   type CheckInEntry,
+  type CheckinReminderSettings,
   type CoverageState,
   type ChildConditionOperator,
   type DailyRecord,
@@ -103,6 +113,44 @@ gsap.registerPlugin(ScrollTrigger);
 
 type ViewKey = "dashboard" | "lab" | "checkin" | "settings";
 type MetricDirection = "higher" | "lower";
+type GarminPlotKey =
+  | "steps"
+  | "calories"
+  | "stressAvg"
+  | "bodyBattery"
+  | "sleepSeconds"
+  | "isTrainingDay";
+type DashboardPlotVariableKey =
+  | `metric:${MetricKey}`
+  | `garmin:${GarminPlotKey}`
+  | `question:${string}`;
+
+interface DashboardPlotVariableOption {
+  key: DashboardPlotVariableKey;
+  label: string;
+  color: string;
+  unit: string;
+}
+
+interface DashboardPlotPreference {
+  key: DashboardPlotVariableKey;
+  direction: PlotDirection;
+}
+
+interface DashboardPlot {
+  key: DashboardPlotVariableKey;
+  direction: PlotDirection;
+  option: DashboardPlotVariableOption;
+  points: Array<{ date: string; value: number | null }>;
+  values: number[];
+  todayValue: number | null;
+  periodAverage: number | null;
+  comparison: { text: string; tone: string };
+  coverage: CoverageState;
+  baselineHint: string;
+  domain: [number, number];
+  ticks: number[];
+}
 
 const IMPORT_STATUS_LABELS: Record<ImportState, string> = {
   ok: "OK",
@@ -128,6 +176,14 @@ const COVERAGE_META: Record<CoverageState, { label: string; tone: string }> = {
 const DEFAULT_RANGE_PRESET = 7;
 const TIME_STEP_MINUTES = 15;
 const TIME_SLIDER_MINUTES = { min: 0, max: 23 * 60 + 45 };
+const DEFAULT_DASHBOARD_PLOT_PREFERENCES: DashboardPlotPreference[] = [
+  { key: "metric:recoveryIndex", direction: "higher" },
+  { key: "metric:sleepScore", direction: "higher" },
+  { key: "metric:restingHr", direction: "lower" },
+  { key: "metric:stress", direction: "lower" },
+  { key: "metric:bodyBattery", direction: "higher" },
+  { key: "metric:trainingReadiness", direction: "higher" },
+];
 const METRIC_DIRECTIONS: Record<MetricKey, MetricDirection> = {
   recoveryIndex: "higher",
   sleepScore: "higher",
@@ -174,6 +230,100 @@ const ENERGY_TARGET_QUESTION_ID = "felt_energized_during_day";
 const IMPORT_POLL_INTERVAL_MS = 5000;
 const DASHBOARD_REFRESH_INTERVAL_MS = 60000;
 const MAX_IMPORT_RANGE_DAYS = 365;
+const DEFAULT_CHECKIN_REMINDER_SETTINGS: CheckinReminderSettings = {
+  enabled: true,
+  notifyAfter: "22:30",
+};
+const GARMIN_PLOT_META: Record<GarminPlotKey, Omit<DashboardPlotVariableOption, "key">> = {
+  steps: { label: "Steps", color: "#4f7e65", unit: "steps" },
+  calories: { label: "Calories", color: "#8a5a4e", unit: "kcal" },
+  stressAvg: { label: "Stress Avg", color: "#806739", unit: "pts" },
+  bodyBattery: { label: "Body Battery", color: "#51745e", unit: "%" },
+  sleepSeconds: { label: "Sleep Duration", color: "#3f6686", unit: "s" },
+  isTrainingDay: { label: "Training Day", color: "#6f4b83", unit: "0/1" },
+};
+
+function defaultPlotDirection(plotKey: DashboardPlotVariableKey): PlotDirection {
+  if (plotKey.startsWith("metric:")) {
+    const metricKey = plotKey.slice(7) as MetricKey;
+    return METRIC_DIRECTIONS[metricKey] ?? "higher";
+  }
+  return "higher";
+}
+
+function normalizeDashboardPlotPreferences(
+  raw: unknown,
+  fallback: DashboardPlotPreference[],
+): DashboardPlotPreference[] {
+  if (!Array.isArray(raw)) {
+    return fallback;
+  }
+
+  const normalized: DashboardPlotPreference[] = [];
+  const seenKeys = new Set<DashboardPlotVariableKey>();
+
+  for (const entry of raw) {
+    let key: DashboardPlotVariableKey | null = null;
+    let direction: PlotDirection | null = null;
+
+    if (typeof entry === "string") {
+      key = entry as DashboardPlotVariableKey;
+      direction = defaultPlotDirection(key);
+    } else if (entry && typeof entry === "object") {
+      const objectEntry = entry as ApiDashboardPlotPreference;
+      if (typeof objectEntry.key === "string") {
+        key = objectEntry.key as DashboardPlotVariableKey;
+      }
+      if (objectEntry.direction === "higher" || objectEntry.direction === "lower") {
+        direction = objectEntry.direction;
+      }
+    }
+
+    if (!key) {
+      continue;
+    }
+    if (!direction) {
+      direction = defaultPlotDirection(key);
+    }
+    if (seenKeys.has(key)) {
+      continue;
+    }
+    seenKeys.add(key);
+    normalized.push({ key, direction });
+  }
+
+  return normalized;
+}
+
+function normalizeCheckinReminderSettings(raw: unknown): CheckinReminderSettings {
+  if (!raw || typeof raw !== "object") {
+    return DEFAULT_CHECKIN_REMINDER_SETTINGS;
+  }
+  const payload = raw as Partial<CheckinReminderSettings>;
+  if (typeof payload.enabled !== "boolean") {
+    return DEFAULT_CHECKIN_REMINDER_SETTINGS;
+  }
+  if (
+    typeof payload.notifyAfter !== "string"
+    || !/^([01]\d|2[0-3]):([0-5]\d)$/.test(payload.notifyAfter)
+  ) {
+    return DEFAULT_CHECKIN_REMINDER_SETTINGS;
+  }
+  return {
+    enabled: payload.enabled,
+    notifyAfter: payload.notifyAfter,
+  };
+}
+
+function arePlotPreferencesEqual(
+  a: DashboardPlotPreference[],
+  b: DashboardPlotPreference[],
+): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  return a.every((value, index) => value.key === b[index]?.key && value.direction === b[index]?.direction);
+}
 
 function parseImportProgressMessage(message: string): {
   completedDays: number;
@@ -239,6 +389,177 @@ function formatMetricDelta(metric: MetricKey, value: number): string {
   }
   const amount = Math.abs(value).toFixed(definition.decimals);
   return definition.unit ? `${amount} ${definition.unit}` : amount;
+}
+
+function getMetricKeyFromPlotKey(plotKey: DashboardPlotVariableKey): MetricKey | null {
+  if (!plotKey.startsWith("metric:")) {
+    return null;
+  }
+  return plotKey.slice(7) as MetricKey;
+}
+
+function formatDashboardValue(
+  plotKey: DashboardPlotVariableKey,
+  option: DashboardPlotVariableOption,
+  value: number | null,
+): string {
+  const metricKey = getMetricKeyFromPlotKey(plotKey);
+  if (metricKey) {
+    return formatMetricValue(metricKey, value);
+  }
+  if (value === null || !Number.isFinite(value)) {
+    return "--";
+  }
+  return formatPlotValue(option, value);
+}
+
+function formatDashboardDelta(
+  plotKey: DashboardPlotVariableKey,
+  option: DashboardPlotVariableOption,
+  value: number,
+): string {
+  const metricKey = getMetricKeyFromPlotKey(plotKey);
+  if (metricKey) {
+    return formatMetricDelta(metricKey, value);
+  }
+  const amount = Math.abs(value).toFixed(1);
+  return option.unit ? `${amount} ${option.unit}` : amount;
+}
+
+function describeDashboardVsAverage(
+  direction: PlotDirection,
+  option: DashboardPlotVariableOption,
+  delta: number | null,
+  rangePreset: number,
+): { text: string; tone: string } {
+  if (delta === null || Number.isNaN(delta)) {
+    return {
+      text: `Not enough data to compare against the ${rangePreset}-day average.`,
+      tone: "text-muted",
+    };
+  }
+  if (delta === 0) {
+    return { text: `Today is exactly at the ${rangePreset}-day average.`, tone: "text-muted" };
+  }
+  const aboveOrBelow = delta > 0 ? "above" : "below";
+  const better = (delta > 0 && direction === "higher") || (delta < 0 && direction === "lower");
+  return {
+    text: `Today is ${aboveOrBelow} the ${rangePreset}-day average by ${formatDashboardDelta(option.key, option, delta)} (${better ? "better" : "worse"}).`,
+    tone: better ? "text-success" : "text-error",
+  };
+}
+
+function deriveCoverageState(
+  sampleCount: number,
+  valueCount: number,
+  todayValue: number | null,
+): CoverageState {
+  if (todayValue === null || valueCount === 0) {
+    return "missing";
+  }
+  if (valueCount >= sampleCount) {
+    return "complete";
+  }
+  return "partial";
+}
+
+function computeYAxisStats(values: number[]): { domain: [number, number]; ticks: number[] } {
+  if (!values.length) {
+    return { domain: [0, 1], ticks: [0, 0, 0] };
+  }
+
+  const minimum = Math.round(Math.min(...values));
+  const maximum = Math.round(Math.max(...values));
+  const average = Math.max(minimum, Math.min(maximum, Math.round(mean(values))));
+  const domain: [number, number] = minimum === maximum ? [minimum - 1, maximum + 1] : [minimum, maximum];
+  return {
+    domain,
+    ticks: [minimum, average, maximum],
+  };
+}
+
+function parseQuestionPlotValue(
+  question: QuestionFieldDefinition,
+  value: unknown,
+): number | null {
+  if (value === null || value === undefined || question.inputType === "text") {
+    return null;
+  }
+  if (question.inputType === "boolean") {
+    if (typeof value === "boolean") {
+      return value ? 1 : 0;
+    }
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  }
+  if (question.inputType === "time") {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+    return typeof value === "string" ? parseClockTimeToMinutes(value) : null;
+  }
+  if (question.inputType === "multi-choice") {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value !== "string") {
+      return null;
+    }
+    const normalized = value.trim();
+    if (!normalized) {
+      return null;
+    }
+    const option = question.options?.find((candidate) => candidate.id === normalized);
+    if (option && typeof option.score === "number" && Number.isFinite(option.score)) {
+      return option.score;
+    }
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function getDashboardPlotValue(
+  variable: DashboardPlotVariableKey,
+  record: DailyRecord,
+  checkinsByDate: Map<string, CheckInEntry>,
+  questionsById: Map<string, QuestionFieldDefinition>,
+): number | null {
+  if (variable.startsWith("metric:")) {
+    const metric = variable.slice(7) as MetricKey;
+    return record.metrics[metric];
+  }
+  if (variable.startsWith("garmin:")) {
+    const key = variable.slice(7) as GarminPlotKey;
+    if (key === "isTrainingDay") {
+      return record.predictors.isTrainingDay ? 1 : 0;
+    }
+    const value = record.predictors[key];
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  }
+  const questionId = variable.slice(9);
+  const question = questionsById.get(questionId);
+  if (!question) {
+    return null;
+  }
+  const entry = checkinsByDate.get(record.date);
+  return parseQuestionPlotValue(question, entry?.answers[questionId]);
+}
+
+function formatPlotValue(option: DashboardPlotVariableOption, value: number): string {
+  if (!Number.isFinite(value)) {
+    return "--";
+  }
+  if (!option.unit) {
+    return value.toFixed(1);
+  }
+  return `${value.toFixed(1)} ${option.unit}`;
 }
 
 function describeTodayVsAverage(
@@ -623,17 +944,40 @@ function App() {
     DEFAULT_RANGE_PRESET,
     normalizeRangePreset,
   );
+  const [dashboardPlotPreferences, setDashboardPlotPreferences] = useState<DashboardPlotPreference[]>(
+    DEFAULT_DASHBOARD_PLOT_PREFERENCES,
+  );
+  const [plotSettingsLoadState, setPlotSettingsLoadState] = useState<"loading" | "ready" | "error">("loading");
+  const [plotSettingsError, setPlotSettingsError] = useState<string | null>(null);
+  const [isSavingPlotSettings, setIsSavingPlotSettings] = useState(false);
+  const lastSavedPlotSettingsRef = useRef<string>(
+    JSON.stringify(DEFAULT_DASHBOARD_PLOT_PREFERENCES),
+  );
+  const [showAddPlotMenu, setShowAddPlotMenu] = useState(false);
+  const addPlotMenuRef = useRef<HTMLDivElement | null>(null);
+  const [plotSearchQuery, setPlotSearchQuery] = useState("");
+  const [addPlotSearchQuery, setAddPlotSearchQuery] = useState("");
+  const [pendingAddPlot, setPendingAddPlot] = useState<DashboardPlotVariableOption | null>(null);
   const [draftAnswers, setDraftAnswers] = usePersistentState<Record<string, string | number | boolean>>(
     "ui.checkinDraft",
     defaultDraftAnswers(),
   );
   const [isScrolled, setIsScrolled] = useState(false);
   const [questionLibrary, setQuestionLibrary] = useState<CheckInQuestion[]>(DEFAULT_QUESTIONS);
-  const [selectedQuestionId, setSelectedQuestionId] = useState(DEFAULT_QUESTIONS[0]?.id ?? "");
+  const [selectedQuestionId, setSelectedQuestionId] = useState("");
   const [questionLoadState, setQuestionLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [questionSyncError, setQuestionSyncError] = useState<string | null>(null);
   const [isSavingQuestions, setIsSavingQuestions] = useState(false);
   const lastSavedQuestionsRef = useRef<string>("[]");
+  const [checkinReminderSettings, setCheckinReminderSettings] = useState<CheckinReminderSettings>(
+    DEFAULT_CHECKIN_REMINDER_SETTINGS,
+  );
+  const [checkinReminderLoadState, setCheckinReminderLoadState] = useState<"loading" | "ready" | "error">("loading");
+  const [checkinReminderError, setCheckinReminderError] = useState<string | null>(null);
+  const [isSavingCheckinReminder, setIsSavingCheckinReminder] = useState(false);
+  const lastSavedCheckinReminderRef = useRef<string>(
+    JSON.stringify(DEFAULT_CHECKIN_REMINDER_SETTINGS),
+  );
   const [allRecords, setAllRecords] = useState<DailyRecord[]>([]);
   const [checkinEntriesByDate, setCheckinEntriesByDate] = useState<Record<string, CheckInEntry>>({});
   const [checkinSyncError, setCheckinSyncError] = useState<string | null>(null);
@@ -799,7 +1143,7 @@ function App() {
         const serializedSource = JSON.stringify(sourceQuestions);
         const serializedNext = JSON.stringify(nextQuestions);
         setQuestionLibrary(nextQuestions);
-        setSelectedQuestionId(nextQuestions[0]?.id ?? "");
+        setSelectedQuestionId("");
         lastSavedQuestionsRef.current =
           serializedSource === serializedNext ? serializedNext : serializedSource;
         setQuestionLoadState("ready");
@@ -910,6 +1254,162 @@ function App() {
   }, [questionLibrary, questionLoadState]);
 
   useEffect(() => {
+    const controller = new AbortController();
+
+    const loadCheckinReminder = async () => {
+      setCheckinReminderLoadState("loading");
+      setCheckinReminderError(null);
+      try {
+        const payload = await fetchCheckinReminderSettings(controller.signal);
+        const normalized = normalizeCheckinReminderSettings(payload);
+        setCheckinReminderSettings(normalized);
+        lastSavedCheckinReminderRef.current = JSON.stringify(normalized);
+        setCheckinReminderLoadState("ready");
+      } catch (error) {
+        if (controller.signal.aborted) {
+          return;
+        }
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Failed to load check-in reminder settings from SQLite.";
+        setCheckinReminderError(message);
+        setCheckinReminderLoadState("error");
+      }
+    };
+
+    void loadCheckinReminder();
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    if (checkinReminderLoadState !== "ready") {
+      return;
+    }
+
+    const serializedSettings = JSON.stringify(checkinReminderSettings);
+    if (serializedSettings === lastSavedCheckinReminderRef.current) {
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => {
+      const saveReminderSettings = async () => {
+        setIsSavingCheckinReminder(true);
+        setCheckinReminderError(null);
+        try {
+          const payload = await saveCheckinReminderSettings(
+            checkinReminderSettings,
+            controller.signal,
+          );
+          const normalized = normalizeCheckinReminderSettings(payload);
+          setCheckinReminderSettings(normalized);
+          lastSavedCheckinReminderRef.current = JSON.stringify(normalized);
+        } catch (error) {
+          if (controller.signal.aborted) {
+            return;
+          }
+          const message =
+            error instanceof Error
+              ? error.message
+              : "Failed to save check-in reminder settings to SQLite.";
+          setCheckinReminderError(message);
+        } finally {
+          if (!controller.signal.aborted) {
+            setIsSavingCheckinReminder(false);
+          }
+        }
+      };
+
+      void saveReminderSettings();
+    }, 350);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      controller.abort();
+    };
+  }, [checkinReminderLoadState, checkinReminderSettings]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    const loadDashboardPlots = async () => {
+      setPlotSettingsLoadState("loading");
+      setPlotSettingsError(null);
+      try {
+        const payload = await fetchDashboardPlotSettings(controller.signal);
+        const normalized = normalizeDashboardPlotPreferences(
+          payload.plots,
+          DEFAULT_DASHBOARD_PLOT_PREFERENCES,
+        );
+        setDashboardPlotPreferences(normalized);
+        lastSavedPlotSettingsRef.current = JSON.stringify(normalized);
+        setPlotSettingsLoadState("ready");
+      } catch (error) {
+        if (controller.signal.aborted) {
+          return;
+        }
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Failed to load dashboard plot settings from SQLite.";
+        setPlotSettingsError(message);
+        setPlotSettingsLoadState("error");
+      }
+    };
+
+    void loadDashboardPlots();
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    if (plotSettingsLoadState !== "ready") {
+      return;
+    }
+
+    const serializedPlots = JSON.stringify(dashboardPlotPreferences);
+    if (serializedPlots === lastSavedPlotSettingsRef.current) {
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => {
+      const saveDashboardPlots = async () => {
+        setIsSavingPlotSettings(true);
+        setPlotSettingsError(null);
+        try {
+          const payload = await saveDashboardPlotSettings(
+            dashboardPlotPreferences,
+            controller.signal,
+          );
+          const normalized = normalizeDashboardPlotPreferences(payload.plots, []);
+          lastSavedPlotSettingsRef.current = JSON.stringify(normalized);
+        } catch (error) {
+          if (controller.signal.aborted) {
+            return;
+          }
+          const message =
+            error instanceof Error
+              ? error.message
+              : "Failed to save dashboard plot settings to SQLite.";
+          setPlotSettingsError(message);
+        } finally {
+          if (!controller.signal.aborted) {
+            setIsSavingPlotSettings(false);
+          }
+        }
+      };
+
+      void saveDashboardPlots();
+    }, 350);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      controller.abort();
+    };
+  }, [dashboardPlotPreferences, plotSettingsLoadState]);
+
+  useEffect(() => {
     const defaults = defaultDraftAnswers(questionLibrary);
     const entry = checkinEntriesByDate[selectedCheckinDate];
     setDraftAnswers(entry ? { ...defaults, ...entry.answers } : defaults);
@@ -954,6 +1454,38 @@ function App() {
     window.addEventListener("scroll", onScroll);
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
+
+  useEffect(() => {
+    if (!showAddPlotMenu && !pendingAddPlot) {
+      return;
+    }
+    const handleWindowMouseDown = (event: MouseEvent) => {
+      if (!addPlotMenuRef.current?.contains(event.target as Node)) {
+        setShowAddPlotMenu(false);
+        setPendingAddPlot(null);
+      }
+    };
+    window.addEventListener("mousedown", handleWindowMouseDown);
+    return () => window.removeEventListener("mousedown", handleWindowMouseDown);
+  }, [pendingAddPlot, showAddPlotMenu]);
+
+  useEffect(() => {
+    if (activeView !== "dashboard" && showAddPlotMenu) {
+      setShowAddPlotMenu(false);
+    }
+  }, [activeView, showAddPlotMenu]);
+
+  useEffect(() => {
+    if (!showAddPlotMenu) {
+      setAddPlotSearchQuery("");
+    }
+  }, [showAddPlotMenu]);
+
+  useEffect(() => {
+    if (activeView !== "dashboard" && pendingAddPlot) {
+      setPendingAddPlot(null);
+    }
+  }, [activeView, pendingAddPlot]);
 
   const predictorOptions = useMemo(
     () => buildPredictorOptions(questionLibrary, derivedPredictors),
@@ -1022,11 +1554,134 @@ function App() {
       })),
     [records, rangePreset],
   );
+  const metricSummaryByPlotKey = useMemo(
+    () =>
+      new Map(
+        metricSummaries.map((summary) => [
+          `metric:${summary.key}` as DashboardPlotVariableKey,
+          summary,
+        ]),
+      ),
+    [metricSummaries],
+  );
 
   const checkinsByDateMap = useMemo(
     () => new Map(Object.values(checkinEntriesByDate).map((entry) => [entry.date, entry])),
     [checkinEntriesByDate],
   );
+  const questionFields = useMemo(() => flattenQuestionFields(questionLibrary), [questionLibrary]);
+  const questionFieldsById = useMemo(
+    () => new Map(questionFields.map((field) => [field.id, field])),
+    [questionFields],
+  );
+  const dashboardPlotOptions = useMemo<DashboardPlotVariableOption[]>(
+    () => [
+      ...METRICS.map((metric) => ({
+        key: `metric:${metric.key}` as DashboardPlotVariableKey,
+        label: metric.label,
+        color: metric.color,
+        unit: metric.unit,
+      })),
+      ...(Object.entries(GARMIN_PLOT_META) as Array<[GarminPlotKey, Omit<DashboardPlotVariableOption, "key">]>).map(
+        ([key, value]) => ({
+          key: `garmin:${key}`,
+          ...value,
+        }),
+      ),
+      ...questionFields
+        .filter((field) => field.inputType !== "text")
+        .map((field) => ({
+          key: `question:${field.id}` as DashboardPlotVariableKey,
+          label: `${field.prompt} (check-in)`,
+          color: "#cc5833",
+          unit: "",
+        })),
+    ],
+    [questionFields],
+  );
+  useEffect(() => {
+    if (!dashboardPlotOptions.length) {
+      return;
+    }
+    const availableKeys = new Set(dashboardPlotOptions.map((option) => option.key));
+    setDashboardPlotPreferences((previous) => {
+      const filtered = previous.filter((plot) => availableKeys.has(plot.key));
+      return arePlotPreferencesEqual(previous, filtered) ? previous : filtered;
+    });
+  }, [dashboardPlotOptions]);
+
+  const addableDashboardPlotOptions = useMemo(() => {
+    const selected = new Set(dashboardPlotPreferences.map((plot) => plot.key));
+    const query = addPlotSearchQuery.trim().toLowerCase();
+    return dashboardPlotOptions.filter((option) => {
+      if (selected.has(option.key)) {
+        return false;
+      }
+      if (!query) {
+        return true;
+      }
+      return option.label.toLowerCase().includes(query) || option.key.toLowerCase().includes(query);
+    });
+  }, [addPlotSearchQuery, dashboardPlotOptions, dashboardPlotPreferences]);
+  const dashboardPlots = useMemo<DashboardPlot[]>(
+    () =>
+      dashboardPlotPreferences
+        .map((plotPreference) => {
+          const option = dashboardPlotOptions.find((candidate) => candidate.key === plotPreference.key);
+          if (!option) {
+            return null;
+          }
+          const points = records.map((record) => ({
+            date: record.date,
+            value: getDashboardPlotValue(plotPreference.key, record, checkinsByDateMap, questionFieldsById),
+          }));
+          const values = points
+            .map((point) => point.value)
+            .filter((value): value is number => value !== null);
+          const metricSummary = metricSummaryByPlotKey.get(plotPreference.key);
+          const todayValue = metricSummary?.todayValue ?? points[points.length - 1]?.value ?? null;
+          const periodAverage = metricSummary?.periodAverage ?? (values.length ? mean(values) : null);
+          const delta = todayValue === null || periodAverage === null ? null : todayValue - periodAverage;
+          const coverage = metricSummary?.coverage ?? deriveCoverageState(points.length, values.length, todayValue);
+          const baselineHint = metricSummary?.baselineHint
+            ?? `Average based on ${values.length} of ${points.length} samples.`;
+          const comparison = describeDashboardVsAverage(plotPreference.direction, option, delta, rangePreset);
+          const yAxis = computeYAxisStats(values);
+          return {
+            key: plotPreference.key,
+            direction: plotPreference.direction,
+            option,
+            points,
+            values,
+            todayValue,
+            periodAverage,
+            comparison,
+            coverage,
+            baselineHint,
+            domain: yAxis.domain,
+            ticks: yAxis.ticks,
+          };
+        })
+        .filter((plot): plot is DashboardPlot => plot !== null),
+    [
+      checkinsByDateMap,
+      dashboardPlotPreferences,
+      dashboardPlotOptions,
+      metricSummaryByPlotKey,
+      questionFieldsById,
+      rangePreset,
+      records,
+    ],
+  );
+  const filteredDashboardPlots = useMemo(() => {
+    const query = plotSearchQuery.trim().toLowerCase();
+    if (!query) {
+      return dashboardPlots;
+    }
+    return dashboardPlots.filter((plot) =>
+      plot.option.label.toLowerCase().includes(query) || plot.key.toLowerCase().includes(query));
+  }, [dashboardPlots, plotSearchQuery]);
+
   const correlationRecords = allRecords;
   const correlationCatalog = useMemo(
     () =>
@@ -1379,6 +2034,43 @@ function App() {
     } finally {
       setIsSavingCheckin(false);
     }
+  };
+
+  const handleSelectDashboardPlotToAdd = (option: DashboardPlotVariableOption) => {
+    setPendingAddPlot(option);
+    setShowAddPlotMenu(false);
+  };
+
+  const handleAddDashboardPlot = (
+    plotKey: DashboardPlotVariableKey,
+    direction: PlotDirection,
+  ) => {
+    setDashboardPlotPreferences((previous) => (
+      previous.some((plot) => plot.key === plotKey)
+        ? previous
+        : [...previous, { key: plotKey, direction }]
+    ));
+    setPendingAddPlot(null);
+  };
+
+  const handleRemoveDashboardPlot = (plotKey: DashboardPlotVariableKey) => {
+    setDashboardPlotPreferences((previous) => previous.filter((plot) => plot.key !== plotKey));
+  };
+
+  const handleDashboardPlotSortEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) {
+      return;
+    }
+
+    setDashboardPlotPreferences((previous) => {
+      const oldIndex = previous.findIndex((plot) => plot.key === active.id);
+      const newIndex = previous.findIndex((plot) => plot.key === over.id);
+      if (oldIndex === -1 || newIndex === -1) {
+        return previous;
+      }
+      return arrayMove(previous, oldIndex, newIndex);
+    });
   };
 
   const formatDerivedBoundary = (value: number): string => {
@@ -1793,114 +2485,158 @@ function App() {
           <section ref={heroRef} className="panel gsap-fade overflow-hidden p-7 sm:p-10">
             <div className="min-h-[42vh] rounded-[30px] bg-[radial-gradient(circle_at_0%_5%,#ffffff_0%,#f8f6f1_40%,#efede6_100%)] p-8 shadow-inset">
               <p className="text-sm text-muted">{rangePreset}-Day Dashboard</p>
-              <div className="mt-4 grid grid-cols-[1fr_auto_1fr] items-center gap-4">
+              <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] lg:items-center">
                 <h1 className="text-4xl font-semibold tracking-tight xl:text-5xl">Dashboard</h1>
-                <div className="flex justify-self-center gap-2 rounded-capsule bg-subsurface p-1">
-                  {RANGE_PRESETS.map((preset) => (
-                    <button
-                      key={preset}
-                      className={clsx(
-                        "focusable min-h-11 rounded-capsule px-4 text-sm font-semibold transition",
-                        rangePreset === preset ? "bg-accent text-white" : "text-muted hover:text-ink",
-                      )}
-                      type="button"
-                      onClick={() => setRangePreset(preset)}
-                    >
-                      {preset}
-                    </button>
-                  ))}
+                <div className="flex flex-col items-center gap-3 lg:justify-self-center">
+                  <div className="flex w-fit gap-2 rounded-capsule bg-subsurface p-1">
+                    {RANGE_PRESETS.map((preset) => (
+                      <button
+                        key={preset}
+                        className={clsx(
+                          "focusable min-h-11 rounded-capsule px-4 text-sm font-semibold transition",
+                          rangePreset === preset ? "bg-accent text-white" : "text-muted hover:text-ink",
+                        )}
+                        type="button"
+                        onClick={() => setRangePreset(preset)}
+                      >
+                        {preset}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-center text-base text-muted lg:text-lg">
+                    Today vs rolling {rangePreset}-day average.
+                  </p>
                 </div>
-                <p className="justify-self-end text-right text-base text-muted lg:text-lg">
-                  Today vs rolling {rangePreset}-day average.
-                </p>
+                <div ref={addPlotMenuRef} className="relative w-fit lg:justify-self-end">
+                  <button
+                    aria-expanded={showAddPlotMenu}
+                    className="focusable min-h-11 rounded-capsule bg-accent px-4 text-sm font-semibold text-white shadow-soft transition"
+                    type="button"
+                    onClick={() => setShowAddPlotMenu((previous) => !previous)}
+                  >
+                    <span className="inline-flex items-center gap-2">
+                      <CirclePlus className="size-4" />
+                      Add plot
+                    </span>
+                  </button>
+                  {showAddPlotMenu && (
+                    <div className="absolute right-0 top-full z-20 mt-2 w-72 rounded-2xl bg-panel p-2 shadow-soft">
+                      <input
+                        className="focusable mb-2 min-h-10 w-full rounded-xl bg-subsurface px-3 text-sm"
+                        placeholder="Search plots"
+                        type="search"
+                        value={addPlotSearchQuery}
+                        onChange={(event) => setAddPlotSearchQuery(event.target.value)}
+                      />
+                      {addableDashboardPlotOptions.length ? (
+                        <div className="space-y-1">
+                          {addableDashboardPlotOptions.map((option) => (
+                            <button
+                              key={option.key}
+                              className="focusable w-full rounded-xl px-3 py-2 text-left text-sm transition hover:bg-subsurface"
+                              type="button"
+                              onClick={() => handleSelectDashboardPlotToAdd(option)}
+                            >
+                              {option.label}
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="px-2 py-2 text-sm text-muted">
+                          {addPlotSearchQuery.trim()
+                            ? "No plots match your search."
+                            : "All variables are already plotted."}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                  {pendingAddPlot && (
+                    <div className="absolute right-0 top-full z-20 mt-2 w-72 rounded-2xl bg-panel p-3 shadow-soft">
+                      <p className="text-xs uppercase tracking-[0.14em] text-muted">Plot preference</p>
+                      <p className="mt-1 text-sm font-semibold">{pendingAddPlot.label}</p>
+                      <p className="mt-1 text-xs text-muted">For comparison, is higher better or lower better?</p>
+                      <div className="mt-3 grid grid-cols-2 gap-2">
+                        <button
+                          className="focusable min-h-10 rounded-xl bg-accent px-3 text-xs font-semibold text-white"
+                          type="button"
+                          onClick={() => handleAddDashboardPlot(pendingAddPlot.key, "higher")}
+                        >
+                          Higher better
+                        </button>
+                        <button
+                          className="focusable min-h-10 rounded-xl bg-subsurface px-3 text-xs font-semibold text-ink"
+                          type="button"
+                          onClick={() => handleAddDashboardPlot(pendingAddPlot.key, "lower")}
+                        >
+                          Lower better
+                        </button>
+                      </div>
+                      <button
+                        className="focusable mt-2 min-h-10 w-full rounded-xl bg-panel px-3 text-xs text-muted"
+                        type="button"
+                        onClick={() => setPendingAddPlot(null)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
               <p className="mt-3 text-sm text-muted">
                 Higher is better for Recovery Index, Sleep Score, Body Battery, and Training Readiness.
                 Lower is better for Stress and Resting HR.
               </p>
-
-              <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                {metricSummaries.map((summary) => {
-                  const coverageMeta = COVERAGE_META[summary.coverage];
-                  const isMissing = summary.coverage === "missing";
-                  const isPartial = summary.coverage === "partial";
-                  const loadingState = todayRecord.importState === "running" && summary.coverage !== "complete";
-                  const errorState =
-                    (todayRecord.importState === "failed" || dataStatus === "error") && isMissing;
-                  const comparison = describeTodayVsAverage(summary.key, summary.delta, rangePreset);
-
-                  return (
-                    <article key={summary.key} className="rounded-[24px] bg-panel p-5 shadow-soft">
-                      <div className="flex items-start justify-between">
-                        <div>
-                          <p className="text-sm text-muted">{summary.label}</p>
-                          <p className="metric-number mt-2 text-3xl font-semibold tracking-tight">
-                            {formatMetricValue(summary.key, summary.todayValue)}
-                          </p>
-                          <p className="metric-number mt-1 text-xs text-muted">
-                            {rangePreset}d average {formatMetricValue(summary.key, summary.periodAverage)}
-                          </p>
-                          <p className={clsx("mt-1 text-xs font-medium", comparison.tone)}>{comparison.text}</p>
-                        </div>
-                        <span className={clsx("rounded-capsule px-3 py-1 text-xs font-semibold", coverageMeta.tone)}>
-                          {coverageMeta.label}
-                        </span>
-                      </div>
-
-                      <div className="mt-4 h-16">
-                        <ResponsiveContainer>
-                          <ComposedChart data={summary.sparklineData}>
-                            {summary.periodAverage !== null && (
-                              <ReferenceLine
-                                ifOverflow="extendDomain"
-                                stroke="rgba(18,18,18,0.45)"
-                                strokeDasharray="4 4"
-                                strokeWidth={1}
-                                y={summary.periodAverage}
-                              />
-                            )}
-                            <Line
-                              dataKey="value"
-                              dot={false}
-                              stroke={summary.color}
-                              strokeWidth={2}
-                              type="monotone"
-                            />
-                            <Tooltip content={<SparklineTooltip />} />
-                          </ComposedChart>
-                        </ResponsiveContainer>
-                      </div>
-
-                      <div className="mt-3 min-h-8 text-xs text-muted">
-                        {loadingState ? (
-                          <span className="inline-flex items-center gap-2 text-warning">
-                            <LoaderCircle className="size-3 animate-spin" /> Import in progress. This tile will
-                            update when sync completes.
-                          </span>
-                        ) : errorState ? (
-                          <span className="inline-flex items-center gap-2 text-error">
-                            <AlertCircle className="size-3" />
-                            {dataStatus === "error"
-                              ? "Unable to load data API."
-                              : "No data yet. Last import failed."}
-                            <button
-                              className="focusable rounded-capsule bg-[color-mix(in_srgb,var(--error)_14%,white)] px-2 py-1 text-[11px]"
-                              type="button"
-                              onClick={() => setActiveView("settings")}
-                            >
-                              Open status
-                            </button>
-                          </span>
-                        ) : isPartial ? (
-                          <span>Partial telemetry. {rangePreset}-day average uses available samples only.</span>
-                        ) : (
-                          <span>{summary.baselineHint}</span>
-                        )}
-                      </div>
-                    </article>
-                  );
-                })}
+              <div className="mt-3 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+                <input
+                  className="focusable min-h-11 w-full rounded-2xl bg-panel px-3 text-sm lg:max-w-md"
+                  placeholder="Search metrics and plots"
+                  type="search"
+                  value={plotSearchQuery}
+                  onChange={(event) => setPlotSearchQuery(event.target.value)}
+                />
+                <p
+                  className={clsx(
+                    "text-xs",
+                    plotSettingsError ? "text-error" : "text-muted",
+                  )}
+                >
+                  {plotSettingsLoadState === "loading"
+                    ? "Loading plot layout..."
+                    : isSavingPlotSettings
+                      ? "Saving plot layout..."
+                      : plotSettingsError
+                        ? `Plot layout sync failed: ${plotSettingsError}`
+                        : "Plot layout synced with SQLite."}
+                </p>
               </div>
+
+              <DndContext sensors={sensors} onDragEnd={handleDashboardPlotSortEnd}>
+                <SortableContext
+                  items={filteredDashboardPlots.map((plot) => plot.key)}
+                  strategy={rectSortingStrategy}
+                >
+                  {filteredDashboardPlots.length ? (
+                    <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                      {filteredDashboardPlots.map((plot) => (
+                        <SortableDashboardPlotItem
+                          key={plot.key}
+                          dataStatus={dataStatus}
+                          importState={todayRecord.importState}
+                          plot={plot}
+                          rangePreset={rangePreset}
+                          onOpenStatus={() => setActiveView("settings")}
+                          onRemove={handleRemoveDashboardPlot}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="mt-6 rounded-2xl bg-panel px-4 py-3 text-sm text-muted">
+                      No plots match your search.
+                    </p>
+                  )}
+                </SortableContext>
+              </DndContext>
+
             </div>
           </section>
         )}
@@ -2449,71 +3185,141 @@ function App() {
 
         {activeView === "settings" && (
           <section className="panel gsap-fade p-6 sm:p-8">
-            <article className="rounded-[24px] bg-subsurface p-5">
-              <div className="mb-4 flex items-center justify-between">
-                <div>
-                  <h3 className="text-lg font-semibold">Asked Questions</h3>
+            <div className="space-y-5">
+              <article className="rounded-[24px] bg-subsurface p-5">
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-lg font-semibold">Check-In Reminder</h3>
+                    <p
+                      className={clsx(
+                        "mt-1 text-sm",
+                        checkinReminderError ? "text-error" : "text-muted",
+                      )}
+                    >
+                      {checkinReminderLoadState === "loading"
+                        ? "Loading from SQLite..."
+                        : isSavingCheckinReminder
+                          ? "Saving to SQLite..."
+                          : checkinReminderError
+                            ? `SQLite sync failed: ${checkinReminderError}`
+                            : "Synced with SQLite."}
+                    </p>
+                  </div>
                   <p
                     className={clsx(
-                      "mt-1 text-sm",
-                      questionSyncError ? "text-error" : "text-muted",
+                      "rounded-capsule px-3 py-2 text-xs font-semibold",
+                      checkinReminderSettings.enabled
+                        ? "text-success bg-[color-mix(in_srgb,var(--success)_14%,white)]"
+                        : "text-muted bg-panel",
                     )}
                   >
-                    {questionLoadState === "loading"
-                      ? "Loading from SQLite..."
-                      : isSavingQuestions
-                        ? "Saving to SQLite..."
-                        : questionSyncError
-                          ? `SQLite sync failed: ${questionSyncError}`
-                          : "Synced with SQLite."}
+                    {checkinReminderSettings.enabled
+                      ? `Active · reminder after ${checkinReminderSettings.notifyAfter}`
+                      : "Inactive · reminder disabled"}
                   </p>
                 </div>
-                <button
-                  className="focusable min-h-11 rounded-capsule bg-panel px-4 text-sm shadow-soft"
-                  type="button"
-                  onClick={handleAddQuestion}
-                >
-                  <span className="inline-flex items-center gap-2">
-                    <CirclePlus className="size-4" /> Add
-                  </span>
-                </button>
-              </div>
 
-              <DndContext sensors={sensors} onDragEnd={handleQuestionSortEnd}>
-                <SortableContext
-                  items={questionLibrary.map((question) => question.id)}
-                  strategy={verticalListSortingStrategy}
-                >
-                  <div className="space-y-2">
-                    {questionLibrary.map((question) => {
-                      const isSelected = question.id === selectedQuestionId;
-                      return (
-                        <div key={question.id}>
-                          <SortableQuestionItem
-                            isSelected={isSelected}
-                            question={question}
-                            onSelect={() =>
-                              setSelectedQuestionId((previous) =>
-                                previous === question.id ? "" : question.id,
-                              )
-                            }
-                          />
-                          {isSelected && (
-                            <QuestionEditor
-                              availableSections={editableSectionOptions}
-                              onRenameSection={renameQuestionSection}
-                              question={question}
-                              onDelete={() => removeQuestion(question.id)}
-                              onPatch={(patch) => updateQuestion(question.id, patch)}
-                            />
-                          )}
-                        </div>
-                      );
-                    })}
+                <div className="grid gap-4 md:grid-cols-2">
+                  <label className="flex items-center justify-between rounded-2xl bg-panel p-4 text-sm font-medium">
+                    Enable email reminder
+                    <input
+                      checked={checkinReminderSettings.enabled}
+                      type="checkbox"
+                      onChange={(event) =>
+                        setCheckinReminderSettings((previous) => ({
+                          ...previous,
+                          enabled: event.target.checked,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className="space-y-2 rounded-2xl bg-panel p-4 text-sm">
+                    <span className="block text-xs uppercase tracking-[0.14em] text-muted">
+                      Notify after
+                    </span>
+                    <input
+                      className="focusable min-h-11 w-full rounded-2xl bg-subsurface px-3 disabled:cursor-not-allowed disabled:opacity-60"
+                      disabled={!checkinReminderSettings.enabled}
+                      step={60}
+                      type="time"
+                      value={checkinReminderSettings.notifyAfter}
+                      onChange={(event) =>
+                        setCheckinReminderSettings((previous) => ({
+                          ...previous,
+                          notifyAfter: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
+              </article>
+
+              <article className="rounded-[24px] bg-subsurface p-5">
+                <div className="mb-4 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-lg font-semibold">Asked Questions</h3>
+                    <p
+                      className={clsx(
+                        "mt-1 text-sm",
+                        questionSyncError ? "text-error" : "text-muted",
+                      )}
+                    >
+                      {questionLoadState === "loading"
+                        ? "Loading from SQLite..."
+                        : isSavingQuestions
+                          ? "Saving to SQLite..."
+                          : questionSyncError
+                            ? `SQLite sync failed: ${questionSyncError}`
+                            : "Synced with SQLite."}
+                    </p>
                   </div>
-                </SortableContext>
-              </DndContext>
-            </article>
+                  <button
+                    className="focusable min-h-11 rounded-capsule bg-panel px-4 text-sm shadow-soft"
+                    type="button"
+                    onClick={handleAddQuestion}
+                  >
+                    <span className="inline-flex items-center gap-2">
+                      <CirclePlus className="size-4" /> Add
+                    </span>
+                  </button>
+                </div>
+
+                <DndContext sensors={sensors} onDragEnd={handleQuestionSortEnd}>
+                  <SortableContext
+                    items={questionLibrary.map((question) => question.id)}
+                    strategy={verticalListSortingStrategy}
+                  >
+                    <div className="space-y-2">
+                      {questionLibrary.map((question) => {
+                        const isSelected = question.id === selectedQuestionId;
+                        return (
+                          <div key={question.id}>
+                            <SortableQuestionItem
+                              isSelected={isSelected}
+                              question={question}
+                              onSelect={() =>
+                                setSelectedQuestionId((previous) =>
+                                  previous === question.id ? "" : question.id,
+                                )
+                              }
+                            />
+                            {isSelected && (
+                              <QuestionEditor
+                                availableSections={editableSectionOptions}
+                                onRenameSection={renameQuestionSection}
+                                question={question}
+                                onDelete={() => removeQuestion(question.id)}
+                                onPatch={(patch) => updateQuestion(question.id, patch)}
+                              />
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </SortableContext>
+                </DndContext>
+              </article>
+            </div>
           </section>
         )}
       </main>
@@ -2616,6 +3422,134 @@ function SortableQuestionItem({
         <GripVertical className="size-4" />
       </span>
     </button>
+  );
+}
+
+function SortableDashboardPlotItem({
+  dataStatus,
+  importState,
+  plot,
+  rangePreset,
+  onOpenStatus,
+  onRemove,
+}: {
+  dataStatus: "loading" | "ready" | "error";
+  importState: ImportState;
+  plot: DashboardPlot;
+  rangePreset: number;
+  onOpenStatus: () => void;
+  onRemove: (plotKey: DashboardPlotVariableKey) => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: plot.key });
+  const coverageMeta = COVERAGE_META[plot.coverage];
+  const isMissing = plot.coverage === "missing";
+  const isPartial = plot.coverage === "partial";
+  const loadingState = importState === "running" && plot.coverage !== "complete";
+  const errorState = (importState === "failed" || dataStatus === "error") && isMissing;
+
+  return (
+    <article
+      ref={setNodeRef}
+      className="rounded-[24px] bg-panel p-5 shadow-soft"
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition,
+      }}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm text-muted">{plot.option.label}</p>
+          <p className="metric-number mt-2 text-3xl font-semibold tracking-tight">
+            {formatDashboardValue(plot.key, plot.option, plot.todayValue)}
+          </p>
+          <p className="metric-number mt-1 text-xs text-muted">
+            {rangePreset}d average {formatDashboardValue(plot.key, plot.option, plot.periodAverage)}
+          </p>
+          <p className={clsx("mt-1 text-xs font-medium", plot.comparison.tone)}>{plot.comparison.text}</p>
+        </div>
+        <div className="flex items-start gap-2">
+          <span className={clsx("rounded-capsule px-3 py-1 text-xs font-semibold", coverageMeta.tone)}>
+            {coverageMeta.label}
+          </span>
+          <button
+            aria-label={`Remove ${plot.option.label} plot`}
+            className="focusable min-h-9 rounded-capsule bg-subsurface px-3 text-muted transition hover:text-ink"
+            type="button"
+            onClick={() => onRemove(plot.key)}
+          >
+            <X className="size-4" />
+          </button>
+          <button
+            aria-label={`Reorder ${plot.option.label} plot`}
+            className="focusable min-h-9 rounded-capsule bg-subsurface px-3 text-muted transition hover:text-ink"
+            type="button"
+            {...attributes}
+            {...listeners}
+          >
+            <GripVertical className="size-4" />
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-4 h-16">
+        <ResponsiveContainer>
+          <ComposedChart data={plot.points}>
+            <YAxis
+              allowDecimals={false}
+              axisLine={{ stroke: "rgba(18,18,18,0.28)", strokeWidth: 1 }}
+              domain={plot.domain}
+              interval={0}
+              tickLine={false}
+              tick={{ fontSize: 10 }}
+              ticks={plot.ticks}
+              width={34}
+            />
+            {plot.periodAverage !== null && (
+              <ReferenceLine
+                ifOverflow="extendDomain"
+                stroke="rgba(18,18,18,0.45)"
+                strokeDasharray="4 4"
+                strokeWidth={1}
+                y={plot.periodAverage}
+              />
+            )}
+            <Line
+              dataKey="value"
+              dot={false}
+              stroke={plot.option.color}
+              strokeWidth={2}
+              type="monotone"
+            />
+            <Tooltip content={<SparklineTooltip />} />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div className="mt-3 min-h-8 text-xs text-muted">
+        {loadingState ? (
+          <span className="inline-flex items-center gap-2 text-warning">
+            <LoaderCircle className="size-3 animate-spin" /> Import in progress. This tile will
+            update when sync completes.
+          </span>
+        ) : errorState ? (
+          <span className="inline-flex items-center gap-2 text-error">
+            <AlertCircle className="size-3" />
+            {dataStatus === "error" ? "Unable to load data API." : "No data yet. Last import failed."}
+            <button
+              className="focusable rounded-capsule bg-[color-mix(in_srgb,var(--error)_14%,white)] px-2 py-1 text-[11px]"
+              type="button"
+              onClick={onOpenStatus}
+            >
+              Open status
+            </button>
+          </span>
+        ) : isPartial ? (
+          <span>Partial telemetry. {rangePreset}-day average uses available samples only.</span>
+        ) : (
+          <span>{plot.baselineHint}</span>
+        )}
+      </div>
+    </article>
   );
 }
 
