@@ -1,5 +1,6 @@
 import {
   type CheckInEntry,
+  type DerivedPredictorDefinition,
   type CheckinReminderSettings,
   type CheckInQuestion,
   type DailyRecord,
@@ -26,6 +27,10 @@ export interface DashboardApiResponse {
 
 export interface QuestionsApiResponse {
   questions: CheckInQuestion[];
+}
+
+export interface DerivedPredictorsApiResponse {
+  definitions: DerivedPredictorDefinition[];
 }
 
 interface CheckInsApiResponse {
@@ -129,6 +134,32 @@ export async function saveQuestionSettings(
     throw new Error(`Saving questions failed: ${response.status}`);
   }
   return (await response.json()) as QuestionsApiResponse;
+}
+
+export async function fetchDerivedPredictors(
+  signal?: AbortSignal,
+): Promise<DerivedPredictorsApiResponse> {
+  const response = await fetch("/api/correlation/derived-predictors", { signal });
+  if (!response.ok) {
+    throw new Error(`Derived predictors API failed: ${response.status}`);
+  }
+  return (await response.json()) as DerivedPredictorsApiResponse;
+}
+
+export async function saveDerivedPredictors(
+  definitions: DerivedPredictorDefinition[],
+  signal?: AbortSignal,
+): Promise<DerivedPredictorsApiResponse> {
+  const response = await fetch("/api/correlation/derived-predictors", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ definitions }),
+    signal,
+  });
+  if (!response.ok) {
+    throw await readApiError(response, `Saving derived predictors failed: ${response.status}`);
+  }
+  return (await response.json()) as DerivedPredictorsApiResponse;
 }
 
 export async function fetchCheckIns(

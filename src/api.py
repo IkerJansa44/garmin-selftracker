@@ -34,6 +34,7 @@ from src.sync import run_sync
 logger = logging.getLogger(__name__)
 QUESTION_SETTINGS_KEY = "checkin_questions"
 DASHBOARD_PLOTS_SETTINGS_KEY = "dashboard_plots"
+CORRELATION_DERIVED_PREDICTORS_KEY = "correlation_derived_predictors"
 QUESTION_INPUT_TYPES = {"slider", "multi-choice", "boolean", "time", "text"}
 QUESTION_ANALYSIS_MODES = {"predictor_next_day", "target_same_day"}
 PLOT_DIRECTIONS = {"higher", "lower"}
@@ -67,6 +68,15 @@ QUESTION_CHILD_CONDITIONS_WITH_VALUE = {
     "at_least",
 }
 MAX_IMPORT_RANGE_DAYS = 365
+
+DERIVED_PREDICTOR_MODES = {"threshold", "quantile"}
+DERIVED_PREDICTOR_SOURCE_GARMIN_KEYS = {
+    "steps",
+    "calories",
+    "stressAvg",
+    "bodyBattery",
+    "sleepSeconds",
+}
 
 
 @dataclass(frozen=True)
@@ -713,6 +723,93 @@ def _normalize_dashboard_plots_payload(payload: Any) -> list[dict[str, str]] | N
     return normalized
 
 
+def _is_valid_derived_source_key(raw_key: Any) -> bool:
+    if not isinstance(raw_key, str):
+        return False
+    key = raw_key.strip()
+    if key.startswith("garmin:"):
+        source_key = key.removeprefix("garmin:")
+        return source_key in DERIVED_PREDICTOR_SOURCE_GARMIN_KEYS
+    if key.startswith("question:"):
+        question_id = key.removeprefix("question:")
+        return bool(question_id.strip())
+    return False
+
+
+def _normalize_derived_predictor(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+
+    predictor_id = raw.get("id")
+    name = raw.get("name")
+    source_key = raw.get("sourceKey")
+    mode = raw.get("mode")
+    cut_points = raw.get("cutPoints")
+    labels = raw.get("labels")
+
+    if not isinstance(predictor_id, str) or not predictor_id.strip():
+        return None
+    if not isinstance(name, str) or not name.strip():
+        return None
+    if not _is_valid_derived_source_key(source_key):
+        return None
+    if not isinstance(mode, str) or mode not in DERIVED_PREDICTOR_MODES:
+        return None
+    if not isinstance(cut_points, list):
+        return None
+    if not isinstance(labels, list):
+        return None
+    if len(labels) < 2 or len(labels) > 5:
+        return None
+    if len(cut_points) != len(labels) - 1:
+        return None
+
+    normalized_cut_points: list[float] = []
+    previous_value: float | None = None
+    for raw_cut_point in cut_points:
+        if isinstance(raw_cut_point, bool) or not isinstance(raw_cut_point, (int, float)):
+            return None
+        cut_point = float(raw_cut_point)
+        if not math.isfinite(cut_point):
+            return None
+        if previous_value is not None and cut_point <= previous_value:
+            return None
+        normalized_cut_points.append(cut_point)
+        previous_value = cut_point
+
+    normalized_labels: list[str] = []
+    for raw_label in labels:
+        if not isinstance(raw_label, str) or not raw_label.strip():
+            return None
+        normalized_labels.append(raw_label.strip())
+
+    return {
+        "id": predictor_id.strip(),
+        "name": name.strip(),
+        "sourceKey": source_key.strip(),
+        "mode": mode,
+        "cutPoints": normalized_cut_points,
+        "labels": normalized_labels,
+    }
+
+
+def _normalize_derived_predictors_payload(payload: Any) -> list[dict[str, Any]] | None:
+    if not isinstance(payload, list):
+        return None
+    normalized: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for raw_predictor in payload:
+        predictor = _normalize_derived_predictor(raw_predictor)
+        if predictor is None:
+            return None
+        predictor_id = str(predictor["id"])
+        if predictor_id in seen_ids:
+            return None
+        seen_ids.add(predictor_id)
+        normalized.append(predictor)
+    return normalized
+
+
 def _load_questions_payload(db_path: str) -> list[dict[str, Any]]:
     connection = connect_db(db_path)
     try:
@@ -723,6 +820,32 @@ def _load_questions_payload(db_path: str) -> list[dict[str, Any]]:
     if raw_payload is None:
         return []
     normalized = _normalize_questions_payload(raw_payload)
+    return normalized if normalized is not None else []
+
+
+def _load_dashboard_plots_payload(db_path: str) -> list[dict[str, str]]:
+    connection = connect_db(db_path)
+    try:
+        init_db(connection)
+        raw_payload = get_setting_json(connection, DASHBOARD_PLOTS_SETTINGS_KEY)
+    finally:
+        connection.close()
+    if raw_payload is None:
+        return [dict(plot) for plot in DEFAULT_DASHBOARD_PLOTS]
+    normalized = _normalize_dashboard_plots_payload(raw_payload)
+    return normalized if normalized is not None else []
+
+
+def _load_derived_predictors_payload(db_path: str) -> list[dict[str, Any]]:
+    connection = connect_db(db_path)
+    try:
+        init_db(connection)
+        raw_payload = get_setting_json(connection, CORRELATION_DERIVED_PREDICTORS_KEY)
+    finally:
+        connection.close()
+    if raw_payload is None:
+        return []
+    normalized = _normalize_derived_predictors_payload(raw_payload)
     return normalized if normalized is not None else []
 
 
@@ -739,19 +862,6 @@ def _save_questions_payload(db_path: str, payload: Any) -> list[dict[str, Any]]:
     return normalized
 
 
-def _load_dashboard_plots_payload(db_path: str) -> list[dict[str, str]]:
-    connection = connect_db(db_path)
-    try:
-        init_db(connection)
-        raw_payload = get_setting_json(connection, DASHBOARD_PLOTS_SETTINGS_KEY)
-    finally:
-        connection.close()
-    if raw_payload is None:
-        return [dict(plot) for plot in DEFAULT_DASHBOARD_PLOTS]
-    normalized = _normalize_dashboard_plots_payload(raw_payload)
-    return normalized if normalized is not None else []
-
-
 def _save_dashboard_plots_payload(db_path: str, payload: Any) -> list[dict[str, str]]:
     normalized = _normalize_dashboard_plots_payload(payload)
     if normalized is None:
@@ -760,6 +870,21 @@ def _save_dashboard_plots_payload(db_path: str, payload: Any) -> list[dict[str, 
     try:
         init_db(connection)
         upsert_setting_json(connection, DASHBOARD_PLOTS_SETTINGS_KEY, normalized)
+    finally:
+        connection.close()
+    return normalized
+
+
+def _save_derived_predictors_payload(
+    db_path: str, payload: Any
+) -> list[dict[str, Any]]:
+    normalized = _normalize_derived_predictors_payload(payload)
+    if normalized is None:
+        raise ValueError("Invalid derived predictors payload")
+    connection = connect_db(db_path)
+    try:
+        init_db(connection)
+        upsert_setting_json(connection, CORRELATION_DERIVED_PREDICTORS_KEY, normalized)
     finally:
         connection.close()
     return normalized
@@ -1027,6 +1152,22 @@ class ApiHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, {"questions": payload})
             return
 
+        if parsed.path == "/api/correlation/derived-predictors":
+            try:
+                payload = _load_derived_predictors_payload(self.db_path)
+            except Exception as exc:  # pragma: no cover - runtime guard
+                logger.exception("Failed to load derived predictors")
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {
+                        "error": "Failed to load derived predictors",
+                        "details": str(exc),
+                    },
+                )
+                return
+            self._send_json(HTTPStatus.OK, {"definitions": payload})
+            return
+
         if parsed.path == "/api/checkins":
             query = parse_qs(parsed.query)
             try:
@@ -1201,6 +1342,36 @@ class ApiHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, {"entry": entry})
             return
 
+        if parsed.path == "/api/correlation/derived-predictors":
+            definitions_payload = (
+                raw_payload.get("definitions")
+                if isinstance(raw_payload, dict)
+                else raw_payload
+            )
+            try:
+                normalized = _save_derived_predictors_payload(
+                    self.db_path,
+                    definitions_payload,
+                )
+            except ValueError as exc:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {
+                        "error": "Invalid derived predictors payload",
+                        "details": str(exc),
+                    },
+                )
+                return
+            except Exception as exc:  # pragma: no cover - runtime guard
+                logger.exception("Failed to save derived predictors")
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"error": "Failed to save derived predictors", "details": str(exc)},
+                )
+                return
+            self._send_json(HTTPStatus.OK, {"definitions": normalized})
+            return
+
         if parsed.path == "/api/dashboard-plots":
             plots_payload = (
                 raw_payload.get("plots")
@@ -1208,7 +1379,10 @@ class ApiHandler(BaseHTTPRequestHandler):
                 else raw_payload
             )
             try:
-                normalized = _save_dashboard_plots_payload(self.db_path, plots_payload)
+                normalized = _save_dashboard_plots_payload(
+                    self.db_path,
+                    plots_payload,
+                )
             except ValueError as exc:
                 self._send_json(
                     HTTPStatus.BAD_REQUEST,

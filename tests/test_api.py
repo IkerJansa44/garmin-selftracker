@@ -12,14 +12,17 @@ from src.api import (
     ImportJobManager,
     ImportRequest,
     _as_clock_time,
+    _load_derived_predictors_payload,
     _load_checkin_reminder_settings_payload,
     _import_status_message,
     _load_checkins_payload,
     _load_dashboard_plots_payload,
     _normalize_checkin_reminder_settings_payload,
     _normalize_dashboard_plots_payload,
+    _normalize_derived_predictors_payload,
     _normalize_questions_payload,
     _parse_import_request,
+    _save_derived_predictors_payload,
     _save_checkin_payload,
     _save_checkin_reminder_settings_payload,
     _save_dashboard_plots_payload,
@@ -458,6 +461,118 @@ def test_dashboard_plot_settings_load_defaults_when_missing(tmp_path: Path) -> N
     loaded = _load_dashboard_plots_payload(str(db_path))
     assert loaded
     assert loaded[0]["key"] == "metric:recoveryIndex"
+
+
+def test_normalize_derived_predictors_payload_accepts_valid_payload() -> None:
+    payload = [
+        {
+            "id": "caffeine_binary",
+            "name": "Caffeine >= 2",
+            "sourceKey": "question:caffeine_count",
+            "mode": "threshold",
+            "cutPoints": [2],
+            "labels": ["<2", ">=2"],
+        },
+        {
+            "id": "steps_quartiles",
+            "name": "Steps Quartiles",
+            "sourceKey": "garmin:steps",
+            "mode": "quantile",
+            "cutPoints": [7000, 10000, 13000],
+            "labels": ["Q1", "Q2", "Q3", "Q4"],
+        },
+    ]
+
+    normalized = _normalize_derived_predictors_payload(payload)
+    assert normalized is not None
+    assert normalized[0]["sourceKey"] == "question:caffeine_count"
+    assert normalized[1]["mode"] == "quantile"
+
+
+@pytest.mark.parametrize(
+    ("payload", "reason"),
+    [
+        (
+            [
+                {
+                    "id": "bad_source",
+                    "name": "Bad Source",
+                    "sourceKey": "garmin:isTrainingDay",
+                    "mode": "threshold",
+                    "cutPoints": [1],
+                    "labels": ["A", "B"],
+                }
+            ],
+            "source",
+        ),
+        (
+            [
+                {
+                    "id": "bad_bins",
+                    "name": "Bad Bins",
+                    "sourceKey": "garmin:steps",
+                    "mode": "threshold",
+                    "cutPoints": [10, 5],
+                    "labels": ["A", "B", "C"],
+                }
+            ],
+            "order",
+        ),
+        (
+            [
+                {
+                    "id": "bad_labels",
+                    "name": "Bad Labels",
+                    "sourceKey": "garmin:steps",
+                    "mode": "threshold",
+                    "cutPoints": [10, 20],
+                    "labels": ["A", "B"],
+                }
+            ],
+            "count",
+        ),
+        (
+            [
+                {
+                    "id": "too_many",
+                    "name": "Too Many",
+                    "sourceKey": "garmin:steps",
+                    "mode": "quantile",
+                    "cutPoints": [1, 2, 3, 4, 5],
+                    "labels": ["A", "B", "C", "D", "E", "F"],
+                }
+            ],
+            "size",
+        ),
+    ],
+)
+def test_normalize_derived_predictors_payload_rejects_invalid_payload(
+    payload: list[dict[str, object]],
+    reason: str,
+) -> None:
+    _ = reason
+    assert _normalize_derived_predictors_payload(payload) is None
+
+
+def test_derived_predictors_save_and_load_roundtrip(tmp_path: Path) -> None:
+    db_path = tmp_path / "garmin.db"
+    payload = [
+        {
+            "id": "sleep_binary",
+            "name": "Sleep >= 7h",
+            "sourceKey": "garmin:sleepSeconds",
+            "mode": "threshold",
+            "cutPoints": [25200],
+            "labels": ["<7h", ">=7h"],
+        }
+    ]
+
+    saved = _save_derived_predictors_payload(str(db_path), payload)
+    assert len(saved) == 1
+    assert saved[0]["labels"] == ["<7h", ">=7h"]
+
+    loaded = _load_derived_predictors_payload(str(db_path))
+    assert loaded == saved
 
 
 def test_as_clock_time_supports_iso_and_epoch_ms() -> None:

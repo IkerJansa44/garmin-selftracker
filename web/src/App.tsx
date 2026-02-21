@@ -57,10 +57,16 @@ import {
 } from "./lib/mockData";
 import { mealToSleepGapMinutes, parseClockTimeToMinutes } from "./lib/time";
 import {
-  buildCorrelationResult,
+  buildCorrelationCatalog,
+  buildDerivedPredictorSourceOptions,
+  buildPredictorDistribution,
+  calculateQuantileCutPoints,
+  findCorrelationPair,
   buildOutcomeOptions,
   buildPredictorOptions,
   getOptionLabel,
+  type BasePredictorKey,
+  type CorrelationPairResult,
   type OutcomeKey,
   type PredictorKey,
 } from "./lib/correlation";
@@ -75,10 +81,12 @@ import {
   fetchCheckIns,
   fetchDashboardData,
   fetchDashboardPlotSettings,
+  fetchDerivedPredictors,
   fetchQuestionSettings,
   saveCheckIn,
   saveCheckinReminderSettings,
   saveDashboardPlotSettings,
+  saveDerivedPredictors,
   saveQuestionSettings,
   startDateRangeImport,
   startRefreshImport,
@@ -94,6 +102,7 @@ import {
   type CoverageState,
   type ChildConditionOperator,
   type DailyRecord,
+  type DerivedPredictorDefinition,
   type ImportState,
   type InputType,
   type MetricKey,
@@ -230,7 +239,7 @@ const GARMIN_PLOT_META: Record<GarminPlotKey, Omit<DashboardPlotVariableOption, 
   calories: { label: "Calories", color: "#8a5a4e", unit: "kcal" },
   stressAvg: { label: "Stress Avg", color: "#806739", unit: "pts" },
   bodyBattery: { label: "Body Battery", color: "#51745e", unit: "%" },
-  sleepSeconds: { label: "Sleep Duration", color: "#3f6686", unit: "s" },
+  sleepSeconds: { label: "Sleep Duration", color: "#3f6686", unit: "h" },
   isTrainingDay: { label: "Training Day", color: "#6f4b83", unit: "0/1" },
 };
 
@@ -354,6 +363,10 @@ function normalizeRangePreset(raw: unknown, fallback: number): number {
   return RANGE_PRESETS.includes(raw as (typeof RANGE_PRESETS)[number]) ? raw : fallback;
 }
 
+function getMetricLabel(metric: MetricKey): string {
+  return METRICS.find((definition) => definition.key === metric)?.label ?? metric;
+}
+
 function getMetricColor(metric: MetricKey): string {
   return METRICS.find((definition) => definition.key === metric)?.color ?? "#cc5833";
 }
@@ -409,6 +422,9 @@ function formatDashboardDelta(
   if (metricKey) {
     return formatMetricDelta(metricKey, value);
   }
+  if (plotKey === "garmin:sleepSeconds") {
+    return formatHoursAsHoursMinutes(Math.abs(value));
+  }
   const amount = Math.abs(value).toFixed(1);
   return option.unit ? `${amount} ${option.unit}` : amount;
 }
@@ -459,9 +475,20 @@ function computeYAxisStats(values: number[]): { domain: [number, number]; ticks:
   const maximum = Math.round(Math.max(...values));
   const average = Math.max(minimum, Math.min(maximum, Math.round(mean(values))));
   const domain: [number, number] = minimum === maximum ? [minimum - 1, maximum + 1] : [minimum, maximum];
+  const uniqueTicks = Array.from(new Set([minimum, average, maximum]));
+  let ticks: number[];
+  if (uniqueTicks.length === 1) {
+    ticks = [uniqueTicks[0] - 1, uniqueTicks[0], uniqueTicks[0] + 1];
+  } else if (uniqueTicks.length === 2) {
+    const low = uniqueTicks[0];
+    const high = uniqueTicks[1];
+    ticks = [low, (low + high) / 2, high];
+  } else {
+    ticks = [minimum, average, maximum];
+  }
   return {
     domain,
-    ticks: [minimum, average, maximum],
+    ticks,
   };
 }
 
@@ -528,7 +555,13 @@ function getDashboardPlotValue(
       return record.predictors.isTrainingDay ? 1 : 0;
     }
     const value = record.predictors[key];
-    return typeof value === "number" && Number.isFinite(value) ? value : null;
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      return null;
+    }
+    if (key === "sleepSeconds") {
+      return value / 3600;
+    }
+    return value;
   }
   const questionId = variable.slice(9);
   const question = questionsById.get(questionId);
@@ -543,10 +576,38 @@ function formatPlotValue(option: DashboardPlotVariableOption, value: number): st
   if (!Number.isFinite(value)) {
     return "--";
   }
+  if (option.key === "garmin:sleepSeconds") {
+    return formatHoursAsHoursMinutes(value);
+  }
   if (!option.unit) {
     return value.toFixed(1);
   }
   return `${value.toFixed(1)} ${option.unit}`;
+}
+
+function describeTodayVsAverage(
+  metric: MetricKey,
+  delta: number | null,
+  rangePreset: number,
+): { text: string; tone: string } {
+  if (delta === null || Number.isNaN(delta)) {
+    return {
+      text: `Not enough data to compare against the ${rangePreset}-day average.`,
+      tone: "text-muted",
+    };
+  }
+  if (delta === 0) {
+    return { text: `Today is exactly at the ${rangePreset}-day average.`, tone: "text-muted" };
+  }
+
+  const aboveOrBelow = delta > 0 ? "above" : "below";
+  const higherIsBetter = METRIC_DIRECTIONS[metric] === "higher";
+  const better = (delta > 0 && higherIsBetter) || (delta < 0 && !higherIsBetter);
+
+  return {
+    text: `Today is ${aboveOrBelow} the ${rangePreset}-day average by ${formatMetricDelta(metric, delta)} (${better ? "better" : "worse"}).`,
+    tone: better ? "text-success" : "text-error",
+  };
 }
 
 function formatMinutesAsClock(minutes: number): string {
@@ -570,6 +631,70 @@ function formatIsoDateLocal(value: Date): string {
   const month = String(value.getMonth() + 1).padStart(2, "0");
   const day = String(value.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function parseThresholdCutPointsInput(rawValue: string): number[] {
+  const values = rawValue
+    .split(",")
+    .map((entry) => Number(entry.trim()))
+    .filter((entry) => Number.isFinite(entry));
+  if (!values.length) {
+    return [];
+  }
+  const sorted = [...values].sort((left, right) => left - right);
+  for (let index = 1; index < sorted.length; index += 1) {
+    if (sorted[index] <= sorted[index - 1]) {
+      return [];
+    }
+  }
+  return sorted;
+}
+
+function buildDensityCurve(values: number[], points = 80): Array<{ x: number; density: number }> {
+  if (values.length < 2) {
+    return [];
+  }
+  const sorted = [...values].sort((left, right) => left - right);
+  const minValue = sorted[0];
+  const maxValue = sorted[sorted.length - 1];
+  const span = maxValue - minValue;
+  if (span === 0) {
+    return [{ x: minValue, density: 1 }];
+  }
+
+  const average = mean(sorted);
+  const variance = sorted.reduce((sum, value) => sum + (value - average) ** 2, 0) / sorted.length;
+  const standardDeviation = Math.sqrt(variance);
+  const silvermanBandwidth = standardDeviation > 0
+    ? 1.06 * standardDeviation * (sorted.length ** (-1 / 5))
+    : span / 10;
+  const bandwidth = Math.max(silvermanBandwidth, span / 100, 1e-6);
+  const start = minValue - span * 0.05;
+  const end = maxValue + span * 0.05;
+  const step = (end - start) / (points - 1);
+  const normalizer = 1 / (sorted.length * bandwidth * Math.sqrt(2 * Math.PI));
+
+  return Array.from({ length: points }, (_, index) => {
+    const x = start + step * index;
+    const sum = sorted.reduce((accumulator, value) => {
+      const z = (x - value) / bandwidth;
+      return accumulator + Math.exp(-0.5 * z * z);
+    }, 0);
+    return { x, density: normalizer * sum };
+  });
+}
+
+function chooseIntegerAxisStep(span: number): number {
+  const allowedSteps = [1, 5, 10, 50, 100, 1000] as const;
+  if (!Number.isFinite(span) || span <= 0) {
+    return 1;
+  }
+  for (const step of allowedSteps) {
+    if (span / step <= 10) {
+      return step;
+    }
+  }
+  return 1000;
 }
 
 function parseIsoDate(value: string): Date | null {
@@ -811,15 +936,49 @@ function computeMetricSummary(records: DailyRecord[], metric: MetricKey, rangePr
   };
 }
 
-function SparklineTooltip({ active, payload }: { active?: boolean; payload?: Array<{ value: number }> }) {
+function formatHoursAsHoursMinutes(hours: number): string {
+  if (!Number.isFinite(hours)) {
+    return "--";
+  }
+  const totalMinutes = Math.round(hours * 60);
+  const sign = totalMinutes < 0 ? "-" : "";
+  const absoluteMinutes = Math.abs(totalMinutes);
+  const wholeHours = Math.floor(absoluteMinutes / 60);
+  const remainingMinutes = absoluteMinutes % 60;
+  return `${sign}${wholeHours}h ${String(remainingMinutes).padStart(2, "0")}m`;
+}
+
+function SparklineTooltip({
+  active,
+  payload,
+  plotKey,
+}: {
+  active?: boolean;
+  payload?: Array<{ value?: number }>;
+  plotKey: DashboardPlotVariableKey;
+}) {
   if (!active || !payload?.length) {
     return null;
   }
+  const value = payload[0]?.value;
+  const formattedValue = plotKey === "garmin:sleepSeconds" && typeof value === "number"
+    ? formatHoursAsHoursMinutes(value)
+    : value ?? "--";
   return (
     <div className="rounded-2xl bg-panel px-3 py-2 text-xs shadow-soft">
-      <span className="metric-number font-mono">{payload[0]?.value ?? "--"}</span>
+      <span className="metric-number font-mono">{formattedValue}</span>
     </div>
   );
+}
+
+function describeCorrelationDirection(pair: CorrelationPairResult): string {
+  if (pair.direction === "similar") {
+    return "No clear monotonic direction in this sample.";
+  }
+  if (pair.testType === "categorical") {
+    return `Moving from lower to higher ${pair.predictorLabel} categories is associated with ${pair.direction} ${pair.outcomeLabel}.`;
+  }
+  return `Higher ${pair.predictorLabel} is associated with ${pair.direction} ${pair.outcomeLabel}.`;
 }
 
 function App() {
@@ -886,8 +1045,19 @@ function App() {
   const [dataError, setDataError] = useState<string | null>(null);
   const [predictorKey, setPredictorKey] = useState<PredictorKey>("garmin:steps");
   const [outcomeKey, setOutcomeKey] = useState<OutcomeKey>("metric:sleepScore");
-  const [weekdayOnly, setWeekdayOnly] = useState(false);
-  const [trainingOnly, setTrainingOnly] = useState(false);
+  const [showNewVariablePanel, setShowNewVariablePanel] = useState(false);
+  const [derivedPredictors, setDerivedPredictors] = useState<DerivedPredictorDefinition[]>([]);
+  const [derivedLoadState, setDerivedLoadState] = useState<"loading" | "ready" | "error">("loading");
+  const [derivedSyncError, setDerivedSyncError] = useState<string | null>(null);
+  const [isSavingDerived, setIsSavingDerived] = useState(false);
+  const [selectedDerivedSource, setSelectedDerivedSource] = useState<BasePredictorKey>("garmin:steps");
+  const [derivedMode, setDerivedMode] = useState<"threshold" | "quantile">("threshold");
+  const [derivedThresholdInput, setDerivedThresholdInput] = useState("2");
+  const [derivedBins, setDerivedBins] = useState(2);
+  const [derivedName, setDerivedName] = useState("");
+  const [derivedLabelsInput, setDerivedLabelsInput] = useState("");
+  const [editingDerivedId, setEditingDerivedId] = useState<string | null>(null);
+  const [derivedFormError, setDerivedFormError] = useState<string | null>(null);
   const [showImportModal, setShowImportModal] = useState(false);
   const [isImportSubmitting, setIsImportSubmitting] = useState(false);
   const [importFeedback, setImportFeedback] = useState<string | null>(null);
@@ -1039,6 +1209,49 @@ function App() {
 
     void loadQuestions();
     return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    const loadDerivedPredictors = async () => {
+      setDerivedLoadState("loading");
+      setDerivedSyncError(null);
+      try {
+        const payload = await fetchDerivedPredictors(controller.signal);
+        setDerivedPredictors(payload.definitions);
+        setDerivedLoadState("ready");
+      } catch (error) {
+        if (controller.signal.aborted) {
+          return;
+        }
+        const message = error instanceof Error
+          ? error.message
+          : "Failed to load derived predictors.";
+        setDerivedSyncError(message);
+        setDerivedLoadState("error");
+      }
+    };
+
+    void loadDerivedPredictors();
+    return () => controller.abort();
+  }, []);
+
+  const persistDerivedPredictors = useCallback(async (definitions: DerivedPredictorDefinition[]) => {
+    setIsSavingDerived(true);
+    setDerivedSyncError(null);
+    try {
+      const payload = await saveDerivedPredictors(definitions);
+      setDerivedPredictors(payload.definitions);
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : "Failed to save derived predictors.";
+      setDerivedSyncError(message);
+      throw error;
+    } finally {
+      setIsSavingDerived(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -1321,7 +1534,14 @@ function App() {
     }
   }, [activeView, pendingAddPlot]);
 
-  const predictorOptions = useMemo(() => buildPredictorOptions(questionLibrary), [questionLibrary]);
+  const predictorOptions = useMemo(
+    () => buildPredictorOptions(questionLibrary, derivedPredictors),
+    [derivedPredictors, questionLibrary],
+  );
+  const derivedSourceOptions = useMemo(
+    () => buildDerivedPredictorSourceOptions(questionLibrary),
+    [questionLibrary],
+  );
   const outcomeOptions = useMemo(() => buildOutcomeOptions(questionLibrary), [questionLibrary]);
 
   useEffect(() => {
@@ -1337,6 +1557,16 @@ function App() {
     }
     setOutcomeKey(outcomeOptions[0].key as OutcomeKey);
   }, [outcomeKey, outcomeOptions]);
+
+  useEffect(() => {
+    if (!derivedSourceOptions.length) {
+      return;
+    }
+    if (derivedSourceOptions.some((option) => option.key === selectedDerivedSource)) {
+      return;
+    }
+    setSelectedDerivedSource(derivedSourceOptions[0].key as BasePredictorKey);
+  }, [derivedSourceOptions, selectedDerivedSource]);
 
   const fallbackTodayRecord = useMemo<DailyRecord>(
     () => ({
@@ -1499,44 +1729,209 @@ function App() {
       plot.option.label.toLowerCase().includes(query) || plot.key.toLowerCase().includes(query));
   }, [dashboardPlots, plotSearchQuery]);
 
-  const correlationData = useMemo(() => {
-    return buildCorrelationResult({
-      records,
-      checkinsByDate: checkinsByDateMap,
-      questions: questionLibrary,
-      predictor: predictorKey,
-      outcome: outcomeKey,
-      weekdayOnly,
-      trainingOnly,
-    });
-  }, [
-    checkinsByDateMap,
-    outcomeKey,
-    predictorKey,
-    questionLibrary,
-    records,
-    trainingOnly,
-    weekdayOnly,
-  ]);
-
+  const correlationRecords = allRecords;
+  const correlationCatalog = useMemo(
+    () =>
+      buildCorrelationCatalog({
+        records: correlationRecords,
+        checkinsByDate: checkinsByDateMap,
+        questions: questionLibrary,
+        derivedPredictors,
+        weekdayOnly: false,
+        trainingOnly: false,
+      }),
+    [
+      checkinsByDateMap,
+      correlationRecords,
+      derivedPredictors,
+      questionLibrary,
+    ],
+  );
+  const meaningfulCorrelations = useMemo(
+    () => correlationCatalog.filter((pair) => pair.classification === "meaningful"),
+    [correlationCatalog],
+  );
+  const exploratoryCorrelations = useMemo(
+    () => correlationCatalog.filter((pair) => pair.classification === "exploratory"),
+    [correlationCatalog],
+  );
+  const selectedCorrelationPair = useMemo(
+    () => findCorrelationPair(correlationCatalog, predictorKey, outcomeKey),
+    [correlationCatalog, outcomeKey, predictorKey],
+  );
+  const continuousExplorerXDomain = useMemo<[number, number] | undefined>(() => {
+    if (!selectedCorrelationPair || selectedCorrelationPair.testType !== "continuous") {
+      return undefined;
+    }
+    if (!selectedCorrelationPair.points.length) {
+      return undefined;
+    }
+    const xs = selectedCorrelationPair.points.map((point) => point.x);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    if (!Number.isFinite(minX) || !Number.isFinite(maxX)) {
+      return undefined;
+    }
+    if (minX === maxX) {
+      const padding = minX === 0 ? 1 : Math.max(Math.abs(minX) * 0.05, 0.5);
+      return [minX - padding, maxX + padding];
+    }
+    return [minX, maxX];
+  }, [selectedCorrelationPair]);
   const trendLineData = useMemo(() => {
-    if (correlationData.points.length < 2) {
+    if (
+      !selectedCorrelationPair
+      || selectedCorrelationPair.testType !== "continuous"
+      || !selectedCorrelationPair.regression
+      || selectedCorrelationPair.points.length < 2
+    ) {
       return [];
     }
-    const xs = correlationData.points.map((point) => point.x);
+    const xs = selectedCorrelationPair.points.map((point) => point.x);
     const minX = Math.min(...xs);
     const maxX = Math.max(...xs);
     return [
       {
         x: minX,
-        y: correlationData.regression.slope * minX + correlationData.regression.intercept,
+        y:
+          selectedCorrelationPair.regression.slope * minX
+          + selectedCorrelationPair.regression.intercept,
       },
       {
         x: maxX,
-        y: correlationData.regression.slope * maxX + correlationData.regression.intercept,
+        y:
+          selectedCorrelationPair.regression.slope * maxX
+          + selectedCorrelationPair.regression.intercept,
       },
     ];
-  }, [correlationData]);
+  }, [selectedCorrelationPair]);
+  const categoricalScatterData = useMemo(() => {
+    if (!selectedCorrelationPair || selectedCorrelationPair.testType !== "categorical") {
+      return [];
+    }
+    return selectedCorrelationPair.points.map((point, index) => ({
+      ...point,
+      xJittered: point.x + ((((index * 37) % 100) / 100) - 0.5) * 0.35,
+    }));
+  }, [selectedCorrelationPair]);
+  const categoricalMeanData = useMemo(() => {
+    if (
+      !selectedCorrelationPair
+      || selectedCorrelationPair.testType !== "categorical"
+      || !selectedCorrelationPair.categoryMeans
+    ) {
+      return [];
+    }
+    return selectedCorrelationPair.categoryMeans
+      .map((groupMean, index) => (
+        groupMean === null ? null : { x: index, xJittered: index, y: groupMean }
+      ))
+      .filter((entry): entry is { x: number; xJittered: number; y: number } => entry !== null);
+  }, [selectedCorrelationPair]);
+  const derivedSourceValues = useMemo(
+    () =>
+      buildPredictorDistribution({
+        records: correlationRecords,
+        checkinsByDate: checkinsByDateMap,
+        questions: questionLibrary,
+        predictor: selectedDerivedSource,
+        weekdayOnly: false,
+        trainingOnly: false,
+      }),
+    [
+      checkinsByDateMap,
+      correlationRecords,
+      questionLibrary,
+      selectedDerivedSource,
+    ],
+  );
+  const derivedSourceDensity = useMemo(
+    () => buildDensityCurve(derivedSourceValues),
+    [derivedSourceValues],
+  );
+  const previewCutPoints = useMemo(
+    () => (
+      derivedMode === "threshold"
+        ? parseThresholdCutPointsInput(derivedThresholdInput)
+        : calculateQuantileCutPoints(derivedSourceValues, derivedBins)
+    ),
+    [derivedBins, derivedMode, derivedSourceValues, derivedThresholdInput],
+  );
+  const derivedSourceSummary = useMemo(() => {
+    if (!derivedSourceValues.length) {
+      return { count: 0, min: null, median: null, max: null };
+    }
+    const sorted = [...derivedSourceValues].sort((left, right) => left - right);
+    const center = Math.floor(sorted.length / 2);
+    const median = sorted.length % 2 === 0
+      ? (sorted[center - 1] + sorted[center]) / 2
+      : sorted[center];
+    return {
+      count: sorted.length,
+      min: sorted[0],
+      median,
+      max: sorted[sorted.length - 1],
+    };
+  }, [derivedSourceValues]);
+  const inRangePreviewCutPoints = useMemo(() => {
+    const { min, max } = derivedSourceSummary;
+    if (min === null || max === null) {
+      return [];
+    }
+    return previewCutPoints.filter((value) => value >= min && value <= max);
+  }, [derivedSourceSummary.max, derivedSourceSummary.min, previewCutPoints]);
+  const outOfRangePreviewCutPoints = useMemo(() => {
+    const { min, max } = derivedSourceSummary;
+    if (min === null || max === null) {
+      return previewCutPoints;
+    }
+    return previewCutPoints.filter((value) => value < min || value > max);
+  }, [derivedSourceSummary.max, derivedSourceSummary.min, previewCutPoints]);
+  const densityDomain = useMemo<[number, number] | null>(() => {
+    if (!derivedSourceDensity.length) {
+      return null;
+    }
+    const allX = derivedSourceDensity.map((point) => point.x);
+    const minX = Math.min(...allX);
+    const maxX = Math.max(...allX);
+    if (!Number.isFinite(minX) || !Number.isFinite(maxX)) {
+      return null;
+    }
+    if (minX === maxX) {
+      return [minX - 1, maxX + 1];
+    }
+    const padding = (maxX - minX) * 0.05;
+    return [minX - padding, maxX + padding];
+  }, [derivedSourceDensity]);
+  const densityAxisStep = useMemo(() => {
+    if (!densityDomain) {
+      return 1;
+    }
+    const [minX, maxX] = densityDomain;
+    return chooseIntegerAxisStep(maxX - minX);
+  }, [densityDomain]);
+  const densityAxisTicks = useMemo(() => {
+    if (!densityDomain) {
+      return [];
+    }
+    const [minX, maxX] = densityDomain;
+    const start = Math.floor(minX / densityAxisStep) * densityAxisStep;
+    const end = Math.ceil(maxX / densityAxisStep) * densityAxisStep;
+    const ticks: number[] = [];
+    for (
+      let value = start, guard = 0;
+      value <= end && guard < 500;
+      value += densityAxisStep, guard += 1
+    ) {
+      ticks.push(Math.round(value));
+    }
+    return ticks;
+  }, [densityAxisStep, densityDomain]);
+  const displayedCorrelationCards = meaningfulCorrelations.length
+    ? meaningfulCorrelations
+    : exploratoryCorrelations;
+  const isExploratoryFallback =
+    meaningfulCorrelations.length === 0 && exploratoryCorrelations.length > 0;
 
   const includedQuestions = useMemo(
     () => questionLibrary.filter((question) => question.defaultIncluded),
@@ -1742,6 +2137,113 @@ function App() {
       }
       return arrayMove(previous, oldIndex, newIndex);
     });
+  };
+
+  const formatDerivedBoundary = (value: number): string => {
+    if (!Number.isFinite(value)) {
+      return String(value);
+    }
+    if (Math.abs(value) >= 1000) {
+      return value.toFixed(0);
+    }
+    if (Math.abs(value) >= 100) {
+      return value.toFixed(1);
+    }
+    return value.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+  };
+
+  const buildDefaultDerivedLabels = (cutPoints: number[]): string[] => {
+    if (!cutPoints.length) {
+      return [];
+    }
+    const labels: string[] = [];
+    labels.push(`< ${formatDerivedBoundary(cutPoints[0])}`);
+    for (let index = 1; index < cutPoints.length; index += 1) {
+      labels.push(`${formatDerivedBoundary(cutPoints[index - 1])} to < ${formatDerivedBoundary(cutPoints[index])}`);
+    }
+    labels.push(`>= ${formatDerivedBoundary(cutPoints[cutPoints.length - 1])}`);
+    return labels;
+  };
+
+  const resetDerivedForm = () => {
+    setEditingDerivedId(null);
+    setDerivedName("");
+    setDerivedThresholdInput("2");
+    setDerivedLabelsInput("");
+    setDerivedBins(2);
+    setDerivedMode("threshold");
+    setDerivedFormError(null);
+  };
+
+  const handleSaveDerivedDefinition = async () => {
+    const trimmedName = derivedName.trim();
+    if (!trimmedName) {
+      setDerivedFormError("Name is required.");
+      return;
+    }
+
+    const cutPoints = derivedMode === "threshold"
+      ? parseThresholdCutPointsInput(derivedThresholdInput)
+      : calculateQuantileCutPoints(derivedSourceValues, derivedBins);
+    if (!cutPoints.length) {
+      setDerivedFormError("Unable to compute valid cut points for this source.");
+      return;
+    }
+
+    const rawLabels = derivedLabelsInput
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    const labels = rawLabels.length ? rawLabels : buildDefaultDerivedLabels(cutPoints);
+    if (labels.length !== cutPoints.length + 1) {
+      setDerivedFormError(`Expected ${cutPoints.length + 1} labels for ${cutPoints.length + 1} bins.`);
+      return;
+    }
+
+    const nextDefinition: DerivedPredictorDefinition = {
+      id: editingDerivedId ?? `derived_${Date.now()}`,
+      name: trimmedName,
+      sourceKey: selectedDerivedSource,
+      mode: derivedMode,
+      cutPoints,
+      labels,
+    };
+    const nextDefinitions = editingDerivedId
+      ? derivedPredictors.map((definition) => (
+        definition.id === editingDerivedId ? nextDefinition : definition
+      ))
+      : [...derivedPredictors, nextDefinition];
+
+    setDerivedFormError(null);
+    try {
+      await persistDerivedPredictors(nextDefinitions);
+      resetDerivedForm();
+    } catch {
+      // Error is already surfaced through derivedSyncError.
+    }
+  };
+
+  const handleEditDerivedDefinition = (definition: DerivedPredictorDefinition) => {
+    setEditingDerivedId(definition.id);
+    setDerivedName(definition.name);
+    setSelectedDerivedSource(definition.sourceKey as BasePredictorKey);
+    setDerivedMode(definition.mode);
+    setDerivedThresholdInput(definition.cutPoints.join(", "));
+    setDerivedBins(Math.max(2, Math.min(5, definition.labels.length)));
+    setDerivedLabelsInput(definition.labels.join(", "));
+    setDerivedFormError(null);
+  };
+
+  const handleDeleteDerivedDefinition = async (definitionId: string) => {
+    const nextDefinitions = derivedPredictors.filter((definition) => definition.id !== definitionId);
+    try {
+      await persistDerivedPredictors(nextDefinitions);
+      if (editingDerivedId === definitionId) {
+        resetDerivedForm();
+      }
+    } catch {
+      // Error is already surfaced through derivedSyncError.
+    }
   };
 
   const handleAddQuestion = () => {
@@ -2206,112 +2708,424 @@ function App() {
         )}
 
         {activeView === "lab" && (
-          <section className="panel gsap-fade grid gap-5 p-6 sm:grid-cols-[340px_1fr] sm:p-8">
-            <aside className="space-y-4 rounded-[24px] bg-subsurface p-4">
-              <h2 className="text-xl font-semibold tracking-tight">Correlation Lab</h2>
-              <p className="text-sm text-muted">
-                Predictors are aligned to the previous day. Outcomes use the selected day.
-              </p>
-              <label className="space-y-2 text-sm">
-                <span className="block text-xs uppercase tracking-[0.16em] text-muted">Predictor (X)</span>
-                <select
-                  className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
-                  value={predictorKey}
-                  onChange={(event) => setPredictorKey(event.target.value as PredictorKey)}
-                >
-                  {predictorOptions.map((option) => (
-                    <option key={option.key} value={option.key}>{option.label}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="space-y-2 text-sm">
-                <span className="block text-xs uppercase tracking-[0.16em] text-muted">Outcome (Y)</span>
-                <select
-                  className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
-                  value={outcomeKey}
-                  onChange={(event) => setOutcomeKey(event.target.value as OutcomeKey)}
-                >
-                  {outcomeOptions.map((option) => (
-                    <option key={option.key} value={option.key}>{option.label}</option>
-                  ))}
-                </select>
-              </label>
-              <p className="rounded-2xl bg-panel p-3 text-xs text-muted">
-                Questions marked as target variables are outcomes only and stay on the same day.
-              </p>
-              <label className="flex items-center justify-between rounded-2xl bg-panel p-3 text-sm">
-                Weekdays only
-                <input
-                  checked={weekdayOnly}
-                  type="checkbox"
-                  onChange={(event) => setWeekdayOnly(event.target.checked)}
-                />
-              </label>
-              <label className="flex items-center justify-between rounded-2xl bg-panel p-3 text-sm">
-                Training days only
-                <input
-                  checked={trainingOnly}
-                  type="checkbox"
-                  onChange={(event) => setTrainingOnly(event.target.checked)}
-                />
-              </label>
-            </aside>
-
-            <article className="rounded-[24px] bg-panel p-5 shadow-soft">
-              <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <section className="gsap-fade space-y-5">
+            <article className="panel p-6 sm:p-8">
+              <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
-                  <h3 className="text-lg font-semibold tracking-tight">
-                    {getOptionLabel(predictorOptions, predictorKey, predictorKey)} vs {getOptionLabel(outcomeOptions, outcomeKey, outcomeKey)}
-                  </h3>
-                  <p className="metric-number text-sm text-muted">
-                    r = {correlationData.correlation.toFixed(2)} · N={correlationData.sampleCount}
+                  <h2 className="text-xl font-semibold tracking-tight">Correlation Lab</h2>
+                  <p className="mt-1 text-sm text-muted">
+                    Univariate associations only. Predictors can correlate with each other, so results are directional signals, not causality.
                   </p>
                 </div>
-                {correlationData.sampleCount < 20 && (
-                  <p className="rounded-capsule bg-[color-mix(in_srgb,var(--warning)_16%,white)] px-3 py-2 text-sm text-warning">
-                    Low sample size (N={correlationData.sampleCount}). Interpret cautiously.
+                <button
+                  className="focusable min-h-11 rounded-capsule bg-accent px-5 text-sm font-semibold text-white shadow-soft"
+                  type="button"
+                  onClick={() => setShowNewVariablePanel((previous) => !previous)}
+                >
+                  + New Variable
+                </button>
+              </div>
+            </article>
+
+            {showNewVariablePanel && (
+              <article className="panel p-6 sm:p-8">
+              <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-semibold tracking-tight">Derived Predictors</h3>
+                  <p className="text-sm text-muted">
+                    Build threshold or quantile bins from continuous predictors. Definitions are persisted in SQLite settings.
                   </p>
+                </div>
+                {isSavingDerived && (
+                  <span className="inline-flex items-center gap-2 text-sm text-muted">
+                    <LoaderCircle className="size-4 animate-spin" />
+                    Saving...
+                  </span>
                 )}
               </header>
+              {derivedSyncError && (
+                <p className="mb-3 rounded-2xl bg-[color-mix(in_srgb,var(--error)_14%,white)] px-3 py-2 text-sm text-error">
+                  {derivedSyncError}
+                </p>
+              )}
+              <div className="grid gap-4 lg:grid-cols-[1.1fr_1fr]">
+                <div className="space-y-3 rounded-[22px] bg-subsurface p-4">
+                  <label className="space-y-2 text-sm">
+                    <span className="block text-xs uppercase tracking-[0.16em] text-muted">Source Predictor</span>
+                    <select
+                      className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
+                      value={selectedDerivedSource}
+                      onChange={(event) => setSelectedDerivedSource(event.target.value as BasePredictorKey)}
+                    >
+                      {derivedSourceOptions.map((option) => (
+                        <option key={option.key} value={option.key}>{option.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="space-y-2 text-sm">
+                      <span className="block text-xs uppercase tracking-[0.16em] text-muted">Mode</span>
+                      <select
+                        className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
+                        value={derivedMode}
+                        onChange={(event) => setDerivedMode(event.target.value as "threshold" | "quantile")}
+                      >
+                        <option value="threshold">Threshold</option>
+                        <option value="quantile">Quantile</option>
+                      </select>
+                    </label>
+                    {derivedMode === "quantile" ? (
+                      <label className="space-y-2 text-sm">
+                        <span className="block text-xs uppercase tracking-[0.16em] text-muted">Bins (2-5)</span>
+                        <input
+                          className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
+                          max={5}
+                          min={2}
+                          type="number"
+                          value={derivedBins}
+                          onChange={(event) => setDerivedBins(Math.max(2, Math.min(5, Number(event.target.value) || 2)))}
+                        />
+                      </label>
+                    ) : (
+                      <label className="space-y-2 text-sm">
+                        <span className="block text-xs uppercase tracking-[0.16em] text-muted">Cut Points</span>
+                        <input
+                          className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
+                          placeholder="e.g. 2, 4"
+                          type="text"
+                          value={derivedThresholdInput}
+                          onChange={(event) => setDerivedThresholdInput(event.target.value)}
+                        />
+                      </label>
+                    )}
+                  </div>
+                  <label className="space-y-2 text-sm">
+                    <span className="block text-xs uppercase tracking-[0.16em] text-muted">Name</span>
+                    <input
+                      className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
+                      placeholder="e.g. Caffeine High/Low"
+                      type="text"
+                      value={derivedName}
+                      onChange={(event) => setDerivedName(event.target.value)}
+                    />
+                  </label>
+                  <label className="space-y-2 text-sm">
+                    <span className="block text-xs uppercase tracking-[0.16em] text-muted">Labels (optional)</span>
+                    <input
+                      className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
+                      placeholder="Comma-separated labels"
+                      type="text"
+                      value={derivedLabelsInput}
+                      onChange={(event) => setDerivedLabelsInput(event.target.value)}
+                    />
+                  </label>
+                  {derivedFormError && (
+                    <p className="rounded-2xl bg-[color-mix(in_srgb,var(--error)_14%,white)] px-3 py-2 text-sm text-error">
+                      {derivedFormError}
+                    </p>
+                  )}
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      className="focusable min-h-11 rounded-capsule bg-accent px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                      disabled={derivedLoadState !== "ready" || !derivedSourceValues.length || isSavingDerived}
+                      type="button"
+                      onClick={() => void handleSaveDerivedDefinition()}
+                    >
+                      {editingDerivedId ? "Update definition" : "Create definition"}
+                    </button>
+                    <button
+                      className="focusable min-h-11 rounded-capsule bg-panel px-4 text-sm font-semibold shadow-soft"
+                      type="button"
+                      onClick={resetDerivedForm}
+                    >
+                      Reset
+                    </button>
+                  </div>
+                </div>
 
-              <div className="h-[420px]">
-                <ResponsiveContainer>
-                  <ScatterChart>
-                    <CartesianGrid stroke="rgba(18,18,18,0.06)" strokeDasharray="3 6" />
-                    <XAxis
-                      dataKey="x"
-                      name={getOptionLabel(predictorOptions, predictorKey, predictorKey)}
-                      axisLine={false}
-                      tickLine={false}
-                      tick={{ fontSize: 12 }}
-                    />
-                    <YAxis
-                      dataKey="y"
-                      name={getOptionLabel(outcomeOptions, outcomeKey, outcomeKey)}
-                      axisLine={false}
-                      tickLine={false}
-                      tick={{ fontSize: 12 }}
-                    />
-                    <Tooltip
-                      cursor={{ strokeDasharray: "3 4" }}
-                      formatter={(value: number, key) => [`${value.toFixed(1)}`, key]}
-                      labelFormatter={(label, payload) => {
-                        const date = payload?.[0]?.payload?.date;
-                        return date ? formatReadableDate(date) : String(label);
-                      }}
-                    />
-                    <Scatter data={correlationData.points} fill={getMetricColor("sleepScore")} />
-                    <Scatter
-                      data={trendLineData}
-                      fill="transparent"
-                      line={{ stroke: "#CC5833", strokeWidth: 2 }}
-                      shape={() => null}
-                      legendType="none"
-                      name="Trend"
-                    />
-                  </ScatterChart>
-                </ResponsiveContainer>
+                <div className="space-y-3 rounded-[22px] bg-subsurface p-4">
+                  <h4 className="text-sm font-semibold uppercase tracking-[0.16em] text-muted">Distribution Preview</h4>
+                  <p className="metric-number text-xs text-muted">
+                    N={derivedSourceSummary.count}
+                    {derivedSourceSummary.min !== null && (
+                      <> · min={derivedSourceSummary.min.toFixed(1)} · median={derivedSourceSummary.median?.toFixed(1)} · max={derivedSourceSummary.max?.toFixed(1)}</>
+                    )}
+                  </p>
+                  {derivedSourceDensity.length ? (
+                    <div className="h-44 rounded-2xl bg-panel p-2">
+                      <ResponsiveContainer>
+                        <ComposedChart data={derivedSourceDensity}>
+                          <CartesianGrid stroke="rgba(18,18,18,0.06)" strokeDasharray="3 6" />
+                          <XAxis
+                            axisLine={false}
+                            dataKey="x"
+                            domain={
+                              densityAxisTicks.length >= 2
+                                ? [densityAxisTicks[0], densityAxisTicks[densityAxisTicks.length - 1]]
+                                : densityDomain ?? ["auto", "auto"]
+                            }
+                            interval={0}
+                            scale="linear"
+                            ticks={densityAxisTicks}
+                            tick={{ fontSize: 11 }}
+                            tickFormatter={(value: number) => String(Math.round(value))}
+                            tickLine={false}
+                            type="number"
+                          />
+                          <YAxis axisLine={false} dataKey="density" hide tickLine={false} type="number" />
+                          <Tooltip
+                            cursor={{ strokeDasharray: "3 4" }}
+                            formatter={(value: number, key) => [
+                              key === "density" ? value.toFixed(4) : value.toFixed(2),
+                              key,
+                            ]}
+                            labelFormatter={(label) => `x=${Number(label).toFixed(2)}`}
+                          />
+                          <Line
+                            dataKey="density"
+                            dot={false}
+                            stroke="#CC5833"
+                            strokeWidth={2}
+                            type="monotone"
+                          />
+                          {inRangePreviewCutPoints.map((cutPoint, index) => (
+                            <ReferenceLine
+                              key={`${cutPoint}-${index}`}
+                              ifOverflow="extendDomain"
+                              label={{ value: `C${index + 1}`, fill: "#cc5833", fontSize: 10 }}
+                              stroke="#CC5833"
+                              strokeDasharray="4 4"
+                              x={cutPoint}
+                            />
+                          ))}
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-muted">No values available for this source.</p>
+                  )}
+                  <p className="metric-number text-xs text-muted">
+                    Cut points: {previewCutPoints.length ? previewCutPoints.map((value) => value.toFixed(2)).join(", ") : "--"}
+                  </p>
+                  {outOfRangePreviewCutPoints.length > 0 && (
+                    <p className="metric-number text-xs text-warning">
+                      Out of range: {outOfRangePreviewCutPoints.map((value) => value.toFixed(2)).join(", ")}
+                    </p>
+                  )}
+
+                  <div className="pt-2">
+                    <h4 className="mb-2 text-sm font-semibold uppercase tracking-[0.16em] text-muted">Saved Definitions</h4>
+                    <div className="space-y-2">
+                      {derivedPredictors.length ? derivedPredictors.map((definition) => (
+                        <div key={definition.id} className="rounded-2xl bg-panel p-3">
+                          <p className="text-sm font-semibold">{definition.name}</p>
+                          <p className="mt-1 text-xs text-muted">
+                            {getOptionLabel(derivedSourceOptions, definition.sourceKey, definition.sourceKey)}
+                            {" · "}
+                            {definition.mode}
+                            {" · "}
+                            {definition.labels.length} bins
+                          </p>
+                          <div className="mt-2 flex gap-2">
+                            <button
+                              className="focusable rounded-capsule bg-subsurface px-3 py-1 text-xs font-semibold"
+                              type="button"
+                              onClick={() => handleEditDerivedDefinition(definition)}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              className="focusable rounded-capsule bg-[color-mix(in_srgb,var(--error)_14%,white)] px-3 py-1 text-xs font-semibold text-error"
+                              type="button"
+                              onClick={() => void handleDeleteDerivedDefinition(definition.id)}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      )) : (
+                        <p className="text-sm text-muted">No derived predictors yet.</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
               </div>
+              </article>
+            )}
+
+            <article className="panel p-6 sm:p-8">
+              <header className="mb-4">
+                <h3 className="text-lg font-semibold tracking-tight">Top Correlations</h3>
+                <p className="text-sm text-muted">
+                  Predictor values are aligned to the previous day. Outcomes are measured on the selected day.
+                </p>
+              </header>
+              {isExploratoryFallback && (
+                <p className="mb-3 rounded-2xl bg-[color-mix(in_srgb,var(--warning)_16%,white)] px-4 py-3 text-sm text-warning">
+                  No meaningful correlations yet. Showing exploratory correlations from full history.
+                </p>
+              )}
+              {!displayedCorrelationCards.length ? (
+                <p className="rounded-2xl bg-subsurface px-4 py-3 text-sm text-muted">
+                  Insufficient data for correlation cards. Keep tracking to unlock meaningful and exploratory results.
+                </p>
+              ) : (
+                <div className="grid gap-3 md:grid-cols-2">
+                  {displayedCorrelationCards.map((pair) => (
+                    <article key={pair.key} className="rounded-[22px] bg-subsurface p-4">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <h4 className="text-sm font-semibold tracking-tight">{pair.predictorLabel} vs {pair.outcomeLabel}</h4>
+                        <span
+                          className={clsx(
+                            "rounded-capsule px-3 py-1 text-xs font-semibold",
+                            pair.classification === "meaningful"
+                              ? "bg-[color-mix(in_srgb,var(--success)_14%,white)] text-success"
+                              : "bg-[color-mix(in_srgb,var(--warning)_16%,white)] text-warning",
+                          )}
+                        >
+                          {pair.classification === "meaningful" ? "Meaningful" : "Exploratory"}
+                        </span>
+                      </div>
+                      <p className="text-sm text-muted">{describeCorrelationDirection(pair)}</p>
+                      <p className="metric-number mt-2 text-xs text-muted">
+                        {pair.testType === "continuous"
+                          ? `r=${(pair.correlation ?? 0).toFixed(2)} · slope=${pair.regression?.slope.toFixed(3) ?? "--"} · p=${pair.pValue?.toExponential(2) ?? "--"} · q=${pair.qValue?.toExponential(2) ?? "--"} · N=${pair.sampleCount}`
+                          : `eta²=${(pair.etaSquared ?? 0).toFixed(3)} · F=${pair.fStatistic?.toFixed(2) ?? "--"} · p=${pair.pValue?.toExponential(2) ?? "--"} · q=${pair.qValue?.toExponential(2) ?? "--"} · N=${pair.sampleCount}`}
+                      </p>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </article>
+
+            <article className="panel p-6 sm:p-8">
+              <header className="mb-4 flex flex-wrap items-end justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-semibold tracking-tight">Explorer</h3>
+                  <p className="text-sm text-muted">Inspect any predictor/outcome pair visually.</p>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="space-y-1 text-sm">
+                    <span className="block text-xs uppercase tracking-[0.16em] text-muted">Predictor (X)</span>
+                    <select
+                      className="focusable min-h-11 rounded-2xl bg-subsurface px-3"
+                      value={predictorKey}
+                      onChange={(event) => setPredictorKey(event.target.value as PredictorKey)}
+                    >
+                      {predictorOptions.map((option) => (
+                        <option key={option.key} value={option.key}>{option.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-1 text-sm">
+                    <span className="block text-xs uppercase tracking-[0.16em] text-muted">Outcome (Y)</span>
+                    <select
+                      className="focusable min-h-11 rounded-2xl bg-subsurface px-3"
+                      value={outcomeKey}
+                      onChange={(event) => setOutcomeKey(event.target.value as OutcomeKey)}
+                    >
+                      {outcomeOptions.map((option) => (
+                        <option key={option.key} value={option.key}>{option.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              </header>
+              {selectedCorrelationPair ? (
+                <>
+                  <p className="metric-number mb-4 text-sm text-muted">
+                    {selectedCorrelationPair.testType === "continuous"
+                      ? `r=${(selectedCorrelationPair.correlation ?? 0).toFixed(3)} · slope=${selectedCorrelationPair.regression?.slope.toFixed(3) ?? "--"} · p=${selectedCorrelationPair.pValue?.toExponential(2) ?? "--"} · q=${selectedCorrelationPair.qValue?.toExponential(2) ?? "--"} · N=${selectedCorrelationPair.sampleCount}`
+                      : `eta²=${(selectedCorrelationPair.etaSquared ?? 0).toFixed(3)} · F=${selectedCorrelationPair.fStatistic?.toFixed(2) ?? "--"} · p=${selectedCorrelationPair.pValue?.toExponential(2) ?? "--"} · q=${selectedCorrelationPair.qValue?.toExponential(2) ?? "--"} · N=${selectedCorrelationPair.sampleCount}`}
+                  </p>
+                  <div className="h-[420px]">
+                    <ResponsiveContainer>
+                      <ScatterChart>
+                        <CartesianGrid stroke="rgba(18,18,18,0.06)" strokeDasharray="3 6" />
+                        <XAxis
+                          axisLine={false}
+                          dataKey={selectedCorrelationPair.testType === "categorical" ? "xJittered" : "x"}
+                          domain={selectedCorrelationPair.testType === "categorical"
+                            ? [-0.5, Math.max(0, (selectedCorrelationPair.categoryLabels?.length ?? 1) - 0.5)]
+                            : continuousExplorerXDomain}
+                          label={{
+                            value: getOptionLabel(predictorOptions, predictorKey, predictorKey),
+                            position: "insideBottom",
+                            offset: -2,
+                            style: { fill: "rgba(18,18,18,0.62)", fontSize: 12 },
+                          }}
+                          name={getOptionLabel(predictorOptions, predictorKey, predictorKey)}
+                          tick={{ fontSize: 12 }}
+                          tickFormatter={(value: number) => {
+                            if (selectedCorrelationPair.testType !== "categorical") {
+                              return String(Math.round(value * 10) / 10);
+                            }
+                            const labels = selectedCorrelationPair.categoryLabels ?? [];
+                            const index = Math.round(value);
+                            return labels[index] ?? String(index);
+                          }}
+                          tickLine={false}
+                          type="number"
+                        />
+                        <YAxis
+                          axisLine={false}
+                          dataKey="y"
+                          label={{
+                            value: getOptionLabel(outcomeOptions, outcomeKey, outcomeKey),
+                            angle: -90,
+                            position: "insideLeft",
+                            style: { fill: "rgba(18,18,18,0.62)", fontSize: 12, textAnchor: "middle" },
+                          }}
+                          name={getOptionLabel(outcomeOptions, outcomeKey, outcomeKey)}
+                          tick={{ fontSize: 12 }}
+                          tickLine={false}
+                          type="number"
+                        />
+                        <Tooltip
+                          cursor={{ strokeDasharray: "3 4" }}
+                          formatter={(value: number, key) => {
+                            if (
+                              selectedCorrelationPair.testType === "continuous"
+                              && predictorKey === "garmin:sleepSeconds"
+                              && key === "x"
+                            ) {
+                              return [formatHoursAsHoursMinutes(value), key];
+                            }
+                            return [`${value.toFixed(2)}`, key];
+                          }}
+                          labelFormatter={(_, payload) => {
+                            const date = payload?.[0]?.payload?.date;
+                            return date ? formatReadableDate(date) : "";
+                          }}
+                        />
+                        <Scatter
+                          data={selectedCorrelationPair.testType === "categorical"
+                            ? categoricalScatterData
+                            : selectedCorrelationPair.points}
+                          fill={getMetricColor("sleepScore")}
+                        />
+                        {selectedCorrelationPair.testType === "categorical" && (
+                          <Scatter data={categoricalMeanData} fill="#CC5833" name="Group means" />
+                        )}
+                        {selectedCorrelationPair.testType === "continuous" && (
+                          <Scatter
+                            data={trendLineData}
+                            fill="transparent"
+                            legendType="none"
+                            line={{ stroke: "#CC5833", strokeWidth: 2 }}
+                            name="Trend"
+                            shape={() => null}
+                          />
+                        )}
+                      </ScatterChart>
+                    </ResponsiveContainer>
+                  </div>
+                </>
+              ) : (
+                <p className="rounded-2xl bg-subsurface px-4 py-3 text-sm text-muted">
+                  Select a valid predictor/outcome pair to explore.
+                </p>
+              )}
             </article>
           </section>
         )}
@@ -2781,7 +3595,7 @@ function SortableDashboardPlotItem({
               strokeWidth={2}
               type="monotone"
             />
-            <Tooltip content={<SparklineTooltip />} />
+            <Tooltip content={<SparklineTooltip plotKey={plot.key} />} />
           </ComposedChart>
         </ResponsiveContainer>
       </div>
