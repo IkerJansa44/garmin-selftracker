@@ -5,6 +5,7 @@ import {
   buildCorrelationResult,
   buildDerivedPredictorSourceOptions,
   buildOutcomeOptions,
+  buildPredictorDistribution,
   buildPredictorOptions,
   calculateQuantileCutPoints,
   findCorrelationPair,
@@ -205,6 +206,22 @@ describe("correlation helpers", () => {
     expect((pair?.etaSquared ?? 0) > 0).toBe(true);
     expect(pair?.fStatistic).not.toBeNull();
     expect(pair?.categoryLabels).toEqual(["<2", ">=2"]);
+  });
+
+  it("converts Garmin sleep duration predictor values from seconds to hours", () => {
+    const records = buildRecords(30);
+    const checkinsByDate = buildCheckins(30);
+    const values = buildPredictorDistribution({
+      records,
+      checkinsByDate,
+      questions: QUESTIONS,
+      predictor: "garmin:sleepSeconds",
+      weekdayOnly: false,
+      trainingOnly: false,
+    });
+
+    expect(values.length).toBe(29);
+    expect(values.every((value) => value > 4 && value < 12)).toBe(true);
   });
 
   it("classifies low sample pairs as exploratory/insufficient", () => {

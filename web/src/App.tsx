@@ -239,7 +239,7 @@ const GARMIN_PLOT_META: Record<GarminPlotKey, Omit<DashboardPlotVariableOption, 
   calories: { label: "Calories", color: "#8a5a4e", unit: "kcal" },
   stressAvg: { label: "Stress Avg", color: "#806739", unit: "pts" },
   bodyBattery: { label: "Body Battery", color: "#51745e", unit: "%" },
-  sleepSeconds: { label: "Sleep Duration", color: "#3f6686", unit: "s" },
+  sleepSeconds: { label: "Sleep Duration", color: "#3f6686", unit: "h" },
   isTrainingDay: { label: "Training Day", color: "#6f4b83", unit: "0/1" },
 };
 
@@ -422,6 +422,9 @@ function formatDashboardDelta(
   if (metricKey) {
     return formatMetricDelta(metricKey, value);
   }
+  if (plotKey === "garmin:sleepSeconds") {
+    return formatHoursAsHoursMinutes(Math.abs(value));
+  }
   const amount = Math.abs(value).toFixed(1);
   return option.unit ? `${amount} ${option.unit}` : amount;
 }
@@ -472,9 +475,20 @@ function computeYAxisStats(values: number[]): { domain: [number, number]; ticks:
   const maximum = Math.round(Math.max(...values));
   const average = Math.max(minimum, Math.min(maximum, Math.round(mean(values))));
   const domain: [number, number] = minimum === maximum ? [minimum - 1, maximum + 1] : [minimum, maximum];
+  const uniqueTicks = Array.from(new Set([minimum, average, maximum]));
+  let ticks: number[];
+  if (uniqueTicks.length === 1) {
+    ticks = [uniqueTicks[0] - 1, uniqueTicks[0], uniqueTicks[0] + 1];
+  } else if (uniqueTicks.length === 2) {
+    const low = uniqueTicks[0];
+    const high = uniqueTicks[1];
+    ticks = [low, (low + high) / 2, high];
+  } else {
+    ticks = [minimum, average, maximum];
+  }
   return {
     domain,
-    ticks: [minimum, average, maximum],
+    ticks,
   };
 }
 
@@ -541,7 +555,13 @@ function getDashboardPlotValue(
       return record.predictors.isTrainingDay ? 1 : 0;
     }
     const value = record.predictors[key];
-    return typeof value === "number" && Number.isFinite(value) ? value : null;
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      return null;
+    }
+    if (key === "sleepSeconds") {
+      return value / 3600;
+    }
+    return value;
   }
   const questionId = variable.slice(9);
   const question = questionsById.get(questionId);
@@ -555,6 +575,9 @@ function getDashboardPlotValue(
 function formatPlotValue(option: DashboardPlotVariableOption, value: number): string {
   if (!Number.isFinite(value)) {
     return "--";
+  }
+  if (option.key === "garmin:sleepSeconds") {
+    return formatHoursAsHoursMinutes(value);
   }
   if (!option.unit) {
     return value.toFixed(1);
@@ -913,13 +936,37 @@ function computeMetricSummary(records: DailyRecord[], metric: MetricKey, rangePr
   };
 }
 
-function SparklineTooltip({ active, payload }: { active?: boolean; payload?: Array<{ value: number }> }) {
+function formatHoursAsHoursMinutes(hours: number): string {
+  if (!Number.isFinite(hours)) {
+    return "--";
+  }
+  const totalMinutes = Math.round(hours * 60);
+  const sign = totalMinutes < 0 ? "-" : "";
+  const absoluteMinutes = Math.abs(totalMinutes);
+  const wholeHours = Math.floor(absoluteMinutes / 60);
+  const remainingMinutes = absoluteMinutes % 60;
+  return `${sign}${wholeHours}h ${String(remainingMinutes).padStart(2, "0")}m`;
+}
+
+function SparklineTooltip({
+  active,
+  payload,
+  plotKey,
+}: {
+  active?: boolean;
+  payload?: Array<{ value?: number }>;
+  plotKey: DashboardPlotVariableKey;
+}) {
   if (!active || !payload?.length) {
     return null;
   }
+  const value = payload[0]?.value;
+  const formattedValue = plotKey === "garmin:sleepSeconds" && typeof value === "number"
+    ? formatHoursAsHoursMinutes(value)
+    : value ?? "--";
   return (
     <div className="rounded-2xl bg-panel px-3 py-2 text-xs shadow-soft">
-      <span className="metric-number font-mono">{payload[0]?.value ?? "--"}</span>
+      <span className="metric-number font-mono">{formattedValue}</span>
     </div>
   );
 }
@@ -1712,6 +1759,25 @@ function App() {
     () => findCorrelationPair(correlationCatalog, predictorKey, outcomeKey),
     [correlationCatalog, outcomeKey, predictorKey],
   );
+  const continuousExplorerXDomain = useMemo<[number, number] | undefined>(() => {
+    if (!selectedCorrelationPair || selectedCorrelationPair.testType !== "continuous") {
+      return undefined;
+    }
+    if (!selectedCorrelationPair.points.length) {
+      return undefined;
+    }
+    const xs = selectedCorrelationPair.points.map((point) => point.x);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    if (!Number.isFinite(minX) || !Number.isFinite(maxX)) {
+      return undefined;
+    }
+    if (minX === maxX) {
+      const padding = minX === 0 ? 1 : Math.max(Math.abs(minX) * 0.05, 0.5);
+      return [minX - padding, maxX + padding];
+    }
+    return [minX, maxX];
+  }, [selectedCorrelationPair]);
   const trendLineData = useMemo(() => {
     if (
       !selectedCorrelationPair
@@ -2981,7 +3047,7 @@ function App() {
                           dataKey={selectedCorrelationPair.testType === "categorical" ? "xJittered" : "x"}
                           domain={selectedCorrelationPair.testType === "categorical"
                             ? [-0.5, Math.max(0, (selectedCorrelationPair.categoryLabels?.length ?? 1) - 0.5)]
-                            : undefined}
+                            : continuousExplorerXDomain}
                           label={{
                             value: getOptionLabel(predictorOptions, predictorKey, predictorKey),
                             position: "insideBottom",
@@ -3017,7 +3083,16 @@ function App() {
                         />
                         <Tooltip
                           cursor={{ strokeDasharray: "3 4" }}
-                          formatter={(value: number, key) => [`${value.toFixed(2)}`, key]}
+                          formatter={(value: number, key) => {
+                            if (
+                              selectedCorrelationPair.testType === "continuous"
+                              && predictorKey === "garmin:sleepSeconds"
+                              && key === "x"
+                            ) {
+                              return [formatHoursAsHoursMinutes(value), key];
+                            }
+                            return [`${value.toFixed(2)}`, key];
+                          }}
                           labelFormatter={(_, payload) => {
                             const date = payload?.[0]?.payload?.date;
                             return date ? formatReadableDate(date) : "";
@@ -3520,7 +3595,7 @@ function SortableDashboardPlotItem({
               strokeWidth={2}
               type="monotone"
             />
-            <Tooltip content={<SparklineTooltip />} />
+            <Tooltip content={<SparklineTooltip plotKey={plot.key} />} />
           </ComposedChart>
         </ResponsiveContainer>
       </div>

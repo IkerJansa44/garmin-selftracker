@@ -64,7 +64,7 @@ const GARMIN_PREDICTOR_LABELS: Record<GarminPredictorKey, string> = {
   calories: "Calories",
   stressAvg: "Stress Avg",
   bodyBattery: "Body Battery",
-  sleepSeconds: "Sleep Seconds",
+  sleepSeconds: "Sleep Duration (h)",
   isTrainingDay: "Training Day (1/0)",
 };
 
@@ -330,7 +330,13 @@ function parseBasePredictorValue(
       return predictorRecord.predictors.isTrainingDay ? 1 : 0;
     }
     const value = predictorRecord.predictors[key];
-    return typeof value === "number" && Number.isFinite(value) ? value : null;
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      return null;
+    }
+    if (key === "sleepSeconds") {
+      return value / 3600;
+    }
+    return value;
   }
 
   const questionId = predictor.slice(9);
