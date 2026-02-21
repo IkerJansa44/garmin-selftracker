@@ -1,8 +1,25 @@
 services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      SQLITE_DB_PATH: /data/garmin.db
+    volumes:
+      - ./data:/data
+      - ./src:/app/src
+      - ./sql:/app/sql
+    command: ["python", "-m", "src.api", "--host", "0.0.0.0", "--port", "8000"]
+    restart: unless-stopped
+
   dashboard:
     build:
       context: ./web
       dockerfile: Dockerfile
+    environment:
+      VITE_PROXY_TARGET: http://api:8000
+    depends_on:
+      - api
     ports:
       - "5180:5180"
     restart: unless-stopped
@@ -16,10 +33,7 @@ services:
       SQLITE_DB_PATH: /data/garmin.db
       DEFAULT_SYNC_DAYS: 2
     volumes:
-      - sqlite_data:/data
+      - ./data:/data
       - ./src:/app/src
       - ./sql:/app/sql
     command: ["python", "-m", "src.cli", "sync", "--days", "2"]
-
-volumes:
-  sqlite_data:

@@ -2,14 +2,16 @@
 
 Local-first Garmin self-tracking workspace with:
 - Python extractor that syncs Garmin Connect data into SQLite
+- Python API that serves dashboard-ready data from SQLite
 - React 19 daylight "Ceramic Ops" dashboard UI for Today, Explore, Correlation Lab, Check-In, and Settings
 
 ## Architecture
 
 - `extractor` service: Python CLI + SQLite ingestion
+- `api` service: Python HTTP API over SQLite (`/api/dashboard`)
 - `dashboard` service: React 19.2.4 + Tailwind + GSAP + Recharts frontend
 - SQLite DB path inside extractor container: `/data/garmin.db`
-- SQLite persistence volume: `sqlite_data`
+- SQLite host file path: `/Users/ikerjansa/Documents/garmin-selftracker/data/garmin.db`
 
 ## Run with Docker
 
@@ -36,6 +38,12 @@ docker compose up --build
 
 - [http://localhost:5180](http://localhost:5180)
 
+The dashboard fetches `/api/dashboard` through the Vite dev proxy and renders
+actual SQLite-backed Garmin data.
+
+DBeaver JDBC URL:
+- `jdbc:sqlite:/Users/ikerjansa/Documents/garmin-selftracker/data/garmin.db`
+
 ## Extractor Commands
 
 Initialize DB schema:
@@ -58,10 +66,12 @@ docker compose run --rm extractor python -m src.cli backfill --from-date 2026-01
 
 ## Dashboard Data and Persistence Model
 
-- UI uses a deterministic 365-day mock generator for realistic chart behavior:
-  - weekly rhythms
-  - missing days and import gap simulation
-  - lag effects (for example, alcohol -> sleep score down; high intensity -> HRV dip next day)
+- UI reads real records from SQLite through the `api` service:
+  - `daily_metrics` powers daily metric series
+  - `activities` powers training-day flags
+  - `sync_runs` powers import state + last import timestamp
+- Metrics not directly present in the extractor schema (`sleepScore`, `recoveryIndex`, `trainingReadiness`)
+    are deterministically derived from available SQLite fields for UI continuity.
 - LocalStorage is used only for UI state:
   - last view
   - selected metrics
@@ -69,16 +79,15 @@ docker compose run --rm extractor python -m src.cli backfill --from-date 2026-01
   - explore toggles
   - in-progress check-in draft
 - Analytical source of truth is **not** localStorage.
-  - Metrics/check-in analysis data is intended to come from SQLite-backed backend flows.
+  - Metrics/check-in analysis data comes from SQLite-backed backend flows.
 
-## Daily Import Status Simulation (UI Contract)
+## Daily Import Status
 
-The dashboard import status is UI-only and deterministic:
-- Scheduled daily at **06:00 local time**
-- State labels: `OK`, `Running`, `Failed`
-- `Running` window: approximately **05:55-06:30 local** for the current day
-- `Failed` is shown on deterministic simulated import-gap days
-- Last import timestamp is shown in navbar and settings
+Import status in the UI is sourced from `sync_runs`:
+- `OK`: latest run status is success/partial
+- `Running`: latest run status is running
+- `Failed`: latest run status is failed (or no data available)
+- Last import timestamp comes from latest run `ended_at` (or `started_at` when running)
 
 ## Data Model (SQLite)
 

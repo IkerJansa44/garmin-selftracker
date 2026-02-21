@@ -62,8 +62,6 @@ import {
   ema,
   formatReadableDate,
   formatTime,
-  generateHistoryFromRecords,
-  generateMockRecords,
   histogram,
   mean,
   pearsonCorrelation,
@@ -71,6 +69,7 @@ import {
   shiftSeries,
   stdev,
 } from "./lib/mockData";
+import { fetchDashboardData } from "./lib/api";
 import { usePersistentState } from "./lib/storage";
 import {
   type CheckInEntry,
@@ -86,8 +85,6 @@ import {
 gsap.registerPlugin(ScrollTrigger);
 
 type ViewKey = "today" | "explore" | "lab" | "checkin" | "settings";
-
-const RECORDS = generateMockRecords();
 
 const IMPORT_STATUS_LABELS: Record<ImportState, string> = {
   ok: "OK",
@@ -111,13 +108,47 @@ const COVERAGE_META: Record<CoverageState, { label: string; tone: string }> = {
 };
 
 const METRIC_LIMITS: Record<MetricKey, { min: number; max: number }> = {
-  hrv: { min: 30, max: 110 },
+  recoveryIndex: { min: 30, max: 110 },
   sleepScore: { min: 40, max: 100 },
   restingHr: { min: 42, max: 72 },
   stress: { min: 10, max: 85 },
   bodyBattery: { min: 15, max: 100 },
   trainingReadiness: { min: 20, max: 100 },
 };
+
+const EMPTY_METRICS: Record<MetricKey, number | null> = {
+  recoveryIndex: null,
+  sleepScore: null,
+  restingHr: null,
+  stress: null,
+  bodyBattery: null,
+  trainingReadiness: null,
+};
+
+const EMPTY_COVERAGE: Record<MetricKey, CoverageState> = {
+  recoveryIndex: "missing",
+  sleepScore: "missing",
+  restingHr: "missing",
+  stress: "missing",
+  bodyBattery: "missing",
+  trainingReadiness: "missing",
+};
+
+const LEGACY_METRIC_KEY_MAP: Record<string, MetricKey> = {
+  hrv: "recoveryIndex",
+};
+
+function normalizeMetricSelection(raw: unknown, fallback: MetricKey[]): MetricKey[] {
+  if (!Array.isArray(raw)) {
+    return fallback;
+  }
+  const availableKeys = new Set<MetricKey>(METRICS.map((metric) => metric.key));
+  const normalized = raw
+    .map((metric) => (typeof metric === "string" ? (LEGACY_METRIC_KEY_MAP[metric] ?? metric) : null))
+    .filter((metric): metric is MetricKey => metric !== null && availableKeys.has(metric as MetricKey));
+  const deduplicated = Array.from(new Set(normalized));
+  return deduplicated.length ? deduplicated : fallback;
+}
 
 function getMetricLabel(metric: MetricKey): string {
   return METRICS.find((definition) => definition.key === metric)?.label ?? metric;
@@ -186,23 +217,6 @@ function sectionedQuestions(questions: CheckInQuestion[]): Record<string, CheckI
   }, {});
 }
 
-function buildImportSummary(records: DailyRecord[]): {
-  state: ImportState;
-  lastImportAt: string;
-  message: string;
-} {
-  const today = records[records.length - 1];
-  const lastComplete = [...records]
-    .reverse()
-    .find((record) => Object.values(record.coverage).every((coverage) => coverage === "complete"));
-
-  return {
-    state: today.importState,
-    lastImportAt: lastComplete ? `${lastComplete.date}T06:07:00` : `${today.date}T06:00:00`,
-    message: "Daily import scheduled · 06:00 local",
-  };
-}
-
 function computeMetricSummary(records: DailyRecord[], metric: MetricKey): {
   todayValue: number | null;
   coverage: CoverageState;
@@ -211,6 +225,20 @@ function computeMetricSummary(records: DailyRecord[], metric: MetricKey): {
   delta: number | null;
   sparklineData: Array<{ i: number; value: number | null }>;
 } {
+  if (!records.length) {
+    return {
+      todayValue: null,
+      coverage: "missing",
+      baselineMean: 0,
+      baselineStd: 0,
+      delta: null,
+      sparklineData: Array.from({ length: 14 }, (_, index) => ({
+        i: index,
+        value: null,
+      })),
+    };
+  }
+
   const today = records[records.length - 1];
   const todayValue = today.metrics[metric];
   const coverage = today.coverage[metric];
@@ -355,6 +383,7 @@ function App() {
   const [selectedMetrics, setSelectedMetrics] = usePersistentState<MetricKey[]>(
     "ui.selectedMetrics",
     DEFAULT_SELECTED_METRICS,
+    normalizeMetricSelection,
   );
   const [exploreSettings, setExploreSettings] = usePersistentState<ExploreSettings>(
     "ui.exploreSettings",
@@ -378,13 +407,51 @@ function App() {
   const [questionLibrary, setQuestionLibrary] = useState<CheckInQuestion[]>(DEFAULT_QUESTIONS);
   const [selectedQuestionId, setSelectedQuestionId] = useState(DEFAULT_QUESTIONS[0]?.id ?? "");
   const [questionJsonDraft, setQuestionJsonDraft] = useState("");
-  const [historyEntries, setHistoryEntries] = useState<CheckInEntry[]>(() => generateHistoryFromRecords(RECORDS));
+  const [historyEntries, setHistoryEntries] = useState<CheckInEntry[]>([]);
+  const [allRecords, setAllRecords] = useState<DailyRecord[]>([]);
+  const [importSummary, setImportSummary] = useState<{
+    state: ImportState;
+    lastImportAt: string | null;
+    message: string;
+  }>({
+    state: "running",
+    lastImportAt: null,
+    message: "Daily import scheduled · 06:00 local",
+  });
+  const [dataStatus, setDataStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [dataError, setDataError] = useState<string | null>(null);
   const [correlationA, setCorrelationA] = useState<MetricKey>("sleepScore");
   const [correlationB, setCorrelationB] = useState<MetricKey>("trainingReadiness");
   const [weekdayOnly, setWeekdayOnly] = useState(false);
   const [trainingOnly, setTrainingOnly] = useState(false);
 
   const sensors = useSensors(useSensor(PointerSensor));
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    const loadData = async () => {
+      setDataStatus("loading");
+      setDataError(null);
+      try {
+        const payload = await fetchDashboardData(365, controller.signal);
+        setAllRecords(payload.records);
+        setImportSummary(payload.importStatus);
+        setDataStatus("ready");
+      } catch (error) {
+        if (controller.signal.aborted) {
+          return;
+        }
+        const message =
+          error instanceof Error ? error.message : "Failed to load Garmin data from SQLite API.";
+        setDataError(message);
+        setDataStatus("error");
+      }
+    };
+
+    void loadData();
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     const context = gsap.context(() => {
@@ -482,9 +549,21 @@ function App() {
     return () => context.revert();
   }, [scrubIndex]);
 
-  const records = useMemo(() => RECORDS.slice(-rangePreset), [rangePreset]);
-  const todayRecord = records[records.length - 1];
-  const importSummary = useMemo(() => buildImportSummary(RECORDS), []);
+  const fallbackTodayRecord = useMemo<DailyRecord>(
+    () => ({
+      date: new Date().toISOString().slice(0, 10),
+      dayIndex: 0,
+      weekday: new Date().getDay(),
+      isTrainingDay: false,
+      importGap: true,
+      importState: importSummary.state,
+      metrics: EMPTY_METRICS,
+      coverage: EMPTY_COVERAGE,
+    }),
+    [importSummary.state],
+  );
+  const records = useMemo(() => allRecords.slice(-rangePreset), [allRecords, rangePreset]);
+  const todayRecord = records[records.length - 1] ?? fallbackTodayRecord;
 
   const metricSummaries = useMemo(
     () =>
@@ -622,6 +701,9 @@ function App() {
     month: "long",
     day: "numeric",
   });
+  const lastImportLabel = importSummary.lastImportAt
+    ? `${formatReadableDate(importSummary.lastImportAt.slice(0, 10))} ${formatTime(importSummary.lastImportAt)}`
+    : "No completed import yet";
 
   const handleToggleMetric = (metric: MetricKey) => {
     setSelectedMetrics((previous) => {
@@ -636,7 +718,7 @@ function App() {
   };
 
   const handleQuickSave = () => {
-    const today = RECORDS[RECORDS.length - 1].date;
+    const today = todayRecord.date;
     const entry: CheckInEntry = {
       id: `manual-${Date.now()}`,
       date: today,
@@ -856,7 +938,7 @@ function App() {
               <p className="text-xs uppercase tracking-[0.14em] text-muted">Import</p>
               <p className="text-sm font-semibold">{importSummary.message}</p>
               <p className="metric-number text-xs text-muted">
-                Last import {formatReadableDate(importSummary.lastImportAt.slice(0, 10))} {formatTime(importSummary.lastImportAt)}
+                Last import {lastImportLabel}
               </p>
             </div>
             <div
@@ -900,6 +982,21 @@ function App() {
           ))}
         </div>
 
+        {dataStatus !== "ready" && (
+          <div
+            className={clsx(
+              "gsap-fade rounded-[22px] px-4 py-3 text-sm shadow-soft",
+              dataStatus === "error"
+                ? "bg-[color-mix(in_srgb,var(--error)_16%,white)] text-error"
+                : "bg-[color-mix(in_srgb,var(--warning)_14%,white)] text-warning",
+            )}
+          >
+            {dataStatus === "loading"
+              ? "Loading Garmin data from SQLite..."
+              : `Unable to load Garmin data from API. ${dataError ?? ""}`}
+          </div>
+        )}
+
         {activeView === "today" && (
           <section ref={heroRef} className="panel gsap-fade overflow-hidden p-7 sm:p-10">
             <div className="min-h-[42vh] rounded-[30px] bg-[radial-gradient(circle_at_0%_5%,#ffffff_0%,#f8f6f1_40%,#efede6_100%)] p-8 shadow-inset">
@@ -916,7 +1013,8 @@ function App() {
                   const isMissing = summary.coverage === "missing";
                   const isPartial = summary.coverage === "partial";
                   const loadingState = todayRecord.importState === "running" && summary.coverage !== "complete";
-                  const errorState = todayRecord.importState === "failed" && isMissing;
+                  const errorState =
+                    (todayRecord.importState === "failed" || dataStatus === "error") && isMissing;
 
                   return (
                     <article
@@ -980,7 +1078,9 @@ function App() {
                         ) : errorState ? (
                           <span className="inline-flex items-center gap-2 text-error">
                             <AlertCircle className="size-3" />
-                            No data yet. Last import failed.
+                            {dataStatus === "error"
+                              ? "Unable to load data API."
+                              : "No data yet. Last import failed."}
                             <button
                               className="focusable rounded-capsule bg-[color-mix(in_srgb,var(--error)_14%,white)] px-2 py-1 text-[11px]"
                               type="button"
@@ -1480,6 +1580,11 @@ function App() {
                   <span className="text-sm text-muted">{historyEntries.length} entries</span>
                 </div>
                 <div className="scrollbar-hide max-h-[460px] space-y-3 overflow-y-auto pr-1">
+                  {!historyEntries.length && (
+                    <div className="rounded-2xl bg-subsurface p-3 text-sm text-muted">
+                      No saved check-ins yet.
+                    </div>
+                  )}
                   {historyEntries.slice(0, 20).map((entry) => (
                     <div key={entry.id} className="rounded-2xl bg-subsurface p-3">
                       <p className="text-sm font-semibold">{formatReadableDate(entry.date)}</p>
@@ -1572,11 +1677,11 @@ function App() {
           <section className="panel gsap-fade grid gap-5 p-6 sm:grid-cols-2 sm:p-8">
             <article className="rounded-[24px] bg-subsurface p-5">
               <h3 className="text-lg font-semibold">Daily Import Schedule</h3>
-              <p className="mt-2 text-sm text-muted">Scheduled every day at 06:00 local. UI simulation states only.</p>
+              <p className="mt-2 text-sm text-muted">Scheduled every day at 06:00 local. State sourced from sync runs.</p>
               <div className="mt-4 rounded-2xl bg-panel p-4">
                 <p className="text-sm font-semibold">State: {IMPORT_STATUS_LABELS[importSummary.state]}</p>
                 <p className="metric-number text-sm text-muted">
-                  Last import {formatReadableDate(importSummary.lastImportAt.slice(0, 10))} {formatTime(importSummary.lastImportAt)}
+                  Last import {lastImportLabel}
                 </p>
               </div>
             </article>
