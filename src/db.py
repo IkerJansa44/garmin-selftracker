@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "sql" / "schema.sql"
+REQUIRED_DAILY_METRICS_COLUMNS = {"fell_asleep_at": "TEXT"}
 
 
 def utc_now() -> str:
@@ -24,7 +25,21 @@ def connect_db(db_path: str) -> sqlite3.Connection:
 def init_db(connection: sqlite3.Connection) -> None:
     schema_sql = SCHEMA_PATH.read_text(encoding="utf-8")
     connection.executescript(schema_sql)
+    _ensure_daily_metrics_columns(connection)
     connection.commit()
+
+
+def _ensure_daily_metrics_columns(connection: sqlite3.Connection) -> None:
+    existing_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(daily_metrics)").fetchall()
+    }
+    for column_name, column_type in REQUIRED_DAILY_METRICS_COLUMNS.items():
+        if column_name in existing_columns:
+            continue
+        connection.execute(
+            f"ALTER TABLE daily_metrics ADD COLUMN {column_name} {column_type}"
+        )
 
 
 def create_sync_run(connection: sqlite3.Connection, days_requested: int) -> int:
@@ -95,10 +110,11 @@ def upsert_daily_metrics(
             body_battery,
             stress_avg,
             sleep_seconds,
+            fell_asleep_at,
             vo2max,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(metric_date) DO UPDATE SET
             steps = excluded.steps,
             calories = excluded.calories,
@@ -106,6 +122,7 @@ def upsert_daily_metrics(
             body_battery = excluded.body_battery,
             stress_avg = excluded.stress_avg,
             sleep_seconds = excluded.sleep_seconds,
+            fell_asleep_at = excluded.fell_asleep_at,
             vo2max = excluded.vo2max,
             updated_at = excluded.updated_at
         """,
@@ -117,6 +134,7 @@ def upsert_daily_metrics(
             metrics.get("body_battery"),
             metrics.get("stress_avg"),
             metrics.get("sleep_seconds"),
+            metrics.get("fell_asleep_at"),
             metrics.get("vo2max"),
             utc_now(),
         ),
@@ -167,3 +185,27 @@ def upsert_activity(connection: sqlite3.Connection, activity: dict[str, Any]) ->
             utc_now(),
         ),
     )
+
+
+def get_setting_json(connection: sqlite3.Connection, key: str) -> Any | None:
+    row = connection.execute(
+        "SELECT value_json FROM app_settings WHERE key = ?",
+        (key,),
+    ).fetchone()
+    if row is None:
+        return None
+    return json.loads(str(row["value_json"]))
+
+
+def upsert_setting_json(connection: sqlite3.Connection, key: str, value: Any) -> None:
+    connection.execute(
+        """
+        INSERT INTO app_settings (key, value_json, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+            value_json = excluded.value_json,
+            updated_at = excluded.updated_at
+        """,
+        (key, json.dumps(value), utc_now()),
+    )
+    connection.commit()

@@ -222,3 +222,6 @@ web/dist/
 *.csv
 *.xlsx
 *.xls
+
+# Codex
+.codex/

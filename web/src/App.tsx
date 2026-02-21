@@ -67,12 +67,14 @@ import {
   pearsonCorrelation,
   rollingAverage,
   shiftSeries,
-  stdev,
 } from "./lib/mockData";
-import { fetchDashboardData } from "./lib/api";
+import {
+  fetchDashboardData,
+  fetchQuestionSettings,
+  saveQuestionSettings,
+} from "./lib/api";
 import { usePersistentState } from "./lib/storage";
 import {
-  type CheckInEntry,
   type CheckInQuestion,
   type CoverageState,
   type DailyRecord,
@@ -84,7 +86,8 @@ import {
 
 gsap.registerPlugin(ScrollTrigger);
 
-type ViewKey = "today" | "explore" | "lab" | "checkin" | "settings";
+type ViewKey = "dashboard" | "explore" | "lab" | "checkin" | "settings";
+type MetricDirection = "higher" | "lower";
 
 const IMPORT_STATUS_LABELS: Record<ImportState, string> = {
   ok: "OK",
@@ -116,6 +119,16 @@ const METRIC_LIMITS: Record<MetricKey, { min: number; max: number }> = {
   trainingReadiness: { min: 20, max: 100 },
 };
 
+const DEFAULT_RANGE_PRESET = 7;
+const METRIC_DIRECTIONS: Record<MetricKey, MetricDirection> = {
+  recoveryIndex: "higher",
+  sleepScore: "higher",
+  bodyBattery: "higher",
+  trainingReadiness: "higher",
+  stress: "lower",
+  restingHr: "lower",
+};
+
 const EMPTY_METRICS: Record<MetricKey, number | null> = {
   recoveryIndex: null,
   sleepScore: null,
@@ -137,6 +150,15 @@ const EMPTY_COVERAGE: Record<MetricKey, CoverageState> = {
 const LEGACY_METRIC_KEY_MAP: Record<string, MetricKey> = {
   hrv: "recoveryIndex",
 };
+const MEAL_FINISH_QUESTION_ID = "late_meal";
+const SLEEP_TIME_QUESTION_ID = "sleep_time";
+
+function normalizeRangePreset(raw: unknown, fallback: number): number {
+  if (typeof raw !== "number") {
+    return fallback;
+  }
+  return RANGE_PRESETS.includes(raw as (typeof RANGE_PRESETS)[number]) ? raw : fallback;
+}
 
 function normalizeMetricSelection(raw: unknown, fallback: MetricKey[]): MetricKey[] {
   if (!Array.isArray(raw)) {
@@ -178,6 +200,15 @@ function formatMetricValue(metric: MetricKey, value: number | null): string {
   return `${value.toFixed(definition.decimals)} ${definition.unit}`;
 }
 
+function formatMetricDelta(metric: MetricKey, value: number): string {
+  const definition = METRICS.find((entry) => entry.key === metric);
+  if (!definition) {
+    return Math.abs(value).toFixed(1);
+  }
+  const amount = Math.abs(value).toFixed(definition.decimals);
+  return definition.unit ? `${amount} ${definition.unit}` : amount;
+}
+
 function formatDelta(value: number | null): string {
   if (value === null || Number.isNaN(value)) {
     return "--";
@@ -186,8 +217,101 @@ function formatDelta(value: number | null): string {
   return `${sign}${value.toFixed(1)}`;
 }
 
+function describeTodayVsAverage(
+  metric: MetricKey,
+  delta: number | null,
+  rangePreset: number,
+): { text: string; tone: string } {
+  if (delta === null || Number.isNaN(delta)) {
+    return {
+      text: `Not enough data to compare against the ${rangePreset}-day average.`,
+      tone: "text-muted",
+    };
+  }
+  if (delta === 0) {
+    return { text: `Today is exactly at the ${rangePreset}-day average.`, tone: "text-muted" };
+  }
+
+  const aboveOrBelow = delta > 0 ? "above" : "below";
+  const higherIsBetter = METRIC_DIRECTIONS[metric] === "higher";
+  const better = (delta > 0 && higherIsBetter) || (delta < 0 && !higherIsBetter);
+
+  return {
+    text: `Today is ${aboveOrBelow} the ${rangePreset}-day average by ${formatMetricDelta(metric, delta)} (${better ? "better" : "worse"}).`,
+    tone: better ? "text-success" : "text-error",
+  };
+}
+
 function exportQuestions(questions: CheckInQuestion[]): string {
   return JSON.stringify(questions, null, 2);
+}
+
+function parseClockTimeToMinutes(value: string): number | null {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
+  if (!match) {
+    return null;
+  }
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (Number.isNaN(hours) || Number.isNaN(minutes)) {
+    return null;
+  }
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+    return null;
+  }
+  return hours * 60 + minutes;
+}
+
+function mealToSleepGapMinutes(mealTime: string, sleepTime: string): number | null {
+  const mealMinutes = parseClockTimeToMinutes(mealTime);
+  const sleepMinutes = parseClockTimeToMinutes(sleepTime);
+  if (mealMinutes === null || sleepMinutes === null) {
+    return null;
+  }
+  if (sleepMinutes >= mealMinutes) {
+    return sleepMinutes - mealMinutes;
+  }
+  return 24 * 60 - mealMinutes + sleepMinutes;
+}
+
+function formatMinutesAsHours(minutes: number | null): string {
+  if (minutes === null) {
+    return "--";
+  }
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return `${hours}h ${remainingMinutes}m`;
+}
+
+function migrateQuestionLibrary(questions: CheckInQuestion[]): CheckInQuestion[] {
+  const nextQuestions = questions.map((question) => {
+    if (question.id !== MEAL_FINISH_QUESTION_ID) {
+      return question;
+    }
+    return {
+      id: MEAL_FINISH_QUESTION_ID,
+      section: "Nutrition & Substances",
+      prompt: "Finished eating at",
+      inputType: "time",
+      defaultIncluded: question.defaultIncluded,
+    };
+  });
+
+  const hasSleepTime = nextQuestions.some((question) => question.id === SLEEP_TIME_QUESTION_ID);
+  if (hasSleepTime) {
+    return nextQuestions;
+  }
+
+  return [
+    ...nextQuestions,
+    {
+      id: SLEEP_TIME_QUESTION_ID,
+      section: "Sleep Hygiene",
+      prompt: "Fell asleep at",
+      inputType: "time",
+      defaultIncluded: true,
+    },
+  ];
 }
 
 function safeParseQuestions(raw: string): CheckInQuestion[] | null {
@@ -217,11 +341,10 @@ function sectionedQuestions(questions: CheckInQuestion[]): Record<string, CheckI
   }, {});
 }
 
-function computeMetricSummary(records: DailyRecord[], metric: MetricKey): {
+function computeMetricSummary(records: DailyRecord[], metric: MetricKey, rangePreset: number): {
   todayValue: number | null;
   coverage: CoverageState;
-  baselineMean: number;
-  baselineStd: number;
+  periodAverage: number | null;
   delta: number | null;
   sparklineData: Array<{ i: number; value: number | null }>;
 } {
@@ -229,10 +352,9 @@ function computeMetricSummary(records: DailyRecord[], metric: MetricKey): {
     return {
       todayValue: null,
       coverage: "missing",
-      baselineMean: 0,
-      baselineStd: 0,
+      periodAverage: null,
       delta: null,
-      sparklineData: Array.from({ length: 14 }, (_, index) => ({
+      sparklineData: Array.from({ length: rangePreset }, (_, index) => ({
         i: index,
         value: null,
       })),
@@ -243,19 +365,15 @@ function computeMetricSummary(records: DailyRecord[], metric: MetricKey): {
   const todayValue = today.metrics[metric];
   const coverage = today.coverage[metric];
 
-  const recent = records.slice(-15, -1).map((record) => record.metrics[metric]);
-  const baselineNumbers = recent.filter((value): value is number => value !== null);
-
-  const baselineMean = mean(baselineNumbers);
-  const baselineStd = stdev(baselineNumbers);
+  const periodNumbers = records.map((record) => record.metrics[metric]).filter((value): value is number => value !== null);
+  const periodAverage = periodNumbers.length ? mean(periodNumbers) : null;
 
   return {
     todayValue,
     coverage,
-    baselineMean,
-    baselineStd,
-    delta: todayValue === null ? null : todayValue - baselineMean,
-    sparklineData: records.slice(-14).map((record, index) => ({
+    periodAverage,
+    delta: todayValue === null || periodAverage === null ? null : todayValue - periodAverage,
+    sparklineData: records.map((record, index) => ({
       i: index,
       value: record.metrics[metric],
     })),
@@ -378,8 +496,12 @@ function App() {
   const chipDockARef = useRef<HTMLDivElement | null>(null);
   const chipDockBRef = useRef<HTMLDivElement | null>(null);
 
-  const [activeView, setActiveView] = usePersistentState<ViewKey>("ui.lastView", "today");
-  const [rangePreset, setRangePreset] = usePersistentState<number>("ui.rangePreset", 30);
+  const [activeView, setActiveView] = useState<ViewKey>("dashboard");
+  const [rangePreset, setRangePreset] = usePersistentState<number>(
+    "ui.rangePreset",
+    DEFAULT_RANGE_PRESET,
+    normalizeRangePreset,
+  );
   const [selectedMetrics, setSelectedMetrics] = usePersistentState<MetricKey[]>(
     "ui.selectedMetrics",
     DEFAULT_SELECTED_METRICS,
@@ -401,13 +523,15 @@ function App() {
   );
   const [showQuickCheckin, setShowQuickCheckin] = useState(false);
   const [isScrolled, setIsScrolled] = useState(false);
-  const [highlightTile, setHighlightTile] = useState<MetricKey | null>(null);
   const [scrubIndex, setScrubIndex] = useState(rangePreset - 1);
   const [distributionMetric, setDistributionMetric] = useState<MetricKey>(selectedMetrics[0] ?? "sleepScore");
   const [questionLibrary, setQuestionLibrary] = useState<CheckInQuestion[]>(DEFAULT_QUESTIONS);
   const [selectedQuestionId, setSelectedQuestionId] = useState(DEFAULT_QUESTIONS[0]?.id ?? "");
   const [questionJsonDraft, setQuestionJsonDraft] = useState("");
-  const [historyEntries, setHistoryEntries] = useState<CheckInEntry[]>([]);
+  const [questionLoadState, setQuestionLoadState] = useState<"loading" | "ready" | "error">("loading");
+  const [questionSyncError, setQuestionSyncError] = useState<string | null>(null);
+  const [isSavingQuestions, setIsSavingQuestions] = useState(false);
+  const lastSavedQuestionsRef = useRef<string>("[]");
   const [allRecords, setAllRecords] = useState<DailyRecord[]>([]);
   const [importSummary, setImportSummary] = useState<{
     state: ImportState;
@@ -452,6 +576,85 @@ function App() {
     void loadData();
     return () => controller.abort();
   }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    const loadQuestions = async () => {
+      setQuestionLoadState("loading");
+      setQuestionSyncError(null);
+      try {
+        const payload = await fetchQuestionSettings(controller.signal);
+        const sourceQuestions = payload.questions.length
+          ? payload.questions
+          : DEFAULT_QUESTIONS;
+        const nextQuestions = migrateQuestionLibrary(sourceQuestions);
+        setQuestionLibrary(nextQuestions);
+        setSelectedQuestionId(nextQuestions[0]?.id ?? "");
+        lastSavedQuestionsRef.current = JSON.stringify(nextQuestions);
+        setQuestionLoadState("ready");
+      } catch (error) {
+        if (controller.signal.aborted) {
+          return;
+        }
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Failed to load question settings from SQLite.";
+        setQuestionSyncError(message);
+        setQuestionLoadState("error");
+      }
+    };
+
+    void loadQuestions();
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    if (questionLoadState !== "ready") {
+      return;
+    }
+
+    const serializedQuestions = JSON.stringify(questionLibrary);
+    if (serializedQuestions === lastSavedQuestionsRef.current) {
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => {
+      const syncQuestions = async () => {
+        setIsSavingQuestions(true);
+        setQuestionSyncError(null);
+        try {
+          const payload = await saveQuestionSettings(
+            questionLibrary,
+            controller.signal,
+          );
+          lastSavedQuestionsRef.current = JSON.stringify(payload.questions);
+        } catch (error) {
+          if (controller.signal.aborted) {
+            return;
+          }
+          const message =
+            error instanceof Error
+              ? error.message
+              : "Failed to save question settings to SQLite.";
+          setQuestionSyncError(message);
+        } finally {
+          if (!controller.signal.aborted) {
+            setIsSavingQuestions(false);
+          }
+        }
+      };
+
+      void syncQuestions();
+    }, 350);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      controller.abort();
+    };
+  }, [questionLibrary, questionLoadState]);
 
   useEffect(() => {
     const context = gsap.context(() => {
@@ -557,6 +760,7 @@ function App() {
       isTrainingDay: false,
       importGap: true,
       importState: importSummary.state,
+      fellAsleepAt: null,
       metrics: EMPTY_METRICS,
       coverage: EMPTY_COVERAGE,
     }),
@@ -569,9 +773,9 @@ function App() {
     () =>
       METRICS.map((metric) => ({
         ...metric,
-        ...computeMetricSummary(records, metric.key),
+        ...computeMetricSummary(records, metric.key, rangePreset),
       })),
-    [records],
+    [records, rangePreset],
   );
 
   const seriesData = useMemo(() => {
@@ -691,6 +895,20 @@ function App() {
 
   const groupedQuestions = useMemo(() => sectionedQuestions(includedQuestions), [includedQuestions]);
 
+  const mealSleepGapValue = useMemo(() => {
+    const mealTime = draftAnswers[MEAL_FINISH_QUESTION_ID];
+    const manualSleepTime = draftAnswers[SLEEP_TIME_QUESTION_ID];
+    const garminSleepTime =
+      typeof todayRecord.fellAsleepAt === "string" ? todayRecord.fellAsleepAt : null;
+    const fallbackSleepTime =
+      typeof manualSleepTime === "string" ? manualSleepTime : null;
+    const sleepTime = garminSleepTime ?? fallbackSleepTime;
+    if (typeof mealTime !== "string" || typeof sleepTime !== "string") {
+      return null;
+    }
+    return mealToSleepGapMinutes(mealTime, sleepTime);
+  }, [draftAnswers, todayRecord.fellAsleepAt]);
+
   const selectedQuestion = useMemo(
     () => questionLibrary.find((question) => question.id === selectedQuestionId) ?? null,
     [questionLibrary, selectedQuestionId],
@@ -718,14 +936,6 @@ function App() {
   };
 
   const handleQuickSave = () => {
-    const today = todayRecord.date;
-    const entry: CheckInEntry = {
-      id: `manual-${Date.now()}`,
-      date: today,
-      answers: draftAnswers,
-      completedAt: new Date().toISOString(),
-    };
-    setHistoryEntries((previous) => [entry, ...previous]);
     setShowQuickCheckin(false);
     setDraftAnswers(defaultDraftAnswers());
   };
@@ -809,7 +1019,7 @@ function App() {
   }, [scrubRecord, selectedMetrics, records]);
 
   const topViewButtons: Array<{ key: ViewKey; label: string }> = [
-    { key: "today", label: "Today" },
+    { key: "dashboard", label: "Dashboard" },
     { key: "explore", label: "Explore" },
     { key: "lab", label: "Correlation" },
     { key: "checkin", label: "Check-In" },
@@ -997,32 +1207,31 @@ function App() {
           </div>
         )}
 
-        {activeView === "today" && (
+        {activeView === "dashboard" && (
           <section ref={heroRef} className="panel gsap-fade overflow-hidden p-7 sm:p-10">
             <div className="min-h-[42vh] rounded-[30px] bg-[radial-gradient(circle_at_0%_5%,#ffffff_0%,#f8f6f1_40%,#efede6_100%)] p-8 shadow-inset">
-              <p className="text-sm text-muted">Daily Console</p>
+              <p className="text-sm text-muted">{rangePreset}-Day Dashboard</p>
               <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-                <h1 className="text-5xl font-semibold tracking-tight">Today</h1>
-                <p className="text-lg text-muted">Readiness clarity in one glance.</p>
+                <h1 className="text-5xl font-semibold tracking-tight">Dashboard</h1>
+                <p className="text-lg text-muted">Today vs rolling {rangePreset}-day average.</p>
               </div>
+              <p className="mt-3 text-sm text-muted">
+                Higher is better for Recovery Index, Sleep Score, Body Battery, and Training Readiness.
+                Lower is better for Stress and Resting HR.
+              </p>
 
               <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {metricSummaries.map((summary) => {
-                  const showHint = highlightTile === summary.key;
                   const coverageMeta = COVERAGE_META[summary.coverage];
                   const isMissing = summary.coverage === "missing";
                   const isPartial = summary.coverage === "partial";
                   const loadingState = todayRecord.importState === "running" && summary.coverage !== "complete";
                   const errorState =
                     (todayRecord.importState === "failed" || dataStatus === "error") && isMissing;
+                  const comparison = describeTodayVsAverage(summary.key, summary.delta, rangePreset);
 
                   return (
-                    <article
-                      key={summary.key}
-                      className="rounded-[24px] bg-panel p-5 shadow-soft"
-                      onMouseEnter={() => setHighlightTile(summary.key)}
-                      onMouseLeave={() => setHighlightTile(null)}
-                    >
+                    <article key={summary.key} className="rounded-[24px] bg-panel p-5 shadow-soft">
                       <div className="flex items-start justify-between">
                         <div>
                           <p className="text-sm text-muted">{summary.label}</p>
@@ -1030,8 +1239,9 @@ function App() {
                             {formatMetricValue(summary.key, summary.todayValue)}
                           </p>
                           <p className="metric-number mt-1 text-xs text-muted">
-                            vs 14d baseline {formatDelta(summary.delta)}
+                            {rangePreset}d average {formatMetricValue(summary.key, summary.periodAverage)}
                           </p>
+                          <p className={clsx("mt-1 text-xs font-medium", comparison.tone)}>{comparison.text}</p>
                         </div>
                         <span className={clsx("rounded-capsule px-3 py-1 text-xs font-semibold", coverageMeta.tone)}>
                           {coverageMeta.label}
@@ -1041,14 +1251,6 @@ function App() {
                       <div className="mt-4 h-16">
                         <ResponsiveContainer>
                           <ComposedChart data={summary.sparklineData}>
-                            {showHint && (
-                              <ReferenceArea
-                                ifOverflow="extendDomain"
-                                y1={summary.baselineMean - summary.baselineStd}
-                                y2={summary.baselineMean + summary.baselineStd}
-                                fill="rgba(204, 88, 51, 0.12)"
-                              />
-                            )}
                             <Line
                               dataKey="value"
                               dot={false}
@@ -1056,14 +1258,6 @@ function App() {
                               strokeWidth={2}
                               type="monotone"
                             />
-                            {showHint && (
-                              <Line
-                                data={summary.sparklineData.slice(-1)}
-                                dataKey="value"
-                                dot={{ r: 3, fill: "#CC5833", strokeWidth: 0 }}
-                                stroke="transparent"
-                              />
-                            )}
                             <Tooltip content={<SparklineTooltip />} />
                           </ComposedChart>
                         </ResponsiveContainer>
@@ -1090,7 +1284,7 @@ function App() {
                             </button>
                           </span>
                         ) : isPartial ? (
-                          <span>Partial telemetry. Baseline is computed from available samples only.</span>
+                          <span>Partial telemetry. {rangePreset}-day average uses available samples only.</span>
                         ) : (
                           <span>{summary.baselineHint}</span>
                         )}
@@ -1527,7 +1721,7 @@ function App() {
         )}
 
         {activeView === "checkin" && (
-          <section className="gsap-fade grid gap-6 xl:grid-cols-[1.3fr_1fr]">
+          <section className="gsap-fade">
             <article className="panel p-6 sm:p-8">
               <div className="mb-6 flex items-center justify-between">
                 <h2 className="text-2xl font-semibold tracking-tight">End-of-Day Check-In</h2>
@@ -1549,7 +1743,7 @@ function App() {
                   return (
                     <div key={section} className="rounded-[22px] bg-subsurface p-4">
                       <h3 className="mb-3 text-sm font-semibold uppercase tracking-[0.16em] text-muted">{section}</h3>
-                      <div className="space-y-4">
+                      <div className="grid gap-4 md:grid-cols-2">
                         {questions.map((question) => (
                           <div key={question.id} className="rounded-2xl bg-panel p-4 shadow-soft">
                             <p className="mb-3 text-sm font-medium">{question.prompt}</p>
@@ -1562,6 +1756,17 @@ function App() {
                 })}
               </div>
 
+              <div className="mt-5 rounded-[22px] bg-subsurface p-4">
+                <p className="text-xs uppercase tracking-[0.16em] text-muted">Derived Metric</p>
+                <p className="mt-2 text-sm text-muted">Time Between Eating And Sleep</p>
+                <p className="metric-number mt-1 text-2xl font-semibold text-ink">
+                  {formatMinutesAsHours(mealSleepGapValue)}
+                </p>
+                <p className="mt-1 text-xs text-muted">
+                  Uses Garmin fell-asleep time when available, otherwise the manual sleep-time answer.
+                </p>
+              </div>
+
               <div className="mt-6 flex justify-end">
                 <button
                   className="focusable min-h-11 rounded-capsule bg-accent px-6 text-sm font-semibold text-white shadow-soft"
@@ -1572,104 +1777,6 @@ function App() {
                 </button>
               </div>
             </article>
-
-            <div className="space-y-6">
-              <article className="panel p-6">
-                <div className="mb-4 flex items-center justify-between">
-                  <h3 className="text-xl font-semibold">History</h3>
-                  <span className="text-sm text-muted">{historyEntries.length} entries</span>
-                </div>
-                <div className="scrollbar-hide max-h-[460px] space-y-3 overflow-y-auto pr-1">
-                  {!historyEntries.length && (
-                    <div className="rounded-2xl bg-subsurface p-3 text-sm text-muted">
-                      No saved check-ins yet.
-                    </div>
-                  )}
-                  {historyEntries.slice(0, 20).map((entry) => (
-                    <div key={entry.id} className="rounded-2xl bg-subsurface p-3">
-                      <p className="text-sm font-semibold">{formatReadableDate(entry.date)}</p>
-                      <p className="text-xs text-muted">Completed {formatTime(entry.completedAt)}</p>
-                    </div>
-                  ))}
-                </div>
-              </article>
-
-              <article className="panel p-6">
-                <div className="mb-4 flex items-center justify-between">
-                  <h3 className="text-xl font-semibold">Question Builder</h3>
-                  <button
-                    className="focusable min-h-11 rounded-capsule bg-subsurface px-4 text-sm shadow-soft"
-                    type="button"
-                    onClick={handleAddQuestion}
-                  >
-                    <span className="inline-flex items-center gap-2">
-                      <CirclePlus className="size-4" /> Add
-                    </span>
-                  </button>
-                </div>
-
-                <DndContext sensors={sensors} onDragEnd={handleQuestionSortEnd}>
-                  <SortableContext
-                    items={questionLibrary.map((question) => question.id)}
-                    strategy={verticalListSortingStrategy}
-                  >
-                    <div className="space-y-2">
-                      {questionLibrary.map((question) => (
-                        <SortableQuestionItem
-                          key={question.id}
-                          isSelected={question.id === selectedQuestionId}
-                          question={question}
-                          onSelect={() => setSelectedQuestionId(question.id)}
-                        />
-                      ))}
-                    </div>
-                  </SortableContext>
-                </DndContext>
-
-                {selectedQuestion && (
-                  <QuestionEditor
-                    question={selectedQuestion}
-                    onDelete={() => removeQuestion(selectedQuestion.id)}
-                    onPatch={(patch) => updateQuestion(selectedQuestion.id, patch)}
-                  />
-                )}
-
-                <div className="mt-5 rounded-2xl bg-subsurface p-3">
-                  <div className="mb-2 flex gap-2">
-                    <button
-                      className="focusable min-h-11 rounded-capsule bg-panel px-4 text-sm shadow-soft"
-                      type="button"
-                      onClick={() => setQuestionJsonDraft(exportQuestions(questionLibrary))}
-                    >
-                      <span className="inline-flex items-center gap-2">
-                        <Download className="size-4" /> Export JSON
-                      </span>
-                    </button>
-                    <button
-                      className="focusable min-h-11 rounded-capsule bg-panel px-4 text-sm shadow-soft"
-                      type="button"
-                      onClick={() => {
-                        const parsed = safeParseQuestions(questionJsonDraft);
-                        if (parsed?.length) {
-                          setQuestionLibrary(parsed);
-                          setSelectedQuestionId(parsed[0].id);
-                        }
-                      }}
-                    >
-                      <span className="inline-flex items-center gap-2">
-                        <Upload className="size-4" /> Import JSON
-                      </span>
-                    </button>
-                  </div>
-                  <textarea
-                    className="focusable min-h-28 w-full rounded-2xl bg-panel p-3 text-xs font-mono"
-                    placeholder="Paste or generate JSON"
-                    value={questionJsonDraft}
-                    onChange={(event) => setQuestionJsonDraft(event.target.value)}
-                  />
-                </div>
-              </article>
-            </div>
           </section>
         )}
 
@@ -1710,12 +1817,104 @@ function App() {
                 </button>
               </div>
             </article>
+
+            <article className="rounded-[24px] bg-subsurface p-5 sm:col-span-2">
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <h3 className="text-lg font-semibold">Asked Questions</h3>
+                  <p
+                    className={clsx(
+                      "mt-1 text-sm",
+                      questionSyncError ? "text-error" : "text-muted",
+                    )}
+                  >
+                    {questionLoadState === "loading"
+                      ? "Loading from SQLite..."
+                      : isSavingQuestions
+                        ? "Saving to SQLite..."
+                        : questionSyncError
+                          ? `SQLite sync failed: ${questionSyncError}`
+                          : "Synced with SQLite."}
+                  </p>
+                </div>
+                <button
+                  className="focusable min-h-11 rounded-capsule bg-panel px-4 text-sm shadow-soft"
+                  type="button"
+                  onClick={handleAddQuestion}
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <CirclePlus className="size-4" /> Add
+                  </span>
+                </button>
+              </div>
+
+              <DndContext sensors={sensors} onDragEnd={handleQuestionSortEnd}>
+                <SortableContext
+                  items={questionLibrary.map((question) => question.id)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  <div className="space-y-2">
+                    {questionLibrary.map((question) => (
+                      <SortableQuestionItem
+                        key={question.id}
+                        isSelected={question.id === selectedQuestionId}
+                        question={question}
+                        onSelect={() => setSelectedQuestionId(question.id)}
+                      />
+                    ))}
+                  </div>
+                </SortableContext>
+              </DndContext>
+
+              {selectedQuestion && (
+                <QuestionEditor
+                  question={selectedQuestion}
+                  onDelete={() => removeQuestion(selectedQuestion.id)}
+                  onPatch={(patch) => updateQuestion(selectedQuestion.id, patch)}
+                />
+              )}
+
+              <div className="mt-5 rounded-2xl bg-panel p-3">
+                <div className="mb-2 flex gap-2">
+                  <button
+                    className="focusable min-h-11 rounded-capsule bg-subsurface px-4 text-sm shadow-soft"
+                    type="button"
+                    onClick={() => setQuestionJsonDraft(exportQuestions(questionLibrary))}
+                  >
+                    <span className="inline-flex items-center gap-2">
+                      <Download className="size-4" /> Export JSON
+                    </span>
+                  </button>
+                  <button
+                    className="focusable min-h-11 rounded-capsule bg-subsurface px-4 text-sm shadow-soft"
+                    type="button"
+                    onClick={() => {
+                      const parsed = safeParseQuestions(questionJsonDraft);
+                      if (parsed?.length) {
+                        const migrated = migrateQuestionLibrary(parsed);
+                        setQuestionLibrary(migrated);
+                        setSelectedQuestionId(migrated[0].id);
+                      }
+                    }}
+                  >
+                    <span className="inline-flex items-center gap-2">
+                      <Upload className="size-4" /> Import JSON
+                    </span>
+                  </button>
+                </div>
+                <textarea
+                  className="focusable min-h-28 w-full rounded-2xl bg-subsurface p-3 text-xs font-mono"
+                  placeholder="Paste or generate JSON"
+                  value={questionJsonDraft}
+                  onChange={(event) => setQuestionJsonDraft(event.target.value)}
+                />
+              </div>
+            </article>
           </section>
         )}
       </main>
 
-      <footer className="mx-auto mt-10 flex w-full max-w-[1400px] items-center justify-between rounded-[24px] bg-panel px-5 py-4 shadow-soft">
-        <span className="text-sm text-muted">Ceramic Ops Console</span>
+      <footer className="mx-auto mt-10 flex w-full max-w-[1400px] items-center justify-end rounded-[24px] bg-panel px-5 py-4 shadow-soft">
         <span className="inline-flex items-center gap-2 text-sm text-success">
           <span className="size-2 rounded-full bg-success" /> System Operational
         </span>
@@ -1741,6 +1940,16 @@ function App() {
                   {renderQuestionInput(question)}
                 </div>
               ))}
+            </div>
+            <div className="mt-4 rounded-2xl bg-subsurface p-3">
+              <p className="text-xs uppercase tracking-[0.16em] text-muted">Derived Metric</p>
+              <p className="mt-1 text-sm text-muted">Time Between Eating And Sleep</p>
+              <p className="metric-number mt-1 text-xl font-semibold text-ink">
+                {formatMinutesAsHours(mealSleepGapValue)}
+              </p>
+              <p className="mt-1 text-xs text-muted">
+                Garmin sleep time preferred, manual fallback.
+              </p>
             </div>
             <div className="mt-6 flex justify-end gap-2">
               <button
@@ -1880,6 +2089,18 @@ function QuestionEditor({
   onDelete: () => void;
 }) {
   const optionsText = (question.options ?? []).map((option) => option.label).join(", ");
+  const [optionsDraft, setOptionsDraft] = useState(optionsText);
+
+  useEffect(() => {
+    setOptionsDraft((question.options ?? []).map((option) => option.label).join(", "));
+  }, [question.id]);
+
+  const parseOptionsDraft = (raw: string) =>
+    raw
+      .split(",")
+      .map((label) => label.trim())
+      .filter(Boolean)
+      .map((label, index) => ({ id: `${question.id}_${index}`, label }));
 
   const renderTypeMeta = (inputType: InputType) => {
     if (inputType === "slider") {
@@ -1915,14 +2136,11 @@ function QuestionEditor({
         <textarea
           className="focusable min-h-20 w-full rounded-2xl bg-panel p-3 text-sm"
           placeholder="Option 1, Option 2"
-          value={optionsText}
+          value={optionsDraft}
           onChange={(event) => {
-            const options = event.target.value
-              .split(",")
-              .map((label) => label.trim())
-              .filter(Boolean)
-              .map((label, index) => ({ id: `${question.id}_${index}`, label }));
-            onPatch({ options });
+            const nextDraft = event.target.value;
+            setOptionsDraft(nextDraft);
+            onPatch({ options: parseOptionsDraft(nextDraft) });
           }}
         />
       );

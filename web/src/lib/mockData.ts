@@ -241,6 +241,8 @@ export function generateHistoryFromRecords(records: DailyRecord[]): CheckInEntry
         record.checkInFactors.alcoholUnits >= 3
           ? "3+"
           : String(record.checkInFactors.alcoholUnits);
+      const mealFinishTime = record.checkInFactors.lateMeal ? "21:15" : "19:30";
+      const sleepTime = record.checkInFactors.lateMeal ? "23:30" : "22:45";
 
       return {
         id: `checkin-${record.date}`,
@@ -251,7 +253,8 @@ export function generateHistoryFromRecords(records: DailyRecord[]): CheckInEntry
           training_type: record.checkInFactors.trainingType.toLowerCase(),
           caffeine_count: record.checkInFactors.caffeineCount,
           alcohol_units: alcoholLabel,
-          late_meal: record.checkInFactors.lateMeal,
+          late_meal: mealFinishTime,
+          sleep_time: sleepTime,
           screen_minutes: record.checkInFactors.lateScreenMinutes,
           thermal: record.checkInFactors.thermalRecovery.toLowerCase(),
           mood: record.checkInFactors.mood,

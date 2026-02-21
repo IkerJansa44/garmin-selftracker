@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import logging
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from src.config import load_settings
-from src.db import connect_db, init_db
+from src.db import connect_db, get_setting_json, init_db, upsert_setting_json
 
 logger = logging.getLogger(__name__)
+QUESTION_SETTINGS_KEY = "checkin_questions"
+QUESTION_INPUT_TYPES = {"slider", "multi-choice", "boolean", "time", "text"}
 
 
 @dataclass(frozen=True)
@@ -103,6 +106,40 @@ def _coverage(row_exists: bool, value: Any) -> str:
     return "complete" if value is not None else "partial"
 
 
+def _as_clock_time(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        seconds = float(value)
+        if seconds > 10_000_000_000:
+            seconds = seconds / 1000
+        try:
+            return datetime.fromtimestamp(seconds, tz=timezone.utc).strftime("%H:%M")
+        except (OSError, OverflowError, ValueError):
+            return None
+    if not isinstance(value, str):
+        return None
+
+    stripped = value.strip()
+    if not stripped:
+        return None
+    if stripped.isdigit():
+        return _as_clock_time(int(stripped))
+    if (
+        len(stripped) >= 5
+        and stripped[2] == ":"
+        and stripped[:2].isdigit()
+        and stripped[3:5].isdigit()
+    ):
+        return stripped[:5]
+
+    try:
+        normalized = stripped.replace("Z", "+00:00")
+        return datetime.fromisoformat(normalized).strftime("%H:%M")
+    except ValueError:
+        return None
+
+
 def _metric_payload(row: Any | None) -> tuple[dict[str, int | None], dict[str, str]]:
     if row is None:
         metrics = {
@@ -138,6 +175,113 @@ def _metric_payload(row: Any | None) -> tuple[dict[str, int | None], dict[str, s
     return metrics, coverage
 
 
+def _normalize_question_option(raw: Any) -> dict[str, str] | None:
+    if not isinstance(raw, dict):
+        return None
+    option_id = raw.get("id")
+    label = raw.get("label")
+    if not isinstance(option_id, str) or not option_id.strip():
+        return None
+    if not isinstance(label, str) or not label.strip():
+        return None
+    return {"id": option_id.strip(), "label": label.strip()}
+
+
+def _normalize_question(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    question_id = raw.get("id")
+    section = raw.get("section")
+    prompt = raw.get("prompt")
+    input_type = raw.get("inputType")
+    default_included = raw.get("defaultIncluded")
+
+    if not isinstance(question_id, str) or not question_id.strip():
+        return None
+    if not isinstance(section, str) or not section.strip():
+        return None
+    if not isinstance(prompt, str) or not prompt.strip():
+        return None
+    if not isinstance(input_type, str) or input_type not in QUESTION_INPUT_TYPES:
+        return None
+    if not isinstance(default_included, bool):
+        return None
+
+    normalized: dict[str, Any] = {
+        "id": question_id.strip(),
+        "section": section.strip(),
+        "prompt": prompt.strip(),
+        "inputType": input_type,
+        "defaultIncluded": default_included,
+    }
+
+    if input_type == "slider":
+        for key in ("min", "max", "step"):
+            value = raw.get(key)
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return None
+            normalized[key] = value
+
+    if input_type == "multi-choice":
+        options_raw = raw.get("options", [])
+        if not isinstance(options_raw, list):
+            return None
+        options = []
+        for option_raw in options_raw:
+            option = _normalize_question_option(option_raw)
+            if option is None:
+                return None
+            options.append(option)
+        normalized["options"] = options
+
+    return normalized
+
+
+def _normalize_questions_payload(payload: Any) -> list[dict[str, Any]] | None:
+    if not isinstance(payload, list):
+        return None
+    normalized = []
+    seen_ids: set[str] = set()
+    for raw_question in payload:
+        question = _normalize_question(raw_question)
+        if question is None:
+            return None
+        question_id = str(question["id"])
+        if question_id in seen_ids:
+            return None
+        seen_ids.add(question_id)
+        normalized.append(question)
+    return normalized
+
+
+def _load_questions_payload(db_path: str) -> list[dict[str, Any]]:
+    connection = connect_db(db_path)
+    try:
+        init_db(connection)
+        raw_payload = get_setting_json(connection, QUESTION_SETTINGS_KEY)
+    finally:
+        connection.close()
+    if raw_payload is None:
+        return []
+    normalized = _normalize_questions_payload(raw_payload)
+    return normalized if normalized is not None else []
+
+
+def _save_questions_payload(db_path: str, payload: Any) -> list[dict[str, Any]]:
+    normalized = _normalize_questions_payload(payload)
+    if normalized is None:
+        raise ValueError("Invalid question payload")
+    connection = connect_db(db_path)
+    try:
+        init_db(connection)
+        upsert_setting_json(connection, QUESTION_SETTINGS_KEY, normalized)
+    finally:
+        connection.close()
+    return normalized
+
+
 def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
     end_date = date.today()
     start_date = end_date - timedelta(days=days - 1)
@@ -147,7 +291,13 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
 
     metric_rows = connection.execute(
         """
-        SELECT metric_date, resting_heart_rate, body_battery, stress_avg, sleep_seconds
+        SELECT
+            metric_date,
+            resting_heart_rate,
+            body_battery,
+            stress_avg,
+            sleep_seconds,
+            fell_asleep_at
         FROM daily_metrics
         WHERE metric_date BETWEEN ? AND ?
         ORDER BY metric_date
@@ -224,6 +374,7 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
                 "isTrainingDay": date_key in training_days,
                 "importGap": row is None,
                 "importState": import_state,
+                "fellAsleepAt": _as_clock_time(row["fell_asleep_at"]) if row else None,
                 "metrics": metrics,
                 "coverage": coverage,
             }
@@ -270,18 +421,102 @@ class ApiHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, payload)
             return
 
+        if parsed.path == "/api/questions":
+            try:
+                payload = _load_questions_payload(self.db_path)
+            except Exception as exc:  # pragma: no cover - runtime guard
+                logger.exception("Failed to load question settings")
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {
+                        "error": "Failed to load question settings",
+                        "details": str(exc),
+                    },
+                )
+                return
+            self._send_json(HTTPStatus.OK, {"questions": payload})
+            return
+
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
+
+    def do_PUT(self) -> None:  # noqa: N802 - stdlib handler signature
+        parsed = urlparse(self.path)
+        if parsed.path != "/api/questions":
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
+            return
+
+        raw_payload = self._read_json_body()
+        if raw_payload is None:
+            return
+        questions_payload = (
+            raw_payload.get("questions")
+            if isinstance(raw_payload, dict)
+            else raw_payload
+        )
+        try:
+            normalized = _save_questions_payload(self.db_path, questions_payload)
+        except ValueError as exc:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "Invalid question settings payload", "details": str(exc)},
+            )
+            return
+        except Exception as exc:  # pragma: no cover - runtime guard
+            logger.exception("Failed to save question settings")
+            self._send_json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                {"error": "Failed to save question settings", "details": str(exc)},
+            )
+            return
+        self._send_json(HTTPStatus.OK, {"questions": normalized})
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
         logger.info("API %s - %s", self.address_string(), format % args)
+
+    def _read_json_body(self) -> Any | None:
+        length_header = self.headers.get("Content-Length")
+        if length_header is None:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Missing request body"})
+            return None
+        try:
+            length = int(length_header)
+        except ValueError:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST, {"error": "Invalid Content-Length header"}
+            )
+            return None
+        if length <= 0:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Empty request body"})
+            return None
+
+        raw_bytes = self.rfile.read(length)
+        try:
+            return json.loads(raw_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "Request body must be valid JSON"},
+            )
+            return None
 
     def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
         data = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.end_headers()
+            self.wfile.write(data)
+        except OSError as exc:
+            if isinstance(
+                exc, (BrokenPipeError, ConnectionResetError)
+            ) or exc.errno in {
+                errno.EPIPE,
+                errno.ECONNRESET,
+            }:
+                logger.info("Client disconnected before response completed")
+                return
+            raise
 
 
 def _parse_args() -> argparse.Namespace:

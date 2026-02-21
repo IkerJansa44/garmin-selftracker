@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -78,6 +79,54 @@ def _extract_sleep_seconds(sleep_payload: Any) -> int | None:
     return int(sleep_seconds) if sleep_seconds is not None else None
 
 
+def _normalize_timestamp(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        if stripped.isdigit():
+            value = int(stripped)
+        else:
+            return stripped
+    if not isinstance(value, (int, float)):
+        return None
+
+    seconds = float(value)
+    if seconds > 10_000_000_000:
+        seconds = seconds / 1000
+    try:
+        parsed = datetime.fromtimestamp(seconds, tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):
+        return None
+    return parsed.isoformat()
+
+
+def _extract_fell_asleep_at(sleep_payload: Any) -> str | None:
+    if not isinstance(sleep_payload, dict):
+        return None
+
+    sources: list[dict[str, Any]] = []
+    daily = sleep_payload.get("dailySleepDTO")
+    if isinstance(daily, dict):
+        sources.append(daily)
+    sources.append(sleep_payload)
+
+    for source in sources:
+        for key in (
+            "sleepStartTimestampLocal",
+            "sleepStartTimestampGMT",
+            "sleepStartTimestamp",
+            "sleepStartTimeGMT",
+            "sleepStartTimeLocal",
+        ):
+            normalized = _normalize_timestamp(source.get(key))
+            if normalized:
+                return normalized
+    return None
+
+
 def normalize_daily_metrics(day_payload: DayPayload) -> dict[str, Any]:
     stats = day_payload.endpoints.get("stats")
     summary = day_payload.endpoints.get("user_summary")
@@ -101,6 +150,7 @@ def normalize_daily_metrics(day_payload: DayPayload) -> dict[str, Any]:
             sources, ["averageStressLevel", "stressAvg", "stressAverage"]
         ),
         "sleep_seconds": _extract_sleep_seconds(sleep),
+        "fell_asleep_at": _extract_fell_asleep_at(sleep),
         "vo2max": _pick_value(sources, ["vo2MaxValue", "vo2max", "vO2MaxValue"]),
     }
 

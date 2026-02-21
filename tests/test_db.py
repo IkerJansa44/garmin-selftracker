@@ -7,10 +7,12 @@ from src.db import (
     connect_db,
     create_sync_run,
     finalize_sync_run,
+    get_setting_json,
     init_db,
     upsert_activity,
     upsert_daily_metrics,
     upsert_raw_payload,
+    upsert_setting_json,
 )
 
 
@@ -45,6 +47,7 @@ def test_upserts_are_idempotent(tmp_path: Path) -> None:
             "body_battery": 60,
             "stress_avg": 30,
             "sleep_seconds": 24000,
+            "fell_asleep_at": "2026-02-19T23:22:00+00:00",
             "vo2max": 48,
         },
     )
@@ -58,6 +61,7 @@ def test_upserts_are_idempotent(tmp_path: Path) -> None:
             "body_battery": 62,
             "stress_avg": 28,
             "sleep_seconds": 25000,
+            "fell_asleep_at": "2026-02-19T23:11:00+00:00",
             "vo2max": 49,
         },
     )
@@ -99,10 +103,16 @@ def test_upserts_are_idempotent(tmp_path: Path) -> None:
     raw_count = conn.execute("SELECT COUNT(*) FROM raw_garmin_payloads").fetchone()[0]
     assert raw_count == 1
 
-    steps = conn.execute(
-        "SELECT steps FROM daily_metrics WHERE metric_date = '2026-02-20'"
-    ).fetchone()[0]
-    assert steps == 3000
+    metric_row = conn.execute(
+        """
+        SELECT steps, fell_asleep_at
+        FROM daily_metrics
+        WHERE metric_date = '2026-02-20'
+        """
+    ).fetchone()
+    assert metric_row[0] == 3000
+    fell_asleep_at = metric_row[1]
+    assert fell_asleep_at == "2026-02-19T23:11:00+00:00"
 
     activity_row = conn.execute(
         "SELECT activity_name, distance_meters, raw_json FROM activities WHERE garmin_activity_id = 1"
@@ -110,5 +120,23 @@ def test_upserts_are_idempotent(tmp_path: Path) -> None:
     assert activity_row[0] == "Morning Run Updated"
     assert activity_row[1] == 5200
     assert json.loads(activity_row[2])["activityName"] == "Morning Run Updated"
+
+    conn.close()
+
+
+def test_setting_json_roundtrip(tmp_path: Path) -> None:
+    db_path = tmp_path / "garmin.db"
+    conn = connect_db(str(db_path))
+    init_db(conn)
+
+    upsert_setting_json(
+        conn, "checkin_questions", [{"id": "q1", "prompt": "Question 1"}]
+    )
+    upsert_setting_json(
+        conn, "checkin_questions", [{"id": "q2", "prompt": "Question 2"}]
+    )
+
+    stored = get_setting_json(conn, "checkin_questions")
+    assert stored == [{"id": "q2", "prompt": "Question 2"}]
 
     conn.close()

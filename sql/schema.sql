@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS daily_metrics (
     body_battery INTEGER,
     stress_avg REAL,
     sleep_seconds INTEGER,
+    fell_asleep_at TEXT,
     vo2max REAL,
     updated_at TEXT NOT NULL
 );
@@ -45,5 +46,11 @@ CREATE TABLE IF NOT EXISTS activities (
     max_hr REAL,
     calories REAL,
     raw_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

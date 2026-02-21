@@ -28,6 +28,7 @@ export interface DailyRecord {
   isTrainingDay: boolean;
   importGap: boolean;
   importState: ImportState;
+  fellAsleepAt?: string | null;
   metrics: Record<MetricKey, number | null>;
   coverage: Record<MetricKey, CoverageState>;
   checkInFactors?: CheckInFactors;

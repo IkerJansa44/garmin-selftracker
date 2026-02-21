@@ -15,7 +15,7 @@ export const METRICS: MetricDefinition[] = [
   {
     key: "recoveryIndex",
     label: "Recovery Index",
-    unit: "ms",
+    unit: "pts",
     color: "#4f7e65",
     decimals: 0,
     baselineHint: "Tracks recovery pressure from recent load and stress.",
@@ -118,9 +118,16 @@ export const DEFAULT_QUESTIONS: CheckInQuestion[] = [
   },
   {
     id: "late_meal",
+    section: "Nutrition & Substances",
+    prompt: "Finished eating at",
+    inputType: "time",
+    defaultIncluded: true,
+  },
+  {
+    id: "sleep_time",
     section: "Sleep Hygiene",
-    prompt: "Late meal",
-    inputType: "boolean",
+    prompt: "Fell asleep at",
+    inputType: "time",
     defaultIncluded: true,
   },
   {
