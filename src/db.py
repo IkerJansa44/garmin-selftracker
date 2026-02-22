@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import Any
 
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "sql" / "schema.sql"
-REQUIRED_DAILY_METRICS_COLUMNS = {"fell_asleep_at": "TEXT"}
+REQUIRED_DAILY_METRICS_COLUMNS = {
+    "fell_asleep_at": "TEXT",
+    "woke_up_at": "TEXT",
+}
 
 
 def utc_now() -> str:
@@ -128,10 +131,11 @@ def upsert_daily_metrics(
             stress_avg,
             sleep_seconds,
             fell_asleep_at,
+            woke_up_at,
             vo2max,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(metric_date) DO UPDATE SET
             steps = excluded.steps,
             calories = excluded.calories,
@@ -140,6 +144,7 @@ def upsert_daily_metrics(
             stress_avg = excluded.stress_avg,
             sleep_seconds = excluded.sleep_seconds,
             fell_asleep_at = excluded.fell_asleep_at,
+            woke_up_at = excluded.woke_up_at,
             vo2max = excluded.vo2max,
             updated_at = excluded.updated_at
         """,
@@ -152,6 +157,7 @@ def upsert_daily_metrics(
             metrics.get("stress_avg"),
             metrics.get("sleep_seconds"),
             metrics.get("fell_asleep_at"),
+            metrics.get("woke_up_at"),
             metrics.get("vo2max"),
             utc_now(),
         ),
@@ -378,6 +384,139 @@ def _shift_iso_date(value: str, offset_days: int) -> str | None:
     return (parsed + timedelta(days=offset_days)).isoformat()
 
 
+def _clock_minutes(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        seconds = float(value)
+        if seconds > 10_000_000_000:
+            seconds = seconds / 1000
+        try:
+            parsed = datetime.fromtimestamp(seconds, tz=timezone.utc)
+        except (OSError, OverflowError, ValueError):
+            return None
+        return parsed.hour * 60 + parsed.minute
+    if not isinstance(value, str):
+        return None
+
+    stripped = value.strip()
+    if not stripped:
+        return None
+    if stripped.isdigit():
+        return _clock_minutes(int(stripped))
+    if (
+        len(stripped) >= 5
+        and stripped[2] == ":"
+        and stripped[:2].isdigit()
+        and stripped[3:5].isdigit()
+    ):
+        hours = int(stripped[:2])
+        minutes = int(stripped[3:5])
+        if hours > 23 or minutes > 59:
+            return None
+        return hours * 60 + minutes
+    try:
+        parsed = datetime.fromisoformat(stripped.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.hour * 60 + parsed.minute
+
+
+def _circular_mean_minutes(values: list[int]) -> float | None:
+    if not values:
+        return None
+    minute_to_radian = (2 * math.pi) / (24 * 60)
+    sin_sum = 0.0
+    cos_sum = 0.0
+    for value in values:
+        angle = value * minute_to_radian
+        sin_sum += math.sin(angle)
+        cos_sum += math.cos(angle)
+    if math.hypot(sin_sum, cos_sum) / len(values) < 1e-9:
+        return None
+    angle = math.atan2(sin_sum, cos_sum)
+    if angle < 0:
+        angle += 2 * math.pi
+    return angle * (24 * 60) / (2 * math.pi)
+
+
+def _circular_signed_delta_minutes(value: int, mean_minutes: float) -> float:
+    return ((value - mean_minutes + 720) % 1440) - 720
+
+
+def _circular_stddev_minutes(values: list[int]) -> float | None:
+    if not values:
+        return None
+    mean_minutes = _circular_mean_minutes(values)
+    if mean_minutes is None:
+        return None
+    variance = sum(
+        _circular_signed_delta_minutes(value, mean_minutes) ** 2 for value in values
+    ) / len(values)
+    return math.sqrt(variance)
+
+
+def _meal_to_sleep_gap_minutes(meal_minutes: int, sleep_minutes: int) -> int:
+    if sleep_minutes >= meal_minutes:
+        return sleep_minutes - meal_minutes
+    return 24 * 60 - meal_minutes + sleep_minutes
+
+
+def build_sleep_consistency_by_source_date(
+    daily_metric_rows: list[sqlite3.Row],
+) -> dict[str, float]:
+    minutes_by_source_date: dict[str, tuple[int, int]] = {}
+    for row in daily_metric_rows:
+        metric_date = row["metric_date"]
+        if metric_date is None:
+            continue
+        source_date = _shift_iso_date(str(metric_date), -1)
+        if source_date is None:
+            continue
+        fell_asleep_minutes = _clock_minutes(row["fell_asleep_at"])
+        woke_up_minutes = _clock_minutes(row["woke_up_at"])
+        if fell_asleep_minutes is None or woke_up_minutes is None:
+            continue
+        minutes_by_source_date[source_date] = (fell_asleep_minutes, woke_up_minutes)
+
+    candidate_source_dates = {
+        shifted
+        for source_date in minutes_by_source_date
+        if (shifted := _shift_iso_date(source_date, 1)) is not None
+    }
+    consistency_by_source_date: dict[str, float] = {}
+    for source_date in sorted(candidate_source_dates):
+        baseline_dates = [
+            shifted
+            for offset in range(7, 0, -1)
+            if (shifted := _shift_iso_date(source_date, -offset)) is not None
+        ]
+        if len(baseline_dates) != 7:
+            continue
+
+        baseline_minutes = [
+            minutes_by_source_date.get(baseline_date)
+            for baseline_date in baseline_dates
+        ]
+        if any(value is None for value in baseline_minutes):
+            continue
+        typed_baseline_minutes = [
+            value for value in baseline_minutes if value is not None
+        ]
+
+        sleep_stddev = _circular_stddev_minutes(
+            [value[0] for value in typed_baseline_minutes]
+        )
+        wake_stddev = _circular_stddev_minutes(
+            [value[1] for value in typed_baseline_minutes]
+        )
+        if sleep_stddev is None or wake_stddev is None:
+            continue
+        consistency_by_source_date[source_date] = (sleep_stddev + wake_stddev) / 2
+
+    return consistency_by_source_date
+
+
 def _analysis_value_columns(
     value: Any,
 ) -> tuple[float | None, str | None, int | None] | None:
@@ -455,11 +594,21 @@ def rebuild_analysis_values(connection: sqlite3.Connection) -> None:
             stress_avg,
             body_battery,
             sleep_seconds,
-            resting_heart_rate
+            resting_heart_rate,
+            fell_asleep_at,
+            woke_up_at
         FROM daily_metrics
         ORDER BY metric_date
         """
     ).fetchall()
+    sleep_consistency_by_source_date = build_sleep_consistency_by_source_date(
+        daily_metric_rows
+    )
+    sleep_start_minutes_by_metric_date = {
+        str(row["metric_date"]): _clock_minutes(row["fell_asleep_at"])
+        for row in daily_metric_rows
+        if row["metric_date"] is not None
+    }
 
     for row in daily_metric_rows:
         source_date = str(row["metric_date"])
@@ -503,6 +652,25 @@ def rebuild_analysis_values(connection: sqlite3.Connection) -> None:
                     source_date=sleep_source_date,
                     lag_days=-1,
                     alignment_rule="garmin_sleep_previous_night",
+                    refreshed_at=refreshed_at,
+                )
+            sleep_consistency = (
+                sleep_consistency_by_source_date.get(sleep_source_date)
+                if sleep_source_date is not None
+                else None
+            )
+            if sleep_consistency is not None and sleep_source_date is not None:
+                _append_analysis_row(
+                    rows_to_insert,
+                    analysis_date=source_date,
+                    role="predictor",
+                    feature_key="garmin:sleepConsistency",
+                    value_num=sleep_consistency,
+                    value_text=None,
+                    value_bool=None,
+                    source_date=sleep_source_date,
+                    lag_days=-1,
+                    alignment_rule="garmin_previous_day",
                     refreshed_at=refreshed_at,
                 )
 
@@ -596,6 +764,26 @@ def rebuild_analysis_values(connection: sqlite3.Connection) -> None:
                 alignment_rule="checkin_previous_day",
                 refreshed_at=refreshed_at,
             )
+
+        if predictor_analysis_date is None:
+            continue
+        meal_minutes = _clock_minutes(answers.get("late_meal"))
+        sleep_minutes = sleep_start_minutes_by_metric_date.get(predictor_analysis_date)
+        if meal_minutes is None or sleep_minutes is None:
+            continue
+        _append_analysis_row(
+            rows_to_insert,
+            analysis_date=predictor_analysis_date,
+            role="predictor",
+            feature_key="garmin:mealToSleepGapMinutes",
+            value_num=float(_meal_to_sleep_gap_minutes(meal_minutes, sleep_minutes)),
+            value_text=None,
+            value_bool=None,
+            source_date=source_date,
+            lag_days=-1,
+            alignment_rule="meal_sleep_gap_previous_day",
+            refreshed_at=refreshed_at,
+        )
 
     if rows_to_insert:
         connection.executemany(

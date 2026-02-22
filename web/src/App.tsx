@@ -122,6 +122,7 @@ type GarminPlotKey =
   | "stressAvg"
   | "bodyBattery"
   | "sleepSeconds"
+  | "sleepConsistency"
   | "isTrainingDay";
 type DashboardPlotVariableKey =
   | `metric:${MetricKey}`
@@ -254,13 +255,21 @@ const GARMIN_PLOT_META: Record<GarminPlotKey, Omit<DashboardPlotVariableOption, 
   stressAvg: { label: "Stress Avg", color: "#806739", unit: "pts" },
   bodyBattery: { label: "Body Battery", color: "#51745e", unit: "%" },
   sleepSeconds: { label: "Sleep Duration", color: "#3f6686", unit: "h" },
+  sleepConsistency: { label: "Sleep Consistency", color: "#4b7394", unit: "min" },
   isTrainingDay: { label: "Training Day", color: "#6f4b83", unit: "0/1" },
+};
+const GARMIN_PLOT_DIRECTIONS: Partial<Record<GarminPlotKey, PlotDirection>> = {
+  sleepConsistency: "lower",
 };
 
 function defaultPlotDirection(plotKey: DashboardPlotVariableKey): PlotDirection {
   if (plotKey.startsWith("metric:")) {
     const metricKey = plotKey.slice(7) as MetricKey;
     return METRIC_DIRECTIONS[metricKey] ?? "higher";
+  }
+  if (plotKey.startsWith("garmin:")) {
+    const garminKey = plotKey.slice(7) as GarminPlotKey;
+    return GARMIN_PLOT_DIRECTIONS[garminKey] ?? "higher";
   }
   return "higher";
 }
@@ -1647,6 +1656,7 @@ function App() {
         stressAvg: null,
         bodyBattery: null,
         sleepSeconds: null,
+        sleepConsistency: null,
         isTrainingDay: false,
       },
       metrics: EMPTY_METRICS,

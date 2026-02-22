@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlparse
 
 from src.config import SettingsError, load_settings
 from src.db import (
+    build_sleep_consistency_by_source_date,
     connect_db,
     get_analysis_values,
     get_checkin_entries,
@@ -48,6 +49,9 @@ METRIC_PLOT_DIRECTIONS = {
     "stress": "lower",
     "restingHr": "lower",
 }
+GARMIN_PLOT_DIRECTIONS = {
+    "sleepConsistency": "lower",
+}
 DEFAULT_DASHBOARD_PLOTS = [
     {"key": "metric:recoveryIndex", "direction": "higher"},
     {"key": "metric:sleepScore", "direction": "higher"},
@@ -78,6 +82,8 @@ DERIVED_PREDICTOR_SOURCE_GARMIN_KEYS = {
     "stressAvg",
     "bodyBattery",
     "sleepSeconds",
+    "sleepConsistency",
+    "mealToSleepGapMinutes",
 }
 
 
@@ -681,6 +687,11 @@ def _default_plot_direction(plot_key: str) -> str:
         direction = METRIC_PLOT_DIRECTIONS.get(metric_key)
         if direction in PLOT_DIRECTIONS:
             return direction
+    if plot_key.startswith("garmin:"):
+        garmin_key = plot_key[7:]
+        direction = GARMIN_PLOT_DIRECTIONS.get(garmin_key)
+        if direction in PLOT_DIRECTIONS:
+            return direction
     return "higher"
 
 
@@ -1001,6 +1012,7 @@ def _save_checkin_payload(db_path: str, payload: Any) -> dict[str, Any]:
 def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
     end_date = date.today()
     start_date = end_date - timedelta(days=days - 1)
+    lookback_start_date = start_date - timedelta(days=7)
 
     connection = connect_db(db_path)
     init_db(connection)
@@ -1015,14 +1027,28 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
             body_battery,
             stress_avg,
             sleep_seconds,
-            fell_asleep_at
+            fell_asleep_at,
+            woke_up_at
         FROM daily_metrics
         WHERE metric_date BETWEEN ? AND ?
         ORDER BY metric_date
         """,
-        (start_date.isoformat(), end_date.isoformat()),
+        (lookback_start_date.isoformat(), end_date.isoformat()),
     ).fetchall()
     rows_by_date = {row["metric_date"]: row for row in metric_rows}
+    available_days = sum(
+        1
+        for row in metric_rows
+        if (
+            row["metric_date"] is not None
+            and start_date.isoformat()
+            <= str(row["metric_date"])
+            <= end_date.isoformat()
+        )
+    )
+    sleep_consistency_by_source_date = build_sleep_consistency_by_source_date(
+        metric_rows
+    )
 
     activity_rows = connection.execute(
         """
@@ -1054,7 +1080,7 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
     connection.close()
 
     if latest_run is None:
-        summary_state = "ok" if metric_rows else "failed"
+        summary_state = "ok" if available_days else "failed"
         last_import_at = None
         import_status_message = "Daily import scheduled · 06:00 local"
     else:
@@ -1111,6 +1137,7 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
                     "stressAvg": _as_float(row["stress_avg"]) if row else None,
                     "bodyBattery": _as_int(row["body_battery"]) if row else None,
                     "sleepSeconds": _as_int(row["sleep_seconds"]) if row else None,
+                    "sleepConsistency": sleep_consistency_by_source_date.get(date_key),
                     "isTrainingDay": date_key in training_days,
                 },
                 "metrics": metrics,
@@ -1128,7 +1155,7 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
         "meta": {
             "source": "sqlite",
             "days": days,
-            "availableDays": len(metric_rows),
+            "availableDays": available_days,
         },
     }
 

@@ -229,6 +229,7 @@ export function generateMockRecords(totalDays = TOTAL_DAYS): DailyRecord[] {
         stressAvg: metrics.stress,
         bodyBattery: metrics.bodyBattery,
         sleepSeconds: metrics.sleepScore === null ? null : metrics.sleepScore * 300,
+        sleepConsistency: metrics.sleepScore === null ? null : 15 + Math.round(noise(dayIndex + 101) * 70),
         isTrainingDay: currentFactors.trainingIntensity >= 6,
       },
       metrics,

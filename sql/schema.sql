@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS daily_metrics (
     stress_avg REAL,
     sleep_seconds INTEGER,
     fell_asleep_at TEXT,
+    woke_up_at TEXT,
     vo2max REAL,
     updated_at TEXT NOT NULL
 );

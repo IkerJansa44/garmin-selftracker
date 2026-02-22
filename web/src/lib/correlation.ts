@@ -19,6 +19,8 @@ type GarminPredictorKey =
   | "stressAvg"
   | "bodyBattery"
   | "sleepSeconds"
+  | "mealToSleepGapMinutes"
+  | "sleepConsistency"
   | "isTrainingDay";
 
 export type CorrelationTestType = "continuous" | "categorical";
@@ -73,6 +75,8 @@ const GARMIN_PREDICTOR_LABELS: Record<GarminPredictorKey, string> = {
   stressAvg: "Stress Avg",
   bodyBattery: "Body Battery",
   sleepSeconds: "Sleep Duration (h)",
+  mealToSleepGapMinutes: "Time Between Eating & Sleep (min)",
+  sleepConsistency: "Sleep Consistency (min)",
   isTrainingDay: "Training Day (1/0)",
 };
 

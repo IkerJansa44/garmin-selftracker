@@ -84,6 +84,7 @@ function buildRecords(days: number): DailyRecord[] {
         stressAvg: 25 + (index % 5),
         bodyBattery: 70 - (index % 3),
         sleepSeconds: 25000 + (index % 4) * 900,
+        sleepConsistency: 20 + (index % 6) * 3,
         isTrainingDay: index % 2 === 0,
       },
       metrics: {
@@ -261,6 +262,7 @@ function buildModerateAnovaRecords(days: number): DailyRecord[] {
         stressAvg: 25 + (index % 5),
         bodyBattery: 70 - (index % 3),
         sleepSeconds: 25000 + (index % 4) * 900,
+        sleepConsistency: 20 + (index % 6) * 3,
         isTrainingDay: index % 2 === 0,
       },
       metrics: {
@@ -306,6 +308,8 @@ describe("correlation helpers", () => {
     const outcomes = buildOutcomeOptions(QUESTIONS);
 
     expect(predictors.some((option) => option.key === "question:caffeine_count")).toBe(true);
+    expect(predictors.some((option) => option.key === "garmin:mealToSleepGapMinutes")).toBe(true);
+    expect(predictors.some((option) => option.key === "garmin:sleepConsistency")).toBe(true);
     expect(outcomes.some((option) => option.key === "metric:recoveryIndex")).toBe(true);
     expect(outcomes.some((option) => option.key === "metric:stress")).toBe(true);
     expect(outcomes.some((option) => option.key === "metric:bodyBattery")).toBe(true);
@@ -316,6 +320,8 @@ describe("correlation helpers", () => {
     const options = buildDerivedPredictorSourceOptions(QUESTIONS);
 
     expect(options.some((option) => option.key === "garmin:steps")).toBe(true);
+    expect(options.some((option) => option.key === "garmin:mealToSleepGapMinutes")).toBe(true);
+    expect(options.some((option) => option.key === "garmin:sleepConsistency")).toBe(true);
     expect(options.some((option) => option.key === "garmin:isTrainingDay")).toBe(false);
     expect(options.some((option) => option.key === "question:caffeine_count")).toBe(true);
     expect(options.some((option) => option.key === "question:late_meal")).toBe(true);
@@ -422,6 +428,7 @@ describe("correlation helpers", () => {
           stressAvg: 20,
           bodyBattery: 70,
           sleepSeconds: 28000,
+          sleepConsistency: 20,
           isTrainingDay: false,
         },
         metrics: {
@@ -455,6 +462,7 @@ describe("correlation helpers", () => {
           stressAvg: 25,
           bodyBattery: 68,
           sleepSeconds: 27000,
+          sleepConsistency: 22,
           isTrainingDay: false,
         },
         metrics: {
@@ -488,6 +496,7 @@ describe("correlation helpers", () => {
           stressAvg: 30,
           bodyBattery: 67,
           sleepSeconds: 26000,
+          sleepConsistency: 24,
           isTrainingDay: false,
         },
         metrics: {

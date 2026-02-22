@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from http import HTTPStatus
 from pathlib import Path
 
@@ -386,11 +386,12 @@ def test_normalize_dashboard_plots_payload_accepts_key_direction_entries() -> No
 
 
 def test_normalize_dashboard_plots_payload_supports_legacy_key_list() -> None:
-    payload = ["metric:stress", "question:mood"]
+    payload = ["metric:stress", "garmin:sleepConsistency", "question:mood"]
 
     normalized = _normalize_dashboard_plots_payload(payload)
     assert normalized == [
         {"key": "metric:stress", "direction": "lower"},
+        {"key": "garmin:sleepConsistency", "direction": "lower"},
         {"key": "question:mood", "direction": "higher"},
     ]
 
@@ -483,12 +484,30 @@ def test_normalize_derived_predictors_payload_accepts_valid_payload() -> None:
             "cutPoints": [7000, 10000, 13000],
             "labels": ["Q1", "Q2", "Q3", "Q4"],
         },
+        {
+            "id": "sleep_consistency_bins",
+            "name": "Sleep Consistency",
+            "sourceKey": "garmin:sleepConsistency",
+            "mode": "threshold",
+            "cutPoints": [30],
+            "labels": ["consistent", "variable"],
+        },
+        {
+            "id": "meal_sleep_gap_bins",
+            "name": "Meal Sleep Gap",
+            "sourceKey": "garmin:mealToSleepGapMinutes",
+            "mode": "threshold",
+            "cutPoints": [120],
+            "labels": ["tight", "wide"],
+        },
     ]
 
     normalized = _normalize_derived_predictors_payload(payload)
     assert normalized is not None
     assert normalized[0]["sourceKey"] == "question:caffeine_count"
     assert normalized[1]["mode"] == "quantile"
+    assert normalized[2]["sourceKey"] == "garmin:sleepConsistency"
+    assert normalized[3]["sourceKey"] == "garmin:mealToSleepGapMinutes"
 
 
 @pytest.mark.parametrize(
@@ -709,11 +728,22 @@ def test_load_correlation_values_payload_uses_materialized_analysis_values(
             body_battery,
             stress_avg,
             sleep_seconds,
+            fell_asleep_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        ("2026-02-20", 6000, 2100, 50, 70, 30, 25200, "2026-02-21T06:00:00+00:00"),
+        (
+            "2026-02-20",
+            6000,
+            2100,
+            50,
+            70,
+            30,
+            25200,
+            "2026-02-19T22:40:00+00:00",
+            "2026-02-21T06:00:00+00:00",
+        ),
     )
     connection.execute(
         """
@@ -725,11 +755,22 @@ def test_load_correlation_values_payload_uses_materialized_analysis_values(
             body_battery,
             stress_avg,
             sleep_seconds,
+            fell_asleep_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        ("2026-02-21", 6500, 2200, 49, 72, 25, 28800, "2026-02-22T06:00:00+00:00"),
+        (
+            "2026-02-21",
+            6500,
+            2200,
+            49,
+            72,
+            25,
+            28800,
+            "2026-02-20T22:45:00+00:00",
+            "2026-02-22T06:00:00+00:00",
+        ),
     )
     connection.execute(
         """
@@ -738,7 +779,7 @@ def test_load_correlation_values_payload_uses_materialized_analysis_values(
         """,
         (
             "2026-02-20",
-            '{"caffeine_count": 2, "felt_energized_during_day": "normal"}',
+            '{"caffeine_count": 2, "late_meal": "21:15", "felt_energized_during_day": "normal"}',
             "2026-02-20T21:00:00+00:00",
             "2026-02-20T21:00:00+00:00",
         ),
@@ -766,6 +807,10 @@ def test_load_correlation_values_payload_uses_materialized_analysis_values(
     predictor_question = values_by_key[("predictor", "question:caffeine_count")]
     assert predictor_question["valueNum"] == 2
     assert predictor_question["alignmentRule"] == "checkin_previous_day"
+
+    predictor_meal_sleep = values_by_key[("predictor", "garmin:mealToSleepGapMinutes")]
+    assert predictor_meal_sleep["valueNum"] == 90
+    assert predictor_meal_sleep["alignmentRule"] == "meal_sleep_gap_previous_day"
 
     target_sleep_score = values_by_key[("target", "metric:sleepScore")]
     assert target_sleep_score["valueNum"] == 90
@@ -798,6 +843,160 @@ def test_load_dashboard_payload_includes_fell_asleep_iso_field(tmp_path: Path) -
     assert record is not None
     assert record["fellAsleepAtIso"] == fell_asleep_at
     assert record["fellAsleepAt"] == "22:44"
+    assert "sleepConsistency" in record["predictors"]
+
+
+def test_load_correlation_values_payload_includes_sleep_consistency_predictor(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "garmin.db"
+    connection = connect_db(str(db_path))
+    init_db(connection)
+    start_date = date(2026, 2, 1)
+    for offset in range(10):
+        metric_date = start_date + timedelta(days=offset)
+        source_date = metric_date - timedelta(days=1)
+        fell_asleep_at = (
+            f"{source_date.isoformat()}T23:55:00+00:00"
+            if offset % 2 == 0
+            else f"{source_date.isoformat()}T00:05:00+00:00"
+        )
+        woke_up_at = (
+            f"{metric_date.isoformat()}T07:00:00+00:00"
+            if offset % 2 == 0
+            else f"{metric_date.isoformat()}T07:10:00+00:00"
+        )
+        connection.execute(
+            """
+            INSERT INTO daily_metrics (
+                metric_date,
+                sleep_seconds,
+                fell_asleep_at,
+                woke_up_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                metric_date.isoformat(),
+                25200,
+                fell_asleep_at,
+                woke_up_at,
+                "2026-02-22T06:00:00+00:00",
+            ),
+        )
+    connection.commit()
+    connection.close()
+
+    values = _load_correlation_values_payload(
+        str(db_path),
+        from_date=date(2026, 2, 10),
+        to_date=date(2026, 2, 10),
+    )
+    values_by_key = {(value["role"], value["featureKey"]): value for value in values}
+    predictor = values_by_key[("predictor", "garmin:sleepConsistency")]
+
+    assert predictor["lagDays"] == -1
+    assert predictor["sourceDate"] == "2026-02-09"
+    assert predictor["alignmentRule"] == "garmin_previous_day"
+    assert predictor["valueNum"] is not None
+    assert predictor["valueNum"] < 10
+
+
+def test_load_correlation_values_payload_omits_sleep_consistency_when_window_incomplete(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "garmin.db"
+    connection = connect_db(str(db_path))
+    init_db(connection)
+    start_date = date(2026, 2, 1)
+    for offset in range(10):
+        metric_date = start_date + timedelta(days=offset)
+        source_date = metric_date - timedelta(days=1)
+        woke_up_at: str | None = f"{metric_date.isoformat()}T07:00:00+00:00"
+        if metric_date == date(2026, 2, 6):
+            woke_up_at = None
+        connection.execute(
+            """
+            INSERT INTO daily_metrics (
+                metric_date,
+                sleep_seconds,
+                fell_asleep_at,
+                woke_up_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                metric_date.isoformat(),
+                25200,
+                f"{source_date.isoformat()}T23:55:00+00:00",
+                woke_up_at,
+                "2026-02-22T06:00:00+00:00",
+            ),
+        )
+    connection.commit()
+    connection.close()
+
+    values = _load_correlation_values_payload(
+        str(db_path),
+        from_date=date(2026, 2, 10),
+        to_date=date(2026, 2, 10),
+    )
+    keys = {(value["role"], value["featureKey"]) for value in values}
+
+    assert ("predictor", "garmin:sleepConsistency") not in keys
+
+
+def test_load_dashboard_payload_includes_sleep_consistency_with_lookback(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "garmin.db"
+    today = date.today()
+
+    connection = connect_db(str(db_path))
+    init_db(connection)
+    for offset in range(6, -1, -1):
+        metric_date = today - timedelta(days=offset)
+        source_date = metric_date - timedelta(days=1)
+        fell_asleep_at = (
+            f"{source_date.isoformat()}T23:55:00+00:00"
+            if offset % 2 == 0
+            else f"{source_date.isoformat()}T00:05:00+00:00"
+        )
+        woke_up_at = (
+            f"{metric_date.isoformat()}T07:00:00+00:00"
+            if offset % 2 == 0
+            else f"{metric_date.isoformat()}T07:10:00+00:00"
+        )
+        connection.execute(
+            """
+            INSERT INTO daily_metrics (
+                metric_date,
+                sleep_seconds,
+                fell_asleep_at,
+                woke_up_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                metric_date.isoformat(),
+                25200,
+                fell_asleep_at,
+                woke_up_at,
+                "2026-02-22T06:00:00+00:00",
+            ),
+        )
+    connection.commit()
+    connection.close()
+
+    payload = _load_dashboard_payload(str(db_path), 1)
+    record = payload["records"][0]
+
+    assert record["date"] == today.isoformat()
+    assert record["predictors"]["sleepConsistency"] is not None
+    assert record["predictors"]["sleepConsistency"] < 10
 
 
 def test_import_job_manager_rejects_when_sync_run_already_running(

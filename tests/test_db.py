@@ -51,6 +51,7 @@ def test_upserts_are_idempotent(tmp_path: Path) -> None:
             "stress_avg": 30,
             "sleep_seconds": 24000,
             "fell_asleep_at": "2026-02-19T23:22:00+00:00",
+            "woke_up_at": "2026-02-20T06:44:00+00:00",
             "vo2max": 48,
         },
     )
@@ -65,6 +66,7 @@ def test_upserts_are_idempotent(tmp_path: Path) -> None:
             "stress_avg": 28,
             "sleep_seconds": 25000,
             "fell_asleep_at": "2026-02-19T23:11:00+00:00",
+            "woke_up_at": "2026-02-20T06:30:00+00:00",
             "vo2max": 49,
         },
     )
@@ -108,14 +110,16 @@ def test_upserts_are_idempotent(tmp_path: Path) -> None:
 
     metric_row = conn.execute(
         """
-        SELECT steps, fell_asleep_at
+        SELECT steps, fell_asleep_at, woke_up_at
         FROM daily_metrics
         WHERE metric_date = '2026-02-20'
         """
     ).fetchone()
     assert metric_row[0] == 3000
     fell_asleep_at = metric_row[1]
+    woke_up_at = metric_row[2]
     assert fell_asleep_at == "2026-02-19T23:11:00+00:00"
+    assert woke_up_at == "2026-02-20T06:30:00+00:00"
 
     activity_row = conn.execute(
         "SELECT activity_name, distance_meters, raw_json FROM activities WHERE garmin_activity_id = 1"

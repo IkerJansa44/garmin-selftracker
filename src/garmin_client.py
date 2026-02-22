@@ -127,6 +127,30 @@ def _extract_fell_asleep_at(sleep_payload: Any) -> str | None:
     return None
 
 
+def _extract_woke_up_at(sleep_payload: Any) -> str | None:
+    if not isinstance(sleep_payload, dict):
+        return None
+
+    sources: list[dict[str, Any]] = []
+    daily = sleep_payload.get("dailySleepDTO")
+    if isinstance(daily, dict):
+        sources.append(daily)
+    sources.append(sleep_payload)
+
+    for source in sources:
+        for key in (
+            "sleepEndTimestampLocal",
+            "sleepEndTimestampGMT",
+            "sleepEndTimestamp",
+            "sleepEndTimeGMT",
+            "sleepEndTimeLocal",
+        ):
+            normalized = _normalize_timestamp(source.get(key))
+            if normalized:
+                return normalized
+    return None
+
+
 def normalize_daily_metrics(day_payload: DayPayload) -> dict[str, Any]:
     stats = day_payload.endpoints.get("stats")
     summary = day_payload.endpoints.get("user_summary")
@@ -151,6 +175,7 @@ def normalize_daily_metrics(day_payload: DayPayload) -> dict[str, Any]:
         ),
         "sleep_seconds": _extract_sleep_seconds(sleep),
         "fell_asleep_at": _extract_fell_asleep_at(sleep),
+        "woke_up_at": _extract_woke_up_at(sleep),
         "vo2max": _pick_value(sources, ["vo2MaxValue", "vo2max", "vO2MaxValue"]),
     }
 

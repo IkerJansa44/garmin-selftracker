@@ -43,6 +43,7 @@ export interface DailyRecord {
     stressAvg: number | null;
     bodyBattery: number | null;
     sleepSeconds: number | null;
+    sleepConsistency: number | null;
     isTrainingDay: boolean;
   };
   metrics: Record<MetricKey, number | null>;
