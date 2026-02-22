@@ -657,7 +657,11 @@ function formatSecondsAsHours(seconds: number | null): string {
 }
 
 function formatIsoClockTimeLocal(value: string): string | null {
-  const parsed = new Date(value);
+  // Strip timezone offset so the browser does not convert to local time.
+  // Garmin timestamps use the device's local time labelled as UTC, so we
+  // display the wall-clock time as-is.
+  const withoutOffset = value.replace(/([+-]\d{2}:\d{2}|Z)$/, "");
+  const parsed = new Date(withoutOffset);
   if (Number.isNaN(parsed.getTime())) {
     return null;
   }
