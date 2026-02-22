@@ -11,6 +11,12 @@ SCHEMA_PATH = Path(__file__).resolve().parent.parent / "sql" / "schema.sql"
 REQUIRED_DAILY_METRICS_COLUMNS = {
     "fell_asleep_at": "TEXT",
     "woke_up_at": "TEXT",
+    "zone0_minutes": "INTEGER",
+    "zone1_minutes": "INTEGER",
+    "zone2_minutes": "INTEGER",
+    "zone3_minutes": "INTEGER",
+    "zone4_minutes": "INTEGER",
+    "zone5_minutes": "INTEGER",
 }
 
 
