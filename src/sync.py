@@ -79,26 +79,15 @@ def run_sync(
                 )
 
             # Update zone bounds from the first activity found in this day
-            if zone_bounds is None:
-                activities_payload = day_payload.endpoints.get("activities")
-                if isinstance(activities_payload, list):
-                    for act in activities_payload:
-                        if isinstance(act, dict) and act.get("activityId"):
-                            fetched = adapter.fetch_hr_zones(int(act["activityId"]))
-                            if fetched:
-                                zone_bounds = fetched
-                                upsert_hr_zone_bounds(connection, zone_bounds)
-                                break
-            else:
-                activities_payload = day_payload.endpoints.get("activities")
-                if isinstance(activities_payload, list):
-                    for act in activities_payload:
-                        if isinstance(act, dict) and act.get("activityId"):
-                            fetched = adapter.fetch_hr_zones(int(act["activityId"]))
-                            if fetched and fetched != zone_bounds:
-                                zone_bounds = fetched
-                                upsert_hr_zone_bounds(connection, zone_bounds)
-                            break
+            activities_payload = day_payload.endpoints.get("activities")
+            if isinstance(activities_payload, list):
+                for act in activities_payload:
+                    if isinstance(act, dict) and act.get("activityId"):
+                        fetched = adapter.fetch_hr_zones(int(act["activityId"]))
+                        if fetched and fetched != zone_bounds:
+                            zone_bounds = fetched
+                            upsert_hr_zone_bounds(connection, zone_bounds)
+                        break
 
             metrics = normalize_daily_metrics(day_payload)
             if zone_bounds is not None:

@@ -45,9 +45,13 @@ class GarminConnectAdapter:
             return None
         try:
             sorted_zones = sorted(result, key=lambda z: z.get("zoneNumber", 0))
-            return [int(z["zoneLowBoundary"]) for z in sorted_zones if "zoneLowBoundary" in z]
+            bounds = [int(z["zoneLowBoundary"]) for z in sorted_zones if "zoneLowBoundary" in z]
         except (KeyError, TypeError, ValueError):
             return None
+        # Schema supports exactly zone0–zone5 (5 lower bounds). Reject unexpected shapes.
+        if len(bounds) != 5:
+            return None
+        return bounds
 
     def _safe_call(self, method_name: str, *args: Any) -> Any:
         if self._client is None:
@@ -200,7 +204,8 @@ def compute_zone_minutes(
     Each sample's duration is derived from the gap to the next timestamp (ms).
     The final sample defaults to 2 minutes.
     """
-    result: dict[str, int] = {f"zone{i}_minutes": 0 for i in range(len(zone_lower_bounds) + 1)}
+    num_zones = len(zone_lower_bounds) + 1
+    result: dict[str, int] = {f"zone{i}_minutes": 0 for i in range(num_zones)}
 
     if not isinstance(heart_rates_payload, dict):
         return result
@@ -210,6 +215,8 @@ def compute_zone_minutes(
         return result
 
     sorted_bounds = sorted(zone_lower_bounds)
+    # Accumulate fractional minutes per zone; round once at the end.
+    totals: dict[str, float] = {f"zone{i}_minutes": 0.0 for i in range(num_zones)}
 
     for i, sample in enumerate(samples):
         if not isinstance(sample, (list, tuple)) or len(sample) < 2:
@@ -230,10 +237,9 @@ def compute_zone_minutes(
             if bpm >= bound:
                 zone = j + 1
 
-        key = f"zone{zone}_minutes"
-        result[key] = result.get(key, 0) + round(duration_minutes)
+        totals[f"zone{zone}_minutes"] += duration_minutes
 
-    return result
+    return {key: round(value) for key, value in totals.items()}
 
 
 def normalize_activities(day_payload: DayPayload) -> list[dict[str, Any]]:

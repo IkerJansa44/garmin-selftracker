@@ -178,6 +178,7 @@ class CheckinReminderService:
             upsert_setting_json(
                 connection, CHECKIN_REMINDER_LAST_SENT_KEY, current_date
             )
+            connection.commit()
             logger.info("Sent check-in reminder email for %s", current_date)
         finally:
             connection.close()

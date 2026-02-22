@@ -167,6 +167,7 @@ def test_disabled_setting_does_not_send(tmp_path: Path) -> None:
             CHECKIN_REMINDER_SETTINGS_KEY,
             {"enabled": False, "notifyAfter": "22:30"},
         )
+        connection.commit()
     finally:
         connection.close()
 

@@ -255,7 +255,6 @@ def upsert_setting_json(connection: sqlite3.Connection, key: str, value: Any) ->
         """,
         (key, json.dumps(value), utc_now()),
     )
-    connection.commit()
 
 
 def get_hr_zone_bounds(connection: sqlite3.Connection) -> list[int] | None:
