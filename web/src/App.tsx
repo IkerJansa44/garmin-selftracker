@@ -1071,6 +1071,12 @@ function App() {
   const lastSavedCheckinReminderRef = useRef<string>(
     JSON.stringify(DEFAULT_CHECKIN_REMINDER_SETTINGS),
   );
+  // Tracks the date for which the draft was last populated from server data, whether
+  // that population happened before the initial checkin fetch completed, and whether
+  // any checkin fetch has ever started (to distinguish "not yet loaded" from "no entries").
+  const draftDateRef = useRef<string | null>(null);
+  const draftWasPreLoadRef = useRef(false);
+  const checkinFetchEverStartedRef = useRef(false);
   const [allRecords, setAllRecords] = useState<DailyRecord[]>([]);
   const [analysisValues, setAnalysisValues] = useState<AnalysisValueRecord[]>([]);
   const [checkinEntriesByDate, setCheckinEntriesByDate] = useState<Record<string, CheckInEntry>>({});
@@ -1534,10 +1540,24 @@ function App() {
   }, [dashboardPlotPreferences, plotSettingsLoadState]);
 
   useEffect(() => {
+    // Track whether a checkin fetch has ever been kicked off (isLoadingCheckins: false → true).
+    if (isLoadingCheckins) checkinFetchEverStartedRef.current = true;
+
+    const dateChanged = draftDateRef.current !== selectedCheckinDate;
+    // Re-populate when the initial fetch completes: fetch had started, is now done,
+    // and the previous population happened before the data arrived.
+    const initialLoadJustCompleted =
+      checkinFetchEverStartedRef.current && !isLoadingCheckins && draftWasPreLoadRef.current;
+
+    if (!dateChanged && !initialLoadJustCompleted) return;
+
+    draftDateRef.current = selectedCheckinDate;
+    // Pre-load = fetch hasn't started yet or is still in-flight.
+    draftWasPreLoadRef.current = !checkinFetchEverStartedRef.current || isLoadingCheckins;
     const defaults = defaultDraftAnswers(questionLibrary);
     const entry = checkinEntriesByDate[selectedCheckinDate];
     setDraftAnswers(entry ? { ...defaults, ...entry.answers } : defaults);
-  }, [checkinEntriesByDate, questionLibrary, selectedCheckinDate, setDraftAnswers]);
+  }, [checkinEntriesByDate, isLoadingCheckins, questionLibrary, selectedCheckinDate, setDraftAnswers]);
 
   useEffect(() => {
     setDraftAnswers((previous) => pruneHiddenChildAnswers(questionLibrary, previous));
@@ -2091,6 +2111,14 @@ function App() {
   );
   const selectedCheckinEntry = checkinEntriesByDate[selectedCheckinDate];
   const isSelectedDateSaved = Boolean(selectedCheckinEntry);
+  const isCheckinDirty = useMemo(() => {
+    if (!selectedCheckinEntry) return false;
+    const defaults = defaultDraftAnswers(questionLibrary);
+    const savedState = { ...defaults, ...selectedCheckinEntry.answers };
+    const sortEntries = (obj: Record<string, unknown>) =>
+      JSON.stringify(Object.fromEntries(Object.entries(obj).sort(([a], [b]) => a.localeCompare(b))));
+    return sortEntries(draftAnswers) !== sortEntries(savedState);
+  }, [draftAnswers, selectedCheckinEntry, questionLibrary]);
   const selectedPredictorSourceDate = selectedCheckinRecord?.date ?? selectedCheckinDate;
   const selectedSleepMetricDate = sleepMetricDateForPredictorDate(selectedPredictorSourceDate);
   const selectedSleepRecord = useMemo(
@@ -3274,10 +3302,10 @@ function App() {
             <article
               className={clsx(
                 "panel p-6 transition-colors duration-300 sm:p-8",
-                isSelectedDateSaved && "border border-[#d7e6dc]",
+                isSelectedDateSaved && !isCheckinDirty && "border border-[#d7e6dc]",
               )}
               style={
-                isSelectedDateSaved
+                isSelectedDateSaved && !isCheckinDirty
                   ? { backgroundColor: "#edf5ef" }
                   : undefined
               }
@@ -3305,7 +3333,9 @@ function App() {
                     : checkinSyncError
                       ? `SQLite sync failed: ${checkinSyncError}`
                       : selectedCheckinEntry
-                        ? "Loaded existing entry for this date."
+                        ? isCheckinDirty
+                          ? "Unsaved modifications."
+                          : "Loaded existing entry for this date."
                         : "No saved entry for this date yet."}
                 </p>
                 {checkinSaveMessage && <p className="mt-1 text-success">{checkinSaveMessage}</p>}
