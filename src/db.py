@@ -139,9 +139,15 @@ def upsert_daily_metrics(
             fell_asleep_at,
             woke_up_at,
             vo2max,
+            zone0_minutes,
+            zone1_minutes,
+            zone2_minutes,
+            zone3_minutes,
+            zone4_minutes,
+            zone5_minutes,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(metric_date) DO UPDATE SET
             steps = excluded.steps,
             calories = excluded.calories,
@@ -152,6 +158,12 @@ def upsert_daily_metrics(
             fell_asleep_at = excluded.fell_asleep_at,
             woke_up_at = excluded.woke_up_at,
             vo2max = excluded.vo2max,
+            zone0_minutes = excluded.zone0_minutes,
+            zone1_minutes = excluded.zone1_minutes,
+            zone2_minutes = excluded.zone2_minutes,
+            zone3_minutes = excluded.zone3_minutes,
+            zone4_minutes = excluded.zone4_minutes,
+            zone5_minutes = excluded.zone5_minutes,
             updated_at = excluded.updated_at
         """,
         (
@@ -165,6 +177,12 @@ def upsert_daily_metrics(
             metrics.get("fell_asleep_at"),
             metrics.get("woke_up_at"),
             metrics.get("vo2max"),
+            metrics.get("zone0_minutes"),
+            metrics.get("zone1_minutes"),
+            metrics.get("zone2_minutes"),
+            metrics.get("zone3_minutes"),
+            metrics.get("zone4_minutes"),
+            metrics.get("zone5_minutes"),
             utc_now(),
         ),
     )
@@ -238,6 +256,17 @@ def upsert_setting_json(connection: sqlite3.Connection, key: str, value: Any) ->
         (key, json.dumps(value), utc_now()),
     )
     connection.commit()
+
+
+def get_hr_zone_bounds(connection: sqlite3.Connection) -> list[int] | None:
+    value = get_setting_json(connection, "hr_zone_bounds")
+    if isinstance(value, list) and value:
+        return [int(v) for v in value]
+    return None
+
+
+def upsert_hr_zone_bounds(connection: sqlite3.Connection, bounds: list[int]) -> None:
+    upsert_setting_json(connection, "hr_zone_bounds", bounds)
 
 
 def upsert_checkin_entry(

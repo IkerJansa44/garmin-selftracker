@@ -8,14 +8,17 @@ from src.db import (
     connect_db,
     create_sync_run,
     finalize_sync_run,
+    get_hr_zone_bounds,
     init_db,
     update_sync_run_progress,
     upsert_activity,
     upsert_daily_metrics,
+    upsert_hr_zone_bounds,
     upsert_raw_payload,
 )
 from src.garmin_client import (
     GarminConnectAdapter,
+    compute_zone_minutes,
     normalize_activities,
     normalize_daily_metrics,
 )
@@ -62,6 +65,7 @@ def run_sync(
 
     try:
         adapter.login()
+        zone_bounds: list[int] | None = get_hr_zone_bounds(connection)
         for day in days:
             day_payload = adapter.fetch_day(day)
 
@@ -74,7 +78,34 @@ def run_sync(
                     sync_run_id=run_id,
                 )
 
-            upsert_daily_metrics(connection, normalize_daily_metrics(day_payload))
+            # Update zone bounds from the first activity found in this day
+            if zone_bounds is None:
+                activities_payload = day_payload.endpoints.get("activities")
+                if isinstance(activities_payload, list):
+                    for act in activities_payload:
+                        if isinstance(act, dict) and act.get("activityId"):
+                            fetched = adapter.fetch_hr_zones(int(act["activityId"]))
+                            if fetched:
+                                zone_bounds = fetched
+                                upsert_hr_zone_bounds(connection, zone_bounds)
+                                break
+            else:
+                activities_payload = day_payload.endpoints.get("activities")
+                if isinstance(activities_payload, list):
+                    for act in activities_payload:
+                        if isinstance(act, dict) and act.get("activityId"):
+                            fetched = adapter.fetch_hr_zones(int(act["activityId"]))
+                            if fetched and fetched != zone_bounds:
+                                zone_bounds = fetched
+                                upsert_hr_zone_bounds(connection, zone_bounds)
+                            break
+
+            metrics = normalize_daily_metrics(day_payload)
+            if zone_bounds is not None:
+                metrics.update(
+                    compute_zone_minutes(day_payload.endpoints.get("heart_rates"), zone_bounds)
+                )
+            upsert_daily_metrics(connection, metrics)
             for activity in normalize_activities(day_payload):
                 upsert_activity(connection, activity)
 
