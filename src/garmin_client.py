@@ -48,10 +48,29 @@ class GarminConnectAdapter:
             bounds = [int(z["zoneLowBoundary"]) for z in sorted_zones if "zoneLowBoundary" in z]
         except (KeyError, TypeError, ValueError):
             return None
-        # Schema supports exactly zone0–zone5 (5 lower bounds). Reject unexpected shapes.
-        if len(bounds) != 5:
+        if not bounds:
             return None
         return bounds
+
+    def fetch_hr_zones_from_recent_activities(self, limit: int = 20) -> list[int] | None:
+        """Fetch HR zone bounds from the most recent activities.
+
+        Used as a one-time bootstrap when no zone bounds are stored yet.
+        Tries each activity in order until one returns valid bounds.
+        """
+        result = self._safe_call("get_activities", 0, limit)
+        if not isinstance(result, list):
+            return None
+        for act in result:
+            if not isinstance(act, dict):
+                continue
+            activity_id = act.get("activityId")
+            if not activity_id:
+                continue
+            bounds = self.fetch_hr_zones(int(activity_id))
+            if bounds:
+                return bounds
+        return None
 
     def _safe_call(self, method_name: str, *args: Any) -> Any:
         if self._client is None:

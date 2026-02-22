@@ -124,7 +124,14 @@ type GarminPlotKey =
   | "bodyBattery"
   | "sleepSeconds"
   | "sleepConsistency"
-  | "isTrainingDay";
+  | "isTrainingDay"
+  | "zone0Minutes"
+  | "zone1Minutes"
+  | "zone2Minutes"
+  | "zone3Minutes"
+  | "zone4Minutes"
+  | "zone5Minutes"
+  | "mealToSleepGapMinutes";
 type DashboardPlotVariableKey =
   | `metric:${MetricKey}`
   | `garmin:${GarminPlotKey}`
@@ -258,6 +265,13 @@ const GARMIN_PLOT_META: Record<GarminPlotKey, Omit<DashboardPlotVariableOption, 
   sleepSeconds: { label: "Sleep Duration", color: "#3f6686", unit: "h" },
   sleepConsistency: { label: "Sleep Consistency", color: "#4b7394", unit: "min" },
   isTrainingDay: { label: "Training Day", color: "#6f4b83", unit: "0/1" },
+  zone0Minutes: { label: "Zone 0 Time", color: "#7a9e9f", unit: "min" },
+  zone1Minutes: { label: "Zone 1 Time", color: "#5b8db8", unit: "min" },
+  zone2Minutes: { label: "Zone 2 Time", color: "#4a7c59", unit: "min" },
+  zone3Minutes: { label: "Zone 3 Time", color: "#d4a843", unit: "min" },
+  zone4Minutes: { label: "Zone 4 Time", color: "#c0693a", unit: "min" },
+  zone5Minutes: { label: "Zone 5 Time", color: "#a63228", unit: "min" },
+  mealToSleepGapMinutes: { label: "Time Before Sleep (Eating)", color: "#7b6d8d", unit: "min" },
 };
 const GARMIN_PLOT_DIRECTIONS: Partial<Record<GarminPlotKey, PlotDirection>> = {
   sleepConsistency: "lower",
@@ -1099,6 +1113,7 @@ function App() {
   const draftWasPreLoadRef = useRef(false);
   const checkinFetchEverStartedRef = useRef(false);
   const [allRecords, setAllRecords] = useState<DailyRecord[]>([]);
+  const [hrZoneBounds, setHrZoneBounds] = useState<number[] | null>(null);
   const [analysisValues, setAnalysisValues] = useState<AnalysisValueRecord[]>([]);
   const [checkinEntriesByDate, setCheckinEntriesByDate] = useState<Record<string, CheckInEntry>>({});
   const [checkinSyncError, setCheckinSyncError] = useState<string | null>(null);
@@ -1165,6 +1180,7 @@ function App() {
         const payload = await fetchDashboardData(365, signal);
         setAllRecords(payload.records);
         setImportSummary(payload.importStatus);
+        setHrZoneBounds(payload.hrZoneBounds ?? null);
         setDataStatus("ready");
       } catch (error) {
         if (signal?.aborted) {
@@ -1703,6 +1719,13 @@ function App() {
         sleepSeconds: null,
         sleepConsistency: null,
         isTrainingDay: false,
+        zone0Minutes: null,
+        zone1Minutes: null,
+        zone2Minutes: null,
+        zone3Minutes: null,
+        zone4Minutes: null,
+        zone5Minutes: null,
+        mealToSleepGapMinutes: null,
       },
       metrics: EMPTY_METRICS,
       coverage: EMPTY_COVERAGE,
@@ -1750,7 +1773,7 @@ function App() {
       })),
       ...(Object.entries(GARMIN_PLOT_META) as Array<[GarminPlotKey, Omit<DashboardPlotVariableOption, "key">]>).map(
         ([key, value]) => ({
-          key: `garmin:${key}`,
+          key: `garmin:${key}` as DashboardPlotVariableKey,
           ...value,
         }),
       ),
@@ -3682,6 +3705,29 @@ function App() {
                     />
                   </label>
                 </div>
+              </article>
+
+              <article className="rounded-[24px] bg-subsurface p-5">
+                <div className="mb-4">
+                  <h3 className="text-lg font-semibold">Heart Rate Zone Bounds</h3>
+                  <p className="mt-1 text-sm text-muted">
+                    {hrZoneBounds
+                      ? "Detected from Garmin activities during sync."
+                      : "No zone bounds detected yet. Run a sync with at least one activity."}
+                  </p>
+                </div>
+                {hrZoneBounds && (
+                  <div className="flex flex-wrap gap-2">
+                    {hrZoneBounds.map((bound, index) => (
+                      <div key={index} className="rounded-2xl bg-panel px-4 py-3 text-sm">
+                        <span className="block text-xs uppercase tracking-[0.14em] text-muted">
+                          Zone {index + 1} starts
+                        </span>
+                        <span className="font-semibold">{bound} bpm</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </article>
 
               <article className="rounded-[24px] bg-subsurface p-5">

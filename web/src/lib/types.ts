@@ -46,6 +46,13 @@ export interface DailyRecord {
     sleepSeconds: number | null;
     sleepConsistency: number | null;
     isTrainingDay: boolean;
+    zone0Minutes: number | null;
+    zone1Minutes: number | null;
+    zone2Minutes: number | null;
+    zone3Minutes: number | null;
+    zone4Minutes: number | null;
+    zone5Minutes: number | null;
+    mealToSleepGapMinutes: number | null;
   };
   metrics: Record<MetricKey, number | null>;
   coverage: Record<MetricKey, CoverageState>;

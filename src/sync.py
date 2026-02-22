@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 from src.db import (
+    backfill_zone_minutes,
     connect_db,
     create_sync_run,
     finalize_sync_run,
@@ -66,6 +67,20 @@ def run_sync(
     try:
         adapter.login()
         zone_bounds: list[int] | None = get_hr_zone_bounds(connection)
+
+        # Bootstrap zone bounds from recent activities if not yet stored
+        if zone_bounds is None:
+            bootstrapped = adapter.fetch_hr_zones_from_recent_activities()
+            if bootstrapped:
+                zone_bounds = bootstrapped
+                upsert_hr_zone_bounds(connection, zone_bounds)
+                connection.commit()
+                logger.info("Bootstrapped HR zone bounds: %s", zone_bounds)
+                # Backfill zone minutes for all already-synced days
+                filled = backfill_zone_minutes(connection, zone_bounds)
+                connection.commit()
+                logger.info("Backfilled zone minutes for %d days", filled)
+
         for day in days:
             day_payload = adapter.fetch_day(day)
 
@@ -78,16 +93,17 @@ def run_sync(
                     sync_run_id=run_id,
                 )
 
-            # Update zone bounds from the first activity found in this day
+            # Update zone bounds from the first activity that returns valid bounds
             activities_payload = day_payload.endpoints.get("activities")
             if isinstance(activities_payload, list):
                 for act in activities_payload:
                     if isinstance(act, dict) and act.get("activityId"):
                         fetched = adapter.fetch_hr_zones(int(act["activityId"]))
-                        if fetched and fetched != zone_bounds:
-                            zone_bounds = fetched
-                            upsert_hr_zone_bounds(connection, zone_bounds)
-                        break
+                        if fetched:
+                            if fetched != zone_bounds:
+                                zone_bounds = fetched
+                                upsert_hr_zone_bounds(connection, zone_bounds)
+                            break
 
             metrics = normalize_daily_metrics(day_payload)
             if zone_bounds is not None:

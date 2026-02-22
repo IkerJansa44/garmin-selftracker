@@ -24,6 +24,7 @@ export interface DashboardApiResponse {
   records: DailyRecord[];
   importStatus: ImportStatusSummary;
   meta: DashboardMeta;
+  hrZoneBounds: number[] | null;
 }
 
 export interface QuestionsApiResponse {

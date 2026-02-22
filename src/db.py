@@ -546,6 +546,116 @@ def build_sleep_consistency_by_source_date(
     return consistency_by_source_date
 
 
+def build_meal_sleep_gap_by_metric_date(
+    connection: sqlite3.Connection,
+    daily_metric_rows: list[sqlite3.Row],
+    start_date: str,
+    end_date: str,
+) -> dict[str, int]:
+    """Return a mapping of metric_date → meal-to-sleep gap in minutes.
+
+    For each metric date D the gap is computed from the ``late_meal`` answer
+    recorded in the check-in for D-1 and the ``fell_asleep_at`` value stored
+    in the daily_metrics row for D (the same alignment used in the analysis
+    values table).
+    """
+    # Index fell_asleep_at by metric_date from already-fetched rows
+    sleep_minutes_by_date: dict[str, int] = {}
+    for row in daily_metric_rows:
+        metric_date = str(row["metric_date"])
+        minutes = _clock_minutes(row["fell_asleep_at"])
+        if minutes is not None:
+            sleep_minutes_by_date[metric_date] = minutes
+
+    # Query late_meal from check-ins for D-1 (one day before start_date to end_date)
+    prior_start = _shift_iso_date(start_date, -1) or start_date
+    checkin_rows = connection.execute(
+        """
+        SELECT checkin_date, answers_json
+        FROM checkin_entries
+        WHERE checkin_date BETWEEN ? AND ?
+        """,
+        (prior_start, end_date),
+    ).fetchall()
+
+    gap_by_metric_date: dict[str, int] = {}
+    for row in checkin_rows:
+        source_date = str(row["checkin_date"])
+        metric_date = _shift_iso_date(source_date, 1)
+        if metric_date is None:
+            continue
+        try:
+            answers = json.loads(str(row["answers_json"]))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(answers, dict):
+            continue
+        meal_minutes = _clock_minutes(answers.get("late_meal"))
+        sleep_minutes = sleep_minutes_by_date.get(metric_date)
+        if meal_minutes is None or sleep_minutes is None:
+            continue
+        gap_by_metric_date[metric_date] = _meal_to_sleep_gap_minutes(
+            meal_minutes, sleep_minutes
+        )
+
+    return gap_by_metric_date
+
+
+def backfill_zone_minutes(
+    connection: sqlite3.Connection,
+    zone_bounds: list[int],
+) -> int:
+    """Compute zone minutes from stored raw heart rate payloads for days with NULL zone data.
+
+    Returns the number of rows updated.
+    """
+    from src.garmin_client import compute_zone_minutes  # avoid circular import at module level
+
+    rows = connection.execute(
+        """
+        SELECT rp.payload_date, rp.data_json
+        FROM raw_garmin_payloads rp
+        JOIN daily_metrics dm ON dm.metric_date = rp.payload_date
+        WHERE rp.endpoint = 'heart_rates'
+          AND dm.zone0_minutes IS NULL
+        ORDER BY rp.payload_date
+        """
+    ).fetchall()
+
+    updated = 0
+    for row in rows:
+        try:
+            hr_payload = json.loads(str(row["data_json"]))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        zone_data = compute_zone_minutes(hr_payload, zone_bounds)
+        connection.execute(
+            """
+            UPDATE daily_metrics SET
+                zone0_minutes = ?,
+                zone1_minutes = ?,
+                zone2_minutes = ?,
+                zone3_minutes = ?,
+                zone4_minutes = ?,
+                zone5_minutes = ?,
+                updated_at = ?
+            WHERE metric_date = ?
+            """,
+            (
+                zone_data.get("zone0_minutes"),
+                zone_data.get("zone1_minutes"),
+                zone_data.get("zone2_minutes"),
+                zone_data.get("zone3_minutes"),
+                zone_data.get("zone4_minutes"),
+                zone_data.get("zone5_minutes"),
+                utc_now(),
+                str(row["payload_date"]),
+            ),
+        )
+        updated += 1
+    return updated
+
+
 def _analysis_value_columns(
     value: Any,
 ) -> tuple[float | None, str | None, int | None] | None:
