@@ -382,7 +382,10 @@ def test_normalize_dashboard_plots_payload_accepts_key_direction_entries() -> No
     ]
 
     normalized = _normalize_dashboard_plots_payload(payload)
-    assert normalized == payload
+    assert normalized == [
+        {"key": "metric:recoveryIndex", "direction": "higher", "aggregation": "daily", "rolling": False},
+        {"key": "metric:stress", "direction": "lower", "aggregation": "daily", "rolling": False},
+    ]
 
 
 def test_normalize_dashboard_plots_payload_supports_legacy_key_list() -> None:
@@ -390,9 +393,9 @@ def test_normalize_dashboard_plots_payload_supports_legacy_key_list() -> None:
 
     normalized = _normalize_dashboard_plots_payload(payload)
     assert normalized == [
-        {"key": "metric:stress", "direction": "lower"},
-        {"key": "garmin:sleepConsistency", "direction": "lower"},
-        {"key": "question:mood", "direction": "higher"},
+        {"key": "metric:stress", "direction": "lower", "aggregation": "daily", "rolling": False},
+        {"key": "garmin:sleepConsistency", "direction": "lower", "aggregation": "daily", "rolling": False},
+        {"key": "question:mood", "direction": "higher", "aggregation": "daily", "rolling": False},
     ]
 
 
@@ -447,8 +450,8 @@ def test_checkin_reminder_settings_save_and_load_roundtrip(tmp_path: Path) -> No
 def test_dashboard_plot_settings_save_and_load_roundtrip(tmp_path: Path) -> None:
     db_path = tmp_path / "garmin.db"
     payload = [
-        {"key": "metric:recoveryIndex", "direction": "higher"},
-        {"key": "question:felt_energized_during_day", "direction": "lower"},
+        {"key": "metric:recoveryIndex", "direction": "higher", "aggregation": "weekly", "rolling": True},
+        {"key": "question:felt_energized_during_day", "direction": "lower", "aggregation": "3days", "rolling": False},
     ]
 
     saved = _save_dashboard_plots_payload(str(db_path), payload)

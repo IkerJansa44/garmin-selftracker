@@ -41,6 +41,7 @@ CORRELATION_DERIVED_PREDICTORS_KEY = "correlation_derived_predictors"
 QUESTION_INPUT_TYPES = {"slider", "multi-choice", "boolean", "time", "text"}
 QUESTION_ANALYSIS_MODES = {"predictor_next_day", "target_same_day"}
 PLOT_DIRECTIONS = {"higher", "lower"}
+PLOT_AGGREGATIONS = {"daily", "3days", "weekly"}
 METRIC_PLOT_DIRECTIONS = {
     "recoveryIndex": "higher",
     "bodyBattery": "higher",
@@ -687,15 +688,17 @@ def _default_plot_direction(plot_key: str) -> str:
     return "higher"
 
 
-def _normalize_dashboard_plots_payload(payload: Any) -> list[dict[str, str]] | None:
+def _normalize_dashboard_plots_payload(payload: Any) -> list[dict] | None:
     if not isinstance(payload, list):
         return None
 
-    normalized: list[dict[str, str]] = []
+    normalized: list[dict] = []
     seen_keys: set[str] = set()
     for raw_plot in payload:
         plot_key: str
         direction: str
+        aggregation: str = "daily"
+        rolling: bool = False
 
         if isinstance(raw_plot, str):
             stripped = raw_plot.strip()
@@ -717,13 +720,25 @@ def _normalize_dashboard_plots_payload(payload: Any) -> list[dict[str, str]] | N
                 direction = direction_value
             else:
                 return None
+            aggregation_value = raw_plot.get("aggregation")
+            if aggregation_value is not None:
+                if isinstance(aggregation_value, str) and aggregation_value in PLOT_AGGREGATIONS:
+                    aggregation = aggregation_value
+                else:
+                    return None
+            rolling_value = raw_plot.get("rolling")
+            if rolling_value is not None:
+                if isinstance(rolling_value, bool):
+                    rolling = rolling_value
+                else:
+                    return None
         else:
             return None
 
         if plot_key in seen_keys:
             continue
         seen_keys.add(plot_key)
-        normalized.append({"key": plot_key, "direction": direction})
+        normalized.append({"key": plot_key, "direction": direction, "aggregation": aggregation, "rolling": rolling})
 
     return normalized
 

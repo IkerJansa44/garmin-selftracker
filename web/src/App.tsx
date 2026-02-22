@@ -93,6 +93,7 @@ import {
   startDateRangeImport,
   startRefreshImport,
   type DashboardPlotPreference as ApiDashboardPlotPreference,
+  type PlotAggregation,
   type PlotDirection,
 } from "./lib/api";
 import { usePersistentState } from "./lib/storage";
@@ -139,11 +140,15 @@ interface DashboardPlotVariableOption {
 interface DashboardPlotPreference {
   key: DashboardPlotVariableKey;
   direction: PlotDirection;
+  aggregation: PlotAggregation;
+  rolling: boolean;
 }
 
 interface DashboardPlot {
   key: DashboardPlotVariableKey;
   direction: PlotDirection;
+  aggregation: PlotAggregation;
+  rolling: boolean;
   option: DashboardPlotVariableOption;
   points: Array<{ date: string; value: number | null }>;
   values: number[];
@@ -192,11 +197,11 @@ const DEFAULT_RANGE_PRESET = 7;
 const TIME_STEP_MINUTES = 15;
 const TIME_SLIDER_MINUTES = { min: 0, max: 23 * 60 + 45 };
 const DEFAULT_DASHBOARD_PLOT_PREFERENCES: DashboardPlotPreference[] = [
-  { key: "metric:recoveryIndex", direction: "higher" },
-  { key: "metric:restingHr", direction: "lower" },
-  { key: "metric:stress", direction: "lower" },
-  { key: "metric:bodyBattery", direction: "higher" },
-  { key: "metric:trainingReadiness", direction: "higher" },
+  { key: "metric:recoveryIndex", direction: "higher", aggregation: "daily", rolling: false },
+  { key: "metric:restingHr", direction: "lower", aggregation: "daily", rolling: false },
+  { key: "metric:stress", direction: "lower", aggregation: "daily", rolling: false },
+  { key: "metric:bodyBattery", direction: "higher", aggregation: "daily", rolling: false },
+  { key: "metric:trainingReadiness", direction: "higher", aggregation: "daily", rolling: false },
 ];
 const METRIC_DIRECTIONS: Record<MetricKey, MetricDirection> = {
   recoveryIndex: "higher",
@@ -284,6 +289,8 @@ function normalizeDashboardPlotPreferences(
   for (const entry of raw) {
     let key: DashboardPlotVariableKey | null = null;
     let direction: PlotDirection | null = null;
+    let aggregation: PlotAggregation = "daily";
+    let rolling = false;
 
     if (typeof entry === "string") {
       key = entry as DashboardPlotVariableKey;
@@ -295,6 +302,16 @@ function normalizeDashboardPlotPreferences(
       }
       if (objectEntry.direction === "higher" || objectEntry.direction === "lower") {
         direction = objectEntry.direction;
+      }
+      if (
+        objectEntry.aggregation === "daily"
+        || objectEntry.aggregation === "3days"
+        || objectEntry.aggregation === "weekly"
+      ) {
+        aggregation = objectEntry.aggregation;
+      }
+      if (typeof objectEntry.rolling === "boolean") {
+        rolling = objectEntry.rolling;
       }
     }
 
@@ -308,7 +325,7 @@ function normalizeDashboardPlotPreferences(
       continue;
     }
     seenKeys.add(key);
-    normalized.push({ key, direction });
+    normalized.push({ key, direction, aggregation, rolling });
   }
 
   return normalized;
@@ -341,7 +358,12 @@ function arePlotPreferencesEqual(
   if (a.length !== b.length) {
     return false;
   }
-  return a.every((value, index) => value.key === b[index]?.key && value.direction === b[index]?.direction);
+  return a.every((value, index) =>
+    value.key === b[index]?.key
+    && value.direction === b[index]?.direction
+    && value.aggregation === b[index]?.aggregation
+    && value.rolling === b[index]?.rolling,
+  );
 }
 
 function parseImportProgressMessage(message: string): {
@@ -1047,6 +1069,9 @@ function App() {
   const [plotSearchQuery, setPlotSearchQuery] = useState("");
   const [addPlotSearchQuery, setAddPlotSearchQuery] = useState("");
   const [pendingAddPlot, setPendingAddPlot] = useState<DashboardPlotVariableOption | null>(null);
+  const [pendingAddPlotStep, setPendingAddPlotStep] = useState<"direction" | "aggregation" | "rolling">("direction");
+  const [pendingAddPlotDirection, setPendingAddPlotDirection] = useState<PlotDirection>("higher");
+  const [pendingAddPlotAggregation, setPendingAddPlotAggregation] = useState<PlotAggregation>("daily");
   const [draftAnswers, setDraftAnswers] = usePersistentState<Record<string, string | number | boolean>>(
     "ui.checkinDraft",
     defaultDraftAnswers(),
@@ -1765,17 +1790,43 @@ function App() {
     });
   }, [addPlotSearchQuery, dashboardPlotOptions, dashboardPlotPreferences]);
   const dashboardPlots = useMemo<DashboardPlot[]>(
-    () =>
-      dashboardPlotPreferences
+    () => {
+      function aggregatePlotPoints(
+        rawPoints: Array<{ date: string; value: number | null }>,
+        aggregation: PlotAggregation,
+        rolling: boolean,
+      ): Array<{ date: string; value: number | null }> {
+        if (aggregation === "daily") {
+          return rawPoints;
+        }
+        const windowSize = aggregation === "3days" ? 3 : 7;
+        if (rolling) {
+          return rawPoints.map((point, index) => {
+            const window = rawPoints.slice(Math.max(0, index - windowSize + 1), index + 1);
+            const nums = window.map((p) => p.value).filter((v): v is number => v !== null);
+            return { date: point.date, value: nums.length ? mean(nums) : null };
+          });
+        }
+        const grouped: Array<{ date: string; value: number | null }> = [];
+        for (let i = 0; i < rawPoints.length; i += windowSize) {
+          const block = rawPoints.slice(i, i + windowSize);
+          const nums = block.map((p) => p.value).filter((v): v is number => v !== null);
+          grouped.push({ date: block[block.length - 1].date, value: nums.length ? mean(nums) : null });
+        }
+        return grouped;
+      }
+
+      return dashboardPlotPreferences
         .map((plotPreference) => {
           const option = dashboardPlotOptions.find((candidate) => candidate.key === plotPreference.key);
           if (!option) {
             return null;
           }
-          const points = records.map((record) => ({
+          const rawPoints = records.map((record) => ({
             date: record.date,
             value: getDashboardPlotValue(plotPreference.key, record, checkinsByDateMap, questionFieldsById),
           }));
+          const points = aggregatePlotPoints(rawPoints, plotPreference.aggregation, plotPreference.rolling);
           const values = points
             .map((point) => point.value)
             .filter((value): value is number => value !== null);
@@ -1783,7 +1834,7 @@ function App() {
           const todayValue = metricSummary?.todayValue ?? points[points.length - 1]?.value ?? null;
           const periodAverage = metricSummary?.periodAverage ?? (values.length ? mean(values) : null);
           const delta = todayValue === null || periodAverage === null ? null : todayValue - periodAverage;
-          const coverage = metricSummary?.coverage ?? deriveCoverageState(points.length, values.length, todayValue);
+          const coverage = metricSummary?.coverage ?? deriveCoverageState(rawPoints.length, values.length, todayValue);
           const baselineHint = metricSummary?.baselineHint
             ?? `Average based on ${values.length} of ${points.length} samples.`;
           const comparison = describeDashboardVsAverage(plotPreference.direction, option, delta, rangePreset);
@@ -1791,6 +1842,8 @@ function App() {
           return {
             key: plotPreference.key,
             direction: plotPreference.direction,
+            aggregation: plotPreference.aggregation,
+            rolling: plotPreference.rolling,
             option,
             points,
             values,
@@ -1803,7 +1856,8 @@ function App() {
             ticks: yAxis.ticks,
           };
         })
-        .filter((plot): plot is DashboardPlot => plot !== null),
+        .filter((plot): plot is DashboardPlot => plot !== null);
+    },
     [
       checkinsByDateMap,
       dashboardPlotPreferences,
@@ -2287,6 +2341,9 @@ function App() {
 
   const handleSelectDashboardPlotToAdd = (option: DashboardPlotVariableOption) => {
     setPendingAddPlot(option);
+    setPendingAddPlotStep("direction");
+    setPendingAddPlotDirection("higher");
+    setPendingAddPlotAggregation("daily");
     setShowAddPlotMenu(false);
   };
 
@@ -2302,11 +2359,13 @@ function App() {
   const handleAddDashboardPlot = (
     plotKey: DashboardPlotVariableKey,
     direction: PlotDirection,
+    aggregation: PlotAggregation,
+    rolling: boolean,
   ) => {
     setDashboardPlotPreferences((previous) => (
       previous.some((plot) => plot.key === plotKey)
         ? previous
-        : [...previous, { key: plotKey, direction }]
+        : [...previous, { key: plotKey, direction, aggregation, rolling }]
     ));
     setPendingAddPlot(null);
   };
@@ -2812,23 +2871,88 @@ function App() {
                     <div className="absolute right-0 top-full z-20 mt-2 w-72 rounded-2xl bg-panel p-3 shadow-soft">
                       <p className="text-xs uppercase tracking-[0.14em] text-muted">Plot preference</p>
                       <p className="mt-1 text-sm font-semibold">{pendingAddPlot.label}</p>
-                      <p className="mt-1 text-xs text-muted">For comparison, is higher better or lower better?</p>
-                      <div className="mt-3 grid grid-cols-2 gap-2">
-                        <button
-                          className="focusable min-h-10 rounded-xl bg-accent px-3 text-xs font-semibold text-white"
-                          type="button"
-                          onClick={() => handleAddDashboardPlot(pendingAddPlot.key, "higher")}
-                        >
-                          Higher better
-                        </button>
-                        <button
-                          className="focusable min-h-10 rounded-xl bg-subsurface px-3 text-xs font-semibold text-ink"
-                          type="button"
-                          onClick={() => handleAddDashboardPlot(pendingAddPlot.key, "lower")}
-                        >
-                          Lower better
-                        </button>
-                      </div>
+                      {pendingAddPlotStep === "direction" && (
+                        <>
+                          <p className="mt-1 text-xs text-muted">For comparison, is higher better or lower better?</p>
+                          <div className="mt-3 grid grid-cols-2 gap-2">
+                            <button
+                              className="focusable min-h-10 rounded-xl bg-accent px-3 text-xs font-semibold text-white"
+                              type="button"
+                              onClick={() => {
+                                setPendingAddPlotDirection("higher");
+                                setPendingAddPlotStep("aggregation");
+                              }}
+                            >
+                              Higher better
+                            </button>
+                            <button
+                              className="focusable min-h-10 rounded-xl bg-subsurface px-3 text-xs font-semibold text-ink"
+                              type="button"
+                              onClick={() => {
+                                setPendingAddPlotDirection("lower");
+                                setPendingAddPlotStep("aggregation");
+                              }}
+                            >
+                              Lower better
+                            </button>
+                          </div>
+                        </>
+                      )}
+                      {pendingAddPlotStep === "aggregation" && (
+                        <>
+                          <p className="mt-1 text-xs text-muted">How should data be aggregated?</p>
+                          <div className="mt-3 grid grid-cols-3 gap-2">
+                            <button
+                              className="focusable min-h-10 rounded-xl bg-accent px-3 text-xs font-semibold text-white"
+                              type="button"
+                              onClick={() => handleAddDashboardPlot(pendingAddPlot.key, pendingAddPlotDirection, "daily", false)}
+                            >
+                              Daily
+                            </button>
+                            <button
+                              className="focusable min-h-10 rounded-xl bg-subsurface px-3 text-xs font-semibold text-ink"
+                              type="button"
+                              onClick={() => {
+                                setPendingAddPlotAggregation("3days");
+                                setPendingAddPlotStep("rolling");
+                              }}
+                            >
+                              3-Days
+                            </button>
+                            <button
+                              className="focusable min-h-10 rounded-xl bg-subsurface px-3 text-xs font-semibold text-ink"
+                              type="button"
+                              onClick={() => {
+                                setPendingAddPlotAggregation("weekly");
+                                setPendingAddPlotStep("rolling");
+                              }}
+                            >
+                              Weekly
+                            </button>
+                          </div>
+                        </>
+                      )}
+                      {pendingAddPlotStep === "rolling" && (
+                        <>
+                          <p className="mt-1 text-xs text-muted">Use a rolling average or fixed periods?</p>
+                          <div className="mt-3 grid grid-cols-2 gap-2">
+                            <button
+                              className="focusable min-h-10 rounded-xl bg-accent px-3 text-xs font-semibold text-white"
+                              type="button"
+                              onClick={() => handleAddDashboardPlot(pendingAddPlot.key, pendingAddPlotDirection, pendingAddPlotAggregation, true)}
+                            >
+                              Rolling avg
+                            </button>
+                            <button
+                              className="focusable min-h-10 rounded-xl bg-subsurface px-3 text-xs font-semibold text-ink"
+                              type="button"
+                              onClick={() => handleAddDashboardPlot(pendingAddPlot.key, pendingAddPlotDirection, pendingAddPlotAggregation, false)}
+                            >
+                              Fixed periods
+                            </button>
+                          </div>
+                        </>
+                      )}
                       <button
                         className="focusable mt-2 min-h-10 w-full rounded-xl bg-panel px-3 text-xs text-muted"
                         type="button"
@@ -3753,6 +3877,13 @@ function SortableDashboardPlotItem({
   const loadingState = importState === "running" && plot.coverage !== "complete";
   const errorState = (importState === "failed" || dataStatus === "error") && isMissing;
 
+  const aggregationLabel =
+    plot.aggregation === "3days"
+      ? plot.rolling ? "3-day rolling avg" : "3-day periods"
+      : plot.aggregation === "weekly"
+        ? plot.rolling ? "Weekly rolling avg" : "Weekly periods"
+        : null;
+
   return (
     <article
       ref={setNodeRef}
@@ -3765,6 +3896,9 @@ function SortableDashboardPlotItem({
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-sm text-muted">{plot.option.label}</p>
+          {aggregationLabel && (
+            <p className="mt-0.5 text-xs text-muted">{aggregationLabel}</p>
+          )}
           <p className="metric-number mt-2 text-3xl font-semibold tracking-tight">
             {formatDashboardValue(plot.key, plot.option, plot.todayValue)}
           </p>

@@ -56,9 +56,13 @@ interface ImportApiResponse {
 
 export type PlotDirection = "higher" | "lower";
 
+export type PlotAggregation = "daily" | "3days" | "weekly";
+
 export interface DashboardPlotPreference {
   key: string;
   direction: PlotDirection;
+  aggregation?: PlotAggregation;
+  rolling?: boolean;
 }
 
 interface DashboardPlotsApiResponse {
