@@ -879,6 +879,7 @@ def _save_questions_payload(db_path: str, payload: Any) -> list[dict[str, Any]]:
     try:
         init_db(connection)
         upsert_setting_json(connection, QUESTION_SETTINGS_KEY, normalized)
+        connection.commit()
     finally:
         connection.close()
     return normalized
@@ -892,6 +893,7 @@ def _save_dashboard_plots_payload(db_path: str, payload: Any) -> list[dict[str, 
     try:
         init_db(connection)
         upsert_setting_json(connection, DASHBOARD_PLOTS_SETTINGS_KEY, normalized)
+        connection.commit()
     finally:
         connection.close()
     return normalized
@@ -907,6 +909,7 @@ def _save_derived_predictors_payload(
     try:
         init_db(connection)
         upsert_setting_json(connection, CORRELATION_DERIVED_PREDICTORS_KEY, normalized)
+        connection.commit()
     finally:
         connection.close()
     return normalized
@@ -941,6 +944,7 @@ def _save_checkin_reminder_settings_payload(
     try:
         init_db(connection)
         upsert_setting_json(connection, CHECKIN_REMINDER_SETTINGS_KEY, normalized)
+        connection.commit()
     finally:
         connection.close()
     return normalized

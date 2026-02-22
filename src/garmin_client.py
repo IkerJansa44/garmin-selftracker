@@ -39,6 +39,20 @@ class GarminConnectAdapter:
         }
         return DayPayload(payload_date=day, endpoints=endpoints)
 
+    def fetch_hr_zones(self, activity_id: int) -> list[int] | None:
+        result = self._safe_call("get_activity_hr_in_timezones", activity_id)
+        if not isinstance(result, list) or not result:
+            return None
+        try:
+            sorted_zones = sorted(result, key=lambda z: z.get("zoneNumber", 0))
+            bounds = [int(z["zoneLowBoundary"]) for z in sorted_zones if "zoneLowBoundary" in z]
+        except (KeyError, TypeError, ValueError):
+            return None
+        # Schema supports exactly zone0–zone5 (5 lower bounds). Reject unexpected shapes.
+        if len(bounds) != 5:
+            return None
+        return bounds
+
     def _safe_call(self, method_name: str, *args: Any) -> Any:
         if self._client is None:
             raise RuntimeError("Garmin client is not logged in")
@@ -178,6 +192,54 @@ def normalize_daily_metrics(day_payload: DayPayload) -> dict[str, Any]:
         "woke_up_at": _extract_woke_up_at(sleep),
         "vo2max": _pick_value(sources, ["vo2MaxValue", "vo2max", "vO2MaxValue"]),
     }
+
+
+def compute_zone_minutes(
+    heart_rates_payload: Any,
+    zone_lower_bounds: list[int],
+) -> dict[str, int]:
+    """Classify each BPM sample into a zone and accumulate minutes per zone.
+
+    Zone 0 is below the first lower bound; zones 1–N match the provided bounds.
+    Each sample's duration is derived from the gap to the next timestamp (ms).
+    The final sample defaults to 2 minutes.
+    """
+    num_zones = len(zone_lower_bounds) + 1
+    result: dict[str, int] = {f"zone{i}_minutes": 0 for i in range(num_zones)}
+
+    if not isinstance(heart_rates_payload, dict):
+        return result
+
+    samples = heart_rates_payload.get("heartRateValues")
+    if not isinstance(samples, list) or not samples:
+        return result
+
+    sorted_bounds = sorted(zone_lower_bounds)
+    # Accumulate fractional minutes per zone; round once at the end.
+    totals: dict[str, float] = {f"zone{i}_minutes": 0.0 for i in range(num_zones)}
+
+    for i, sample in enumerate(samples):
+        if not isinstance(sample, (list, tuple)) or len(sample) < 2:
+            continue
+        bpm = sample[1]
+        if bpm is None:
+            continue
+
+        # Determine interval duration in minutes
+        if i + 1 < len(samples) and isinstance(samples[i + 1], (list, tuple)):
+            duration_minutes = max(0.0, (samples[i + 1][0] - sample[0]) / 60_000)
+        else:
+            duration_minutes = 2.0
+
+        # Assign zone
+        zone = 0
+        for j, bound in enumerate(sorted_bounds):
+            if bpm >= bound:
+                zone = j + 1
+
+        totals[f"zone{zone}_minutes"] += duration_minutes
+
+    return {key: round(value) for key, value in totals.items()}
 
 
 def normalize_activities(day_payload: DayPayload) -> list[dict[str, Any]]:
