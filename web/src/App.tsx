@@ -2138,6 +2138,13 @@ function App() {
     const legacySleepTime = draftAnswers[SLEEP_TIME_QUESTION_ID];
     return typeof legacySleepTime === "string" && legacySleepTime ? legacySleepTime : null;
   }, [draftAnswers, selectedSleepRecord]);
+  const selectedWokeUpTime = useMemo(() => {
+    if (selectedSleepRecord?.wokeUpAtIso) {
+      const formatted = formatIsoClockTimeLocal(selectedSleepRecord.wokeUpAtIso);
+      if (formatted) return formatted;
+    }
+    return selectedSleepRecord?.wokeUpAt ?? null;
+  }, [selectedSleepRecord]);
   const selectedSleepDuration = selectedSleepRecord?.predictors.sleepSeconds ?? null;
   const selectedSteps = selectedCheckinRecord?.predictors.steps ?? null;
   const selectedActivityLabel = useMemo(() => {
@@ -2285,6 +2292,15 @@ function App() {
   const handleSelectDashboardPlotToAdd = (option: DashboardPlotVariableOption) => {
     setPendingAddPlot(option);
     setShowAddPlotMenu(false);
+  };
+
+  const handleCheckinDateStep = (delta: number) => {
+    const parsed = parseIsoDate(selectedCheckinDate);
+    if (!parsed) return;
+    const next = new Date(parsed.getTime() + delta * 86_400_000);
+    const nextStr = formatIsoDateLocal(next);
+    if (nextStr > maxImportDate) return;
+    setSelectedCheckinDate(nextStr);
   };
 
   const handleAddDashboardPlot = (
@@ -3310,21 +3326,40 @@ function App() {
                   : undefined
               }
             >
-              <div className="mb-6 flex items-center justify-between">
+              <div className="mb-6 flex items-end gap-8">
                 <div>
                   <h2 className="text-2xl font-semibold tracking-tight">Daily Check-In</h2>
                   <p className="mt-1 text-sm text-muted">Date-linked entries saved in SQLite.</p>
                 </div>
-                <label className="space-y-1 text-sm">
+                <div className="space-y-1 text-sm">
                   <span className="block text-xs uppercase tracking-[0.14em] text-muted">Entry date</span>
-                  <input
-                    className="focusable min-h-11 rounded-2xl bg-subsurface px-3"
-                    max={maxImportDate}
-                    type="date"
-                    value={selectedCheckinDate}
-                    onChange={(event) => setSelectedCheckinDate(event.target.value)}
-                  />
-                </label>
+                  <div className="flex items-center gap-1">
+                    <button
+                      aria-label="Previous day"
+                      className="focusable flex min-h-11 w-9 items-center justify-center rounded-2xl bg-subsurface transition hover:bg-surface-hover"
+                      type="button"
+                      onClick={() => handleCheckinDateStep(-1)}
+                    >
+                      ‹
+                    </button>
+                    <input
+                      className="focusable min-h-11 rounded-2xl bg-subsurface px-3"
+                      max={maxImportDate}
+                      type="date"
+                      value={selectedCheckinDate}
+                      onChange={(event) => setSelectedCheckinDate(event.target.value)}
+                    />
+                    <button
+                      aria-label="Next day"
+                      className="focusable flex min-h-11 w-9 items-center justify-center rounded-2xl bg-subsurface transition hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-40"
+                      disabled={selectedCheckinDate >= maxImportDate}
+                      type="button"
+                      onClick={() => handleCheckinDateStep(1)}
+                    >
+                      ›
+                    </button>
+                  </div>
+                </div>
               </div>
               <div className="mb-4 rounded-2xl bg-subsurface px-4 py-3 text-sm">
                 <p className="text-muted">
@@ -3400,6 +3435,16 @@ function App() {
                   <p className="mt-2 text-sm text-muted">Fell asleep at (Garmin)</p>
                   <p className="metric-number mt-1 text-2xl font-semibold text-ink">
                     {selectedFellAsleepTime ?? "--:--"}
+                  </p>
+                  <p className="mt-1 text-xs text-muted">
+                    Source date: {selectedPredictorSourceDate}
+                  </p>
+                </div>
+                <div className="rounded-[22px] bg-subsurface p-4">
+                  <p className="text-xs uppercase tracking-[0.16em] text-muted">Predictor</p>
+                  <p className="mt-2 text-sm text-muted">Woke up at (Garmin)</p>
+                  <p className="metric-number mt-1 text-2xl font-semibold text-ink">
+                    {selectedWokeUpTime ?? "--:--"}
                   </p>
                   <p className="mt-1 text-xs text-muted">
                     Source date: {selectedPredictorSourceDate}

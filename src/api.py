@@ -1131,6 +1131,12 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
                     if row and row["fell_asleep_at"] is not None
                     else None
                 ),
+                "wokeUpAt": _as_clock_time(row["woke_up_at"]) if row else None,
+                "wokeUpAtIso": (
+                    str(row["woke_up_at"])
+                    if row and row["woke_up_at"] is not None
+                    else None
+                ),
                 "predictors": {
                     "steps": _as_int(row["steps"]) if row else None,
                     "calories": _as_int(row["calories"]) if row else None,

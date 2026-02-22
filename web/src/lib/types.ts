@@ -37,6 +37,8 @@ export interface DailyRecord {
   importState: ImportState;
   fellAsleepAt?: string | null;
   fellAsleepAtIso?: string | null;
+  wokeUpAt?: string | null;
+  wokeUpAtIso?: string | null;
   predictors: {
     steps: number | null;
     calories: number | null;
