@@ -95,6 +95,7 @@ import {
   type DashboardPlotPreference as ApiDashboardPlotPreference,
   type PlotAggregation,
   type PlotDirection,
+  type PlotReduceMethod,
 } from "./lib/api";
 import { usePersistentState } from "./lib/storage";
 import {
@@ -149,6 +150,7 @@ interface DashboardPlotPreference {
   direction: PlotDirection;
   aggregation: PlotAggregation;
   rolling: boolean;
+  reduceMethod: PlotReduceMethod;
 }
 
 interface DashboardPlot {
@@ -156,6 +158,7 @@ interface DashboardPlot {
   direction: PlotDirection;
   aggregation: PlotAggregation;
   rolling: boolean;
+  reduceMethod: PlotReduceMethod;
   option: DashboardPlotVariableOption;
   points: Array<{ date: string; value: number | null }>;
   values: number[];
@@ -204,11 +207,11 @@ const DEFAULT_RANGE_PRESET = 7;
 const TIME_STEP_MINUTES = 15;
 const TIME_SLIDER_MINUTES = { min: 0, max: 23 * 60 + 45 };
 const DEFAULT_DASHBOARD_PLOT_PREFERENCES: DashboardPlotPreference[] = [
-  { key: "metric:recoveryIndex", direction: "higher", aggregation: "daily", rolling: false },
-  { key: "metric:restingHr", direction: "lower", aggregation: "daily", rolling: false },
-  { key: "metric:stress", direction: "lower", aggregation: "daily", rolling: false },
-  { key: "metric:bodyBattery", direction: "higher", aggregation: "daily", rolling: false },
-  { key: "metric:trainingReadiness", direction: "higher", aggregation: "daily", rolling: false },
+  { key: "metric:recoveryIndex", direction: "higher", aggregation: "daily", rolling: false, reduceMethod: "mean" },
+  { key: "metric:restingHr", direction: "lower", aggregation: "daily", rolling: false, reduceMethod: "mean" },
+  { key: "metric:stress", direction: "lower", aggregation: "daily", rolling: false, reduceMethod: "mean" },
+  { key: "metric:bodyBattery", direction: "higher", aggregation: "daily", rolling: false, reduceMethod: "mean" },
+  { key: "metric:trainingReadiness", direction: "higher", aggregation: "daily", rolling: false, reduceMethod: "mean" },
 ];
 const METRIC_DIRECTIONS: Record<MetricKey, MetricDirection> = {
   recoveryIndex: "higher",
@@ -305,6 +308,7 @@ function normalizeDashboardPlotPreferences(
     let direction: PlotDirection | null = null;
     let aggregation: PlotAggregation = "daily";
     let rolling = false;
+    let reduceMethod: PlotReduceMethod = "mean";
 
     if (typeof entry === "string") {
       key = entry as DashboardPlotVariableKey;
@@ -327,6 +331,9 @@ function normalizeDashboardPlotPreferences(
       if (typeof objectEntry.rolling === "boolean") {
         rolling = objectEntry.rolling;
       }
+      if (objectEntry.reduceMethod === "mean" || objectEntry.reduceMethod === "sum") {
+        reduceMethod = objectEntry.reduceMethod;
+      }
     }
 
     if (!key) {
@@ -339,7 +346,7 @@ function normalizeDashboardPlotPreferences(
       continue;
     }
     seenKeys.add(key);
-    normalized.push({ key, direction, aggregation, rolling });
+    normalized.push({ key, direction, aggregation, rolling, reduceMethod });
   }
 
   return normalized;
@@ -376,7 +383,8 @@ function arePlotPreferencesEqual(
     value.key === b[index]?.key
     && value.direction === b[index]?.direction
     && value.aggregation === b[index]?.aggregation
-    && value.rolling === b[index]?.rolling,
+    && value.rolling === b[index]?.rolling
+    && value.reduceMethod === b[index]?.reduceMethod,
   );
 }
 
@@ -1083,9 +1091,11 @@ function App() {
   const [plotSearchQuery, setPlotSearchQuery] = useState("");
   const [addPlotSearchQuery, setAddPlotSearchQuery] = useState("");
   const [pendingAddPlot, setPendingAddPlot] = useState<DashboardPlotVariableOption | null>(null);
-  const [pendingAddPlotStep, setPendingAddPlotStep] = useState<"direction" | "aggregation" | "rolling">("direction");
+  const [pendingAddPlotStep, setPendingAddPlotStep] = useState<"direction" | "aggregation" | "rolling" | "reduceMethod">("direction");
   const [pendingAddPlotDirection, setPendingAddPlotDirection] = useState<PlotDirection>("higher");
   const [pendingAddPlotAggregation, setPendingAddPlotAggregation] = useState<PlotAggregation>("daily");
+  const [pendingAddPlotRolling, setPendingAddPlotRolling] = useState(false);
+  const [pendingAddPlotReduceMethod, setPendingAddPlotReduceMethod] = useState<PlotReduceMethod>("mean");
   const [draftAnswers, setDraftAnswers] = usePersistentState<Record<string, string | number | boolean>>(
     "ui.checkinDraft",
     defaultDraftAnswers(),
@@ -1818,23 +1828,25 @@ function App() {
         rawPoints: Array<{ date: string; value: number | null }>,
         aggregation: PlotAggregation,
         rolling: boolean,
+        reduceMethod: PlotReduceMethod,
       ): Array<{ date: string; value: number | null }> {
         if (aggregation === "daily") {
           return rawPoints;
         }
         const windowSize = aggregation === "3days" ? 3 : 7;
+        const reduce = (nums: number[]) => reduceMethod === "sum" ? nums.reduce((a, b) => a + b, 0) : mean(nums);
         if (rolling) {
           return rawPoints.map((point, index) => {
             const window = rawPoints.slice(Math.max(0, index - windowSize + 1), index + 1);
             const nums = window.map((p) => p.value).filter((v): v is number => v !== null);
-            return { date: point.date, value: nums.length ? mean(nums) : null };
+            return { date: point.date, value: nums.length ? reduce(nums) : null };
           });
         }
         const grouped: Array<{ date: string; value: number | null }> = [];
         for (let i = 0; i < rawPoints.length; i += windowSize) {
           const block = rawPoints.slice(i, i + windowSize);
           const nums = block.map((p) => p.value).filter((v): v is number => v !== null);
-          grouped.push({ date: block[block.length - 1].date, value: nums.length ? mean(nums) : null });
+          grouped.push({ date: block[block.length - 1].date, value: nums.length ? reduce(nums) : null });
         }
         return grouped;
       }
@@ -1849,7 +1861,7 @@ function App() {
             date: record.date,
             value: getDashboardPlotValue(plotPreference.key, record, checkinsByDateMap, questionFieldsById),
           }));
-          const points = aggregatePlotPoints(rawPoints, plotPreference.aggregation, plotPreference.rolling);
+          const points = aggregatePlotPoints(rawPoints, plotPreference.aggregation, plotPreference.rolling, plotPreference.reduceMethod);
           const values = points
             .map((point) => point.value)
             .filter((value): value is number => value !== null);
@@ -1867,6 +1879,7 @@ function App() {
             direction: plotPreference.direction,
             aggregation: plotPreference.aggregation,
             rolling: plotPreference.rolling,
+            reduceMethod: plotPreference.reduceMethod,
             option,
             points,
             values,
@@ -2367,6 +2380,8 @@ function App() {
     setPendingAddPlotStep("direction");
     setPendingAddPlotDirection("higher");
     setPendingAddPlotAggregation("daily");
+    setPendingAddPlotRolling(false);
+    setPendingAddPlotReduceMethod("mean");
     setShowAddPlotMenu(false);
   };
 
@@ -2384,11 +2399,12 @@ function App() {
     direction: PlotDirection,
     aggregation: PlotAggregation,
     rolling: boolean,
+    reduceMethod: PlotReduceMethod,
   ) => {
     setDashboardPlotPreferences((previous) => (
       previous.some((plot) => plot.key === plotKey)
         ? previous
-        : [...previous, { key: plotKey, direction, aggregation, rolling }]
+        : [...previous, { key: plotKey, direction, aggregation, rolling, reduceMethod }]
     ));
     setPendingAddPlot(null);
   };
@@ -2928,7 +2944,7 @@ function App() {
                             <button
                               className="focusable min-h-10 rounded-xl bg-accent px-3 text-xs font-semibold text-white"
                               type="button"
-                              onClick={() => handleAddDashboardPlot(pendingAddPlot.key, pendingAddPlotDirection, "daily", false)}
+                              onClick={() => handleAddDashboardPlot(pendingAddPlot.key, pendingAddPlotDirection, "daily", false, "mean")}
                             >
                               Daily
                             </button>
@@ -2962,16 +2978,43 @@ function App() {
                             <button
                               className="focusable min-h-10 rounded-xl bg-accent px-3 text-xs font-semibold text-white"
                               type="button"
-                              onClick={() => handleAddDashboardPlot(pendingAddPlot.key, pendingAddPlotDirection, pendingAddPlotAggregation, true)}
+                              onClick={() => {
+                                setPendingAddPlotRolling(true);
+                                setPendingAddPlotStep("reduceMethod");
+                              }}
                             >
-                              Rolling avg
+                              Rolling
                             </button>
                             <button
                               className="focusable min-h-10 rounded-xl bg-subsurface px-3 text-xs font-semibold text-ink"
                               type="button"
-                              onClick={() => handleAddDashboardPlot(pendingAddPlot.key, pendingAddPlotDirection, pendingAddPlotAggregation, false)}
+                              onClick={() => {
+                                setPendingAddPlotRolling(false);
+                                setPendingAddPlotStep("reduceMethod");
+                              }}
                             >
                               Fixed periods
+                            </button>
+                          </div>
+                        </>
+                      )}
+                      {pendingAddPlotStep === "reduceMethod" && (
+                        <>
+                          <p className="mt-1 text-xs text-muted">Should values be averaged or summed?</p>
+                          <div className="mt-3 grid grid-cols-2 gap-2">
+                            <button
+                              className="focusable min-h-10 rounded-xl bg-accent px-3 text-xs font-semibold text-white"
+                              type="button"
+                              onClick={() => handleAddDashboardPlot(pendingAddPlot.key, pendingAddPlotDirection, pendingAddPlotAggregation, pendingAddPlotRolling, "mean")}
+                            >
+                              Average
+                            </button>
+                            <button
+                              className="focusable min-h-10 rounded-xl bg-subsurface px-3 text-xs font-semibold text-ink"
+                              type="button"
+                              onClick={() => handleAddDashboardPlot(pendingAddPlot.key, pendingAddPlotDirection, pendingAddPlotAggregation, pendingAddPlotRolling, "sum")}
+                            >
+                              Sum
                             </button>
                           </div>
                         </>
@@ -3925,9 +3968,13 @@ function SortableDashboardPlotItem({
 
   const aggregationLabel =
     plot.aggregation === "3days"
-      ? plot.rolling ? "3-day rolling avg" : "3-day periods"
+      ? plot.rolling
+        ? `3-day rolling ${plot.reduceMethod === "sum" ? "sum" : "avg"}`
+        : `3-day periods ${plot.reduceMethod === "sum" ? "sum" : "avg"}`
       : plot.aggregation === "weekly"
-        ? plot.rolling ? "Weekly rolling avg" : "Weekly periods"
+        ? plot.rolling
+          ? `Weekly rolling ${plot.reduceMethod === "sum" ? "sum" : "avg"}`
+          : `Weekly periods ${plot.reduceMethod === "sum" ? "sum" : "avg"}`
         : null;
 
   return (

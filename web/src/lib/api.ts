@@ -59,11 +59,14 @@ export type PlotDirection = "higher" | "lower";
 
 export type PlotAggregation = "daily" | "3days" | "weekly";
 
+export type PlotReduceMethod = "mean" | "sum";
+
 export interface DashboardPlotPreference {
   key: string;
   direction: PlotDirection;
   aggregation?: PlotAggregation;
   rolling?: boolean;
+  reduceMethod?: PlotReduceMethod;
 }
 
 interface DashboardPlotsApiResponse {
