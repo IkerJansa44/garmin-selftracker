@@ -21,14 +21,6 @@ export const METRICS: MetricDefinition[] = [
     baselineHint: "Tracks recovery pressure from recent load and stress.",
   },
   {
-    key: "sleepScore",
-    label: "Sleep Score",
-    unit: "pts",
-    color: "#3f6686",
-    decimals: 0,
-    baselineHint: "Signals how well overnight recovery conditions held.",
-  },
-  {
     key: "restingHr",
     label: "Resting HR",
     unit: "bpm",
@@ -63,7 +55,6 @@ export const METRICS: MetricDefinition[] = [
 ];
 
 export const DEFAULT_SELECTED_METRICS: MetricKey[] = [
-  "sleepScore",
   "recoveryIndex",
   "trainingReadiness",
 ];

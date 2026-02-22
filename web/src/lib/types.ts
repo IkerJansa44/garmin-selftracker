@@ -1,6 +1,5 @@
 export type MetricKey =
   | "recoveryIndex"
-  | "sleepScore"
   | "restingHr"
   | "stress"
   | "bodyBattery"

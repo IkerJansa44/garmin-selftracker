@@ -193,7 +193,6 @@ const TIME_STEP_MINUTES = 15;
 const TIME_SLIDER_MINUTES = { min: 0, max: 23 * 60 + 45 };
 const DEFAULT_DASHBOARD_PLOT_PREFERENCES: DashboardPlotPreference[] = [
   { key: "metric:recoveryIndex", direction: "higher" },
-  { key: "metric:sleepScore", direction: "higher" },
   { key: "metric:restingHr", direction: "lower" },
   { key: "metric:stress", direction: "lower" },
   { key: "metric:bodyBattery", direction: "higher" },
@@ -201,7 +200,6 @@ const DEFAULT_DASHBOARD_PLOT_PREFERENCES: DashboardPlotPreference[] = [
 ];
 const METRIC_DIRECTIONS: Record<MetricKey, MetricDirection> = {
   recoveryIndex: "higher",
-  sleepScore: "higher",
   bodyBattery: "higher",
   trainingReadiness: "higher",
   stress: "lower",
@@ -210,7 +208,6 @@ const METRIC_DIRECTIONS: Record<MetricKey, MetricDirection> = {
 
 const EMPTY_METRICS: Record<MetricKey, number | null> = {
   recoveryIndex: null,
-  sleepScore: null,
   restingHr: null,
   stress: null,
   bodyBattery: null,
@@ -219,7 +216,6 @@ const EMPTY_METRICS: Record<MetricKey, number | null> = {
 
 const EMPTY_COVERAGE: Record<MetricKey, CoverageState> = {
   recoveryIndex: "missing",
-  sleepScore: "missing",
   restingHr: "missing",
   stress: "missing",
   bodyBattery: "missing",
@@ -1097,7 +1093,7 @@ function App() {
   const [dataStatus, setDataStatus] = useState<"loading" | "ready" | "error">("loading");
   const [dataError, setDataError] = useState<string | null>(null);
   const [predictorKey, setPredictorKey] = useState<PredictorKey>("garmin:steps");
-  const [outcomeKey, setOutcomeKey] = useState<OutcomeKey>("metric:sleepScore");
+  const [outcomeKey, setOutcomeKey] = useState<OutcomeKey>("metric:recoveryIndex");
   const [showNewVariablePanel, setShowNewVariablePanel] = useState(false);
   const [derivedPredictors, setDerivedPredictors] = useState<DerivedPredictorDefinition[]>([]);
   const [derivedLoadState, setDerivedLoadState] = useState<"loading" | "ready" | "error">("loading");
@@ -2845,7 +2841,7 @@ function App() {
                 </div>
               </div>
               <p className="mt-3 text-sm text-muted">
-                Higher is better for Recovery Index, Sleep Score, Body Battery, and Training Readiness.
+                Higher is better for Recovery Index, Body Battery, and Training Readiness.
                 Lower is better for Stress and Resting HR.
               </p>
               <div className="mt-3 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
@@ -3285,7 +3281,9 @@ function App() {
                           data={selectedCorrelationPair.testType === "categorical"
                             ? categoricalScatterData
                             : selectedCorrelationPair.points}
-                          fill={getMetricColor("sleepScore")}
+                          fill={outcomeKey.startsWith("metric:")
+                            ? getMetricColor(outcomeKey.slice("metric:".length) as MetricKey)
+                            : "#3f6686"}
                         />
                         {selectedCorrelationPair.testType === "categorical" && (
                           <Scatter data={categoricalMeanData} fill="#CC5833" name="Group means" />

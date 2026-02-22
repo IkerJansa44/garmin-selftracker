@@ -317,27 +317,23 @@ def _as_float(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
-def _sleep_score(sleep_seconds: int | None) -> int | None:
-    if sleep_seconds is None:
-        return None
-    hours = sleep_seconds / 3600
-    score = 50 + (hours - 4.0) * 10
-    return int(round(_clamp(score, 40, 100)))
-
-
 def _recovery_index(
-    resting_hr: int | None, stress_avg: float | None, sleep_score: int | None
+    resting_hr: int | None, stress_avg: float | None, sleep_seconds: int | None
 ) -> int | None:
     if resting_hr is None or stress_avg is None:
         return None
-    sleep_term = 0 if sleep_score is None else (sleep_score - 70) * 0.3
+    if sleep_seconds is None:
+        sleep_term = 0
+    else:
+        sleep_score = _clamp(50 + (sleep_seconds / 3600 - 4.0) * 10, 40, 100)
+        sleep_term = (sleep_score - 70) * 0.3
     value = 95 - resting_hr - stress_avg * 0.6 + sleep_term
     return int(round(_clamp(value, 20, 120)))
 
 
 def _training_readiness(
     body_battery: int | None,
-    sleep_score: int | None,
+    sleep_seconds: int | None,
     stress_avg: float | None,
 ) -> int | None:
     weighted_sum = 0.0
@@ -345,7 +341,8 @@ def _training_readiness(
     if body_battery is not None:
         weighted_sum += body_battery * 0.45
         weight_total += 0.45
-    if sleep_score is not None:
+    if sleep_seconds is not None:
+        sleep_score = _clamp(50 + (sleep_seconds / 3600 - 4.0) * 10, 40, 100)
         weighted_sum += sleep_score * 0.35
         weight_total += 0.35
     if stress_avg is not None:
@@ -363,15 +360,13 @@ def _metric_features_from_daily_metrics_row(
     body_battery = _as_int(row["body_battery"])
     stress_avg = _as_float(row["stress_avg"])
     sleep_seconds = _as_int(row["sleep_seconds"])
-    sleep_score = _sleep_score(sleep_seconds)
     return {
-        "metric:recoveryIndex": _recovery_index(resting_hr, stress_avg, sleep_score),
-        "metric:sleepScore": sleep_score,
+        "metric:recoveryIndex": _recovery_index(resting_hr, stress_avg, sleep_seconds),
         "metric:restingHr": resting_hr,
         "metric:stress": _as_int(stress_avg),
         "metric:bodyBattery": body_battery,
         "metric:trainingReadiness": _training_readiness(
-            body_battery, sleep_score, stress_avg
+            body_battery, sleep_seconds, stress_avg
         ),
     }
 

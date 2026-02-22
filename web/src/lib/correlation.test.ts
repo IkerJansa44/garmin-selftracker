@@ -68,8 +68,8 @@ function buildDate(index: number): string {
 function buildRecords(days: number): DailyRecord[] {
   return Array.from({ length: days }, (_, index) => {
     const previousCaffeine = index === 0 ? 2 : (index - 1) % 5;
-    const sleepScore = 90 - previousCaffeine * 5;
-    const energy = Math.max(0, Math.min(10, Math.round((sleepScore - 60) / 4)));
+    const recoveryIndex = 87 - previousCaffeine * 5;
+    const energy = Math.max(0, Math.min(10, Math.round((recoveryIndex - 60) / 4)));
     return {
       date: buildDate(index),
       dayIndex: index,
@@ -88,16 +88,14 @@ function buildRecords(days: number): DailyRecord[] {
         isTrainingDay: index % 2 === 0,
       },
       metrics: {
-        recoveryIndex: sleepScore - 3,
-        sleepScore,
+        recoveryIndex,
         restingHr: 48 + previousCaffeine,
         stress: 28 + previousCaffeine,
         bodyBattery: 70 - previousCaffeine,
-        trainingReadiness: sleepScore - 4,
+        trainingReadiness: recoveryIndex - 4,
       },
       coverage: {
         recoveryIndex: "complete",
-        sleepScore: "complete",
         restingHr: "complete",
         stress: "complete",
         bodyBattery: "complete",
@@ -247,7 +245,7 @@ function buildModerateAnovaRecords(days: number): DailyRecord[] {
   return Array.from({ length: days }, (_, index) => {
     const priorGroup = index === 0 ? 0 : (index - 1) % 3;
     const noise = (index % 5) - 2;
-    const sleepScore = 50 + noise + priorGroup * 0.8;
+    const recoveryIndex = 50 + noise + priorGroup * 0.8;
     return {
       date: buildDate(index),
       dayIndex: index,
@@ -266,16 +264,14 @@ function buildModerateAnovaRecords(days: number): DailyRecord[] {
         isTrainingDay: index % 2 === 0,
       },
       metrics: {
-        recoveryIndex: sleepScore - 3,
-        sleepScore,
+        recoveryIndex,
         restingHr: 48 + priorGroup,
         stress: 28 + priorGroup,
         bodyBattery: 70 - priorGroup,
-        trainingReadiness: sleepScore - 4,
+        trainingReadiness: recoveryIndex - 4,
       },
       coverage: {
         recoveryIndex: "complete",
-        sleepScore: "complete",
         restingHr: "complete",
         stress: "complete",
         bodyBattery: "complete",
@@ -350,7 +346,7 @@ describe("correlation helpers", () => {
     const pair = findCorrelationPair(
       catalog,
       "question:caffeine_count",
-      "metric:sleepScore",
+      "metric:recoveryIndex",
     );
 
     expect(pair).not.toBeNull();
@@ -385,7 +381,7 @@ describe("correlation helpers", () => {
       trainingOnly: false,
     });
 
-    const pair = findCorrelationPair(catalog, "derived:caffeine_binary", "metric:sleepScore");
+    const pair = findCorrelationPair(catalog, "derived:caffeine_binary", "metric:recoveryIndex");
 
     expect(pair).not.toBeNull();
     expect(pair?.testType).toBe("categorical");
@@ -433,7 +429,6 @@ describe("correlation helpers", () => {
         },
         metrics: {
           recoveryIndex: 60,
-          sleepScore: 61,
           restingHr: 50,
           stress: 20,
           bodyBattery: 70,
@@ -441,7 +436,6 @@ describe("correlation helpers", () => {
         },
         coverage: {
           recoveryIndex: "complete",
-          sleepScore: "complete",
           restingHr: "complete",
           stress: "complete",
           bodyBattery: "complete",
@@ -467,7 +461,6 @@ describe("correlation helpers", () => {
         },
         metrics: {
           recoveryIndex: 70,
-          sleepScore: 71,
           restingHr: 49,
           stress: 22,
           bodyBattery: 69,
@@ -475,7 +468,6 @@ describe("correlation helpers", () => {
         },
         coverage: {
           recoveryIndex: "complete",
-          sleepScore: "complete",
           restingHr: "complete",
           stress: "complete",
           bodyBattery: "complete",
@@ -501,7 +493,6 @@ describe("correlation helpers", () => {
         },
         metrics: {
           recoveryIndex: 80,
-          sleepScore: 81,
           restingHr: 48,
           stress: 24,
           bodyBattery: 68,
@@ -509,7 +500,6 @@ describe("correlation helpers", () => {
         },
         coverage: {
           recoveryIndex: "complete",
-          sleepScore: "complete",
           restingHr: "complete",
           stress: "complete",
           bodyBattery: "complete",
@@ -523,7 +513,7 @@ describe("correlation helpers", () => {
       analysisValues: buildAnalysisValues(records, new Map<string, CheckInEntry>()),
       questions: QUESTIONS,
       predictor: "garmin:steps",
-      outcome: "metric:sleepScore",
+      outcome: "metric:recoveryIndex",
       weekdayOnly: false,
       trainingOnly: false,
     });
@@ -531,14 +521,14 @@ describe("correlation helpers", () => {
     expect(result.points).toEqual([
       {
         x: 1111,
-        y: 71,
+        y: 70,
         date: "2026-02-21",
         predictorSourceDate: "2026-02-20",
         outcomeSourceDate: "2026-02-21",
       },
       {
         x: 2222,
-        y: 81,
+        y: 80,
         date: "2026-02-22",
         predictorSourceDate: "2026-02-21",
         outcomeSourceDate: "2026-02-22",
@@ -569,7 +559,7 @@ describe("correlation helpers", () => {
       weekdayOnly: false,
       trainingOnly: false,
     });
-    const pair = findCorrelationPair(catalog, "derived:caffeine_three_bins", "metric:sleepScore");
+    const pair = findCorrelationPair(catalog, "derived:caffeine_three_bins", "metric:recoveryIndex");
 
     expect(pair).not.toBeNull();
     expect(pair?.testType).toBe("categorical");
@@ -599,7 +589,7 @@ describe("correlation helpers", () => {
       trainingOnly: false,
     });
 
-    const pair = findCorrelationPair(catalog, "question:caffeine_count", "metric:sleepScore");
+    const pair = findCorrelationPair(catalog, "question:caffeine_count", "metric:recoveryIndex");
     expect(pair).not.toBeNull();
     expect(pair?.classification).toBe("exploratory");
 
@@ -611,7 +601,7 @@ describe("correlation helpers", () => {
       weekdayOnly: false,
       trainingOnly: false,
     });
-    const tinyPair = findCorrelationPair(tinyCatalog, "question:caffeine_count", "metric:sleepScore");
+    const tinyPair = findCorrelationPair(tinyCatalog, "question:caffeine_count", "metric:recoveryIndex");
     expect(tinyPair?.classification).toBe("insufficient");
   });
 
@@ -621,7 +611,7 @@ describe("correlation helpers", () => {
       analysisValues: buildAnalysisValues(buildRecords(20), buildCheckins(20)),
       questions: QUESTIONS,
       predictor: "question:caffeine_count",
-      outcome: "metric:sleepScore",
+      outcome: "metric:recoveryIndex",
       weekdayOnly: false,
       trainingOnly: false,
     });

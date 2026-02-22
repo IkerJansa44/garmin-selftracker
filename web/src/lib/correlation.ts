@@ -82,7 +82,6 @@ const GARMIN_PREDICTOR_LABELS: Record<GarminPredictorKey, string> = {
 
 const OUTCOME_LABELS: Record<MetricKey, string> = {
   recoveryIndex: "Recovery Index",
-  sleepScore: "Sleep Score",
   restingHr: "Resting HR",
   stress: "Stress",
   bodyBattery: "Body Battery",

@@ -377,7 +377,7 @@ def test_normalize_questions_payload_keeps_backward_compatibility() -> None:
 
 def test_normalize_dashboard_plots_payload_accepts_key_direction_entries() -> None:
     payload = [
-        {"key": "metric:sleepScore", "direction": "higher"},
+        {"key": "metric:recoveryIndex", "direction": "higher"},
         {"key": "metric:stress", "direction": "lower"},
     ]
 
@@ -397,7 +397,7 @@ def test_normalize_dashboard_plots_payload_supports_legacy_key_list() -> None:
 
 
 def test_normalize_dashboard_plots_payload_rejects_invalid_direction() -> None:
-    payload = [{"key": "metric:sleepScore", "direction": "sideways"}]
+    payload = [{"key": "metric:recoveryIndex", "direction": "sideways"}]
 
     assert _normalize_dashboard_plots_payload(payload) is None
 
@@ -812,9 +812,9 @@ def test_load_correlation_values_payload_uses_materialized_analysis_values(
     assert predictor_meal_sleep["valueNum"] == 90
     assert predictor_meal_sleep["alignmentRule"] == "meal_sleep_gap_previous_day"
 
-    target_sleep_score = values_by_key[("target", "metric:sleepScore")]
-    assert target_sleep_score["valueNum"] == 90
-    assert target_sleep_score["sourceDate"] == "2026-02-21"
+    target_recovery_index = values_by_key[("target", "metric:recoveryIndex")]
+    assert target_recovery_index["valueNum"] == 37
+    assert target_recovery_index["sourceDate"] == "2026-02-21"
 
 
 def test_load_dashboard_payload_includes_fell_asleep_iso_field(tmp_path: Path) -> None:

@@ -43,7 +43,6 @@ QUESTION_ANALYSIS_MODES = {"predictor_next_day", "target_same_day"}
 PLOT_DIRECTIONS = {"higher", "lower"}
 METRIC_PLOT_DIRECTIONS = {
     "recoveryIndex": "higher",
-    "sleepScore": "higher",
     "bodyBattery": "higher",
     "trainingReadiness": "higher",
     "stress": "lower",
@@ -54,7 +53,6 @@ GARMIN_PLOT_DIRECTIONS = {
 }
 DEFAULT_DASHBOARD_PLOTS = [
     {"key": "metric:recoveryIndex", "direction": "higher"},
-    {"key": "metric:sleepScore", "direction": "higher"},
     {"key": "metric:restingHr", "direction": "lower"},
     {"key": "metric:stress", "direction": "lower"},
     {"key": "metric:bodyBattery", "direction": "higher"},
@@ -131,27 +129,23 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
-def _sleep_score(sleep_seconds: int | None) -> int | None:
-    if sleep_seconds is None:
-        return None
-    hours = sleep_seconds / 3600
-    score = 50 + (hours - 4.0) * 10
-    return int(round(_clamp(score, 40, 100)))
-
-
 def _recovery_index(
-    resting_hr: int | None, stress_avg: float | None, sleep_score: int | None
+    resting_hr: int | None, stress_avg: float | None, sleep_seconds: int | None
 ) -> int | None:
     if resting_hr is None or stress_avg is None:
         return None
-    sleep_term = 0 if sleep_score is None else (sleep_score - 70) * 0.3
+    if sleep_seconds is None:
+        sleep_term = 0
+    else:
+        sleep_score = _clamp(50 + (sleep_seconds / 3600 - 4.0) * 10, 40, 100)
+        sleep_term = (sleep_score - 70) * 0.3
     value = 95 - resting_hr - stress_avg * 0.6 + sleep_term
     return int(round(_clamp(value, 20, 120)))
 
 
 def _training_readiness(
     body_battery: int | None,
-    sleep_score: int | None,
+    sleep_seconds: int | None,
     stress_avg: float | None,
 ) -> int | None:
     weighted_sum = 0.0
@@ -160,7 +154,8 @@ def _training_readiness(
     if body_battery is not None:
         weighted_sum += body_battery * 0.45
         weight_total += 0.45
-    if sleep_score is not None:
+    if sleep_seconds is not None:
+        sleep_score = _clamp(50 + (sleep_seconds / 3600 - 4.0) * 10, 40, 100)
         weighted_sum += sleep_score * 0.35
         weight_total += 0.35
     if stress_avg is not None:
@@ -435,7 +430,6 @@ def _metric_payload(row: Any | None) -> tuple[dict[str, int | None], dict[str, s
     if row is None:
         metrics = {
             "recoveryIndex": None,
-            "sleepScore": None,
             "restingHr": None,
             "stress": None,
             "bodyBattery": None,
@@ -450,13 +444,11 @@ def _metric_payload(row: Any | None) -> tuple[dict[str, int | None], dict[str, s
     stress_value = _as_int(stress_avg)
     sleep_seconds = _as_int(row["sleep_seconds"])
 
-    sleep_score = _sleep_score(sleep_seconds)
-    recovery_index_value = _recovery_index(resting_hr, stress_avg, sleep_score)
-    readiness = _training_readiness(body_battery, sleep_score, stress_avg)
+    recovery_index_value = _recovery_index(resting_hr, stress_avg, sleep_seconds)
+    readiness = _training_readiness(body_battery, sleep_seconds, stress_avg)
 
     metrics = {
         "recoveryIndex": recovery_index_value,
-        "sleepScore": sleep_score,
         "restingHr": resting_hr,
         "stress": stress_value,
         "bodyBattery": body_battery,

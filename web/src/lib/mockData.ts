@@ -12,7 +12,6 @@ const TOTAL_DAYS = 365;
 
 const METRIC_RANGES: Record<MetricKey, { min: number; max: number }> = {
   recoveryIndex: { min: 30, max: 110 },
-  sleepScore: { min: 40, max: 100 },
   restingHr: { min: 42, max: 72 },
   stress: { min: 10, max: 85 },
   bodyBattery: { min: 15, max: 100 },
@@ -93,15 +92,13 @@ function coverageFor(
   const metricShift =
     metric === "recoveryIndex"
       ? 7
-      : metric === "sleepScore"
-        ? 11
-        : metric === "restingHr"
-          ? 17
-          : metric === "stress"
-            ? 19
-            : metric === "bodyBattery"
-              ? 23
-              : 29;
+      : metric === "restingHr"
+        ? 17
+        : metric === "stress"
+          ? 19
+          : metric === "bodyBattery"
+            ? 23
+            : 29;
   return noise(dayIndex + metricShift) > 0.5 ? "complete" : "partial";
 }
 
@@ -119,15 +116,7 @@ function metricValue(
 
   let value = 0;
 
-  if (metric === "sleepScore") {
-    value =
-      79 +
-      (weekend ? 4 : 0) -
-      prevAlcohol * 4.6 -
-      prevLateScreen / 50 +
-      current.mood * 0.6 +
-      (noise(dayIndex + 1) - 0.5) * 8;
-  } else if (metric === "recoveryIndex") {
+  if (metric === "recoveryIndex") {
     value =
       64 -
       prevIntensity * 1.8 -
@@ -188,7 +177,6 @@ export function generateMockRecords(totalDays = TOTAL_DAYS): DailyRecord[] {
 
     const metrics: DailyRecord["metrics"] = {
       recoveryIndex: null,
-      sleepScore: null,
       restingHr: null,
       stress: null,
       bodyBattery: null,
@@ -197,7 +185,6 @@ export function generateMockRecords(totalDays = TOTAL_DAYS): DailyRecord[] {
 
     const coverage: DailyRecord["coverage"] = {
       recoveryIndex: "missing",
-      sleepScore: "missing",
       restingHr: "missing",
       stress: "missing",
       bodyBattery: "missing",
@@ -228,8 +215,11 @@ export function generateMockRecords(totalDays = TOTAL_DAYS): DailyRecord[] {
         calories: 1700 + currentFactors.trainingIntensity * 120,
         stressAvg: metrics.stress,
         bodyBattery: metrics.bodyBattery,
-        sleepSeconds: metrics.sleepScore === null ? null : metrics.sleepScore * 300,
-        sleepConsistency: metrics.sleepScore === null ? null : 15 + Math.round(noise(dayIndex + 101) * 70),
+        sleepSeconds: importGap ? null : clamp(
+          Math.round((25200 + (weekday === 0 || weekday === 6 ? 1800 : 0) - (previousFactors?.alcoholUnits ?? 0)) + (noise(dayIndex + 1) - 0.5) * 5400),
+          14400, 36000,
+        ),
+        sleepConsistency: importGap ? null : 15 + Math.round(noise(dayIndex + 101) * 70),
         isTrainingDay: currentFactors.trainingIntensity >= 6,
       },
       metrics,
