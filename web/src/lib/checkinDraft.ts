@@ -1,8 +1,22 @@
 import { shiftIsoDate } from "./dateAlignment";
 import { defaultDraftAnswers } from "./mockData";
+import { flattenQuestionFields, pruneHiddenChildAnswers } from "./questions";
 import { type CheckInEntry, type CheckInQuestion } from "./types";
 
 type CheckInDraftAnswers = Record<string, string | number | boolean>;
+
+function mergeSourceIntoDraft(
+  defaults: CheckInDraftAnswers,
+  questions: CheckInQuestion[],
+  sourceAnswers: CheckInDraftAnswers,
+): CheckInDraftAnswers {
+  const validFieldIds = new Set(flattenQuestionFields(questions).map((field) => field.id));
+  const filteredSource = Object.fromEntries(
+    Object.entries(sourceAnswers).filter(([key]) => validFieldIds.has(key)),
+  );
+  const merged = { ...defaults, ...filteredSource };
+  return pruneHiddenChildAnswers(questions, merged);
+}
 
 export function resolveCheckinDraftAnswers(
   selectedDate: string,
@@ -12,7 +26,7 @@ export function resolveCheckinDraftAnswers(
   const defaults = defaultDraftAnswers(questions);
   const selectedEntry = entriesByDate[selectedDate];
   if (selectedEntry) {
-    return { ...defaults, ...selectedEntry.answers };
+    return mergeSourceIntoDraft(defaults, questions, selectedEntry.answers);
   }
 
   const previousDate = shiftIsoDate(selectedDate, -1);
@@ -25,5 +39,5 @@ export function resolveCheckinDraftAnswers(
     return defaults;
   }
 
-  return { ...defaults, ...previousEntry.answers };
+  return mergeSourceIntoDraft(defaults, questions, previousEntry.answers);
 }
