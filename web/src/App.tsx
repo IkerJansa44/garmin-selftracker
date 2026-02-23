@@ -56,6 +56,7 @@ import {
   mean,
 } from "./lib/mockData";
 import { mealToSleepGapMinutes, parseClockTimeToMinutes } from "./lib/time";
+import { resolveCheckinDraftAnswers } from "./lib/checkinDraft";
 import {
   buildCorrelationCatalog,
   buildDerivedPredictorSourceOptions,
@@ -1601,9 +1602,7 @@ function App() {
     draftDateRef.current = selectedCheckinDate;
     // Pre-load = fetch hasn't started yet or is still in-flight.
     draftWasPreLoadRef.current = !checkinFetchEverStartedRef.current || isLoadingCheckins;
-    const defaults = defaultDraftAnswers(questionLibrary);
-    const entry = checkinEntriesByDate[selectedCheckinDate];
-    setDraftAnswers(entry ? { ...defaults, ...entry.answers } : defaults);
+    setDraftAnswers(resolveCheckinDraftAnswers(selectedCheckinDate, questionLibrary, checkinEntriesByDate));
   }, [checkinEntriesByDate, isLoadingCheckins, questionLibrary, selectedCheckinDate, setDraftAnswers]);
 
   useEffect(() => {
