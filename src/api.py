@@ -44,6 +44,8 @@ QUESTION_INPUT_TYPES = {"slider", "multi-choice", "boolean", "time", "text"}
 QUESTION_ANALYSIS_MODES = {"predictor_next_day", "target_same_day"}
 PLOT_DIRECTIONS = {"higher", "lower"}
 PLOT_AGGREGATIONS = {"daily", "3days", "weekly"}
+PLOT_REDUCE_METHODS = {"mean", "sum"}
+PLOT_CHART_STYLES = {"line", "sleepWindowBars"}
 METRIC_PLOT_DIRECTIONS = {
     "recoveryIndex": "higher",
     "bodyBattery": "higher",
@@ -695,12 +697,15 @@ def _normalize_dashboard_plots_payload(payload: Any) -> list[dict] | None:
         return None
 
     normalized: list[dict] = []
-    seen_keys: set[str] = set()
-    for raw_plot in payload:
+    seen_plot_ids: set[str] = set()
+    for index, raw_plot in enumerate(payload):
         plot_key: str
+        plot_id: str
         direction: str
         aggregation: str = "daily"
         rolling: bool = False
+        reduce_method: str = "mean"
+        chart_style: str = "line"
 
         if isinstance(raw_plot, str):
             stripped = raw_plot.strip()
@@ -708,11 +713,20 @@ def _normalize_dashboard_plots_payload(payload: Any) -> list[dict] | None:
                 return None
             plot_key = stripped
             direction = _default_plot_direction(plot_key)
+            plot_id = f"plot_{index + 1}_{plot_key.replace(':', '_')}"
         elif isinstance(raw_plot, dict):
             key_value = raw_plot.get("key")
             if not isinstance(key_value, str) or not key_value.strip():
                 return None
             plot_key = key_value.strip()
+            fallback_plot_id = f"plot_{index + 1}_{plot_key.replace(':', '_')}"
+            id_value = raw_plot.get("id")
+            if id_value is None:
+                plot_id = fallback_plot_id
+            elif isinstance(id_value, str) and id_value.strip():
+                plot_id = id_value.strip()
+            else:
+                return None
             direction_value = raw_plot.get("direction")
             if direction_value is None:
                 direction = _default_plot_direction(plot_key)
@@ -724,7 +738,10 @@ def _normalize_dashboard_plots_payload(payload: Any) -> list[dict] | None:
                 return None
             aggregation_value = raw_plot.get("aggregation")
             if aggregation_value is not None:
-                if isinstance(aggregation_value, str) and aggregation_value in PLOT_AGGREGATIONS:
+                if (
+                    isinstance(aggregation_value, str)
+                    and aggregation_value in PLOT_AGGREGATIONS
+                ):
                     aggregation = aggregation_value
                 else:
                     return None
@@ -734,13 +751,41 @@ def _normalize_dashboard_plots_payload(payload: Any) -> list[dict] | None:
                     rolling = rolling_value
                 else:
                     return None
+            reduce_method_value = raw_plot.get("reduceMethod")
+            if reduce_method_value is not None:
+                if (
+                    isinstance(reduce_method_value, str)
+                    and reduce_method_value in PLOT_REDUCE_METHODS
+                ):
+                    reduce_method = reduce_method_value
+                else:
+                    return None
+            chart_style_value = raw_plot.get("chartStyle")
+            if chart_style_value is not None:
+                if (
+                    isinstance(chart_style_value, str)
+                    and chart_style_value in PLOT_CHART_STYLES
+                ):
+                    chart_style = chart_style_value
+                else:
+                    return None
         else:
             return None
 
-        if plot_key in seen_keys:
-            continue
-        seen_keys.add(plot_key)
-        normalized.append({"key": plot_key, "direction": direction, "aggregation": aggregation, "rolling": rolling})
+        if plot_id in seen_plot_ids:
+            plot_id = f"{plot_id}_{index + 1}"
+        seen_plot_ids.add(plot_id)
+        normalized.append(
+            {
+                "id": plot_id,
+                "key": plot_key,
+                "direction": direction,
+                "aggregation": aggregation,
+                "rolling": rolling,
+                "reduceMethod": reduce_method,
+                "chartStyle": chart_style,
+            }
+        )
 
     return normalized
 
@@ -847,7 +892,7 @@ def _load_questions_payload(db_path: str) -> list[dict[str, Any]]:
     return normalized if normalized is not None else []
 
 
-def _load_dashboard_plots_payload(db_path: str) -> list[dict[str, str]]:
+def _load_dashboard_plots_payload(db_path: str) -> list[dict[str, Any]]:
     connection = connect_db(db_path)
     try:
         init_db(connection)
@@ -855,7 +900,10 @@ def _load_dashboard_plots_payload(db_path: str) -> list[dict[str, str]]:
     finally:
         connection.close()
     if raw_payload is None:
-        return [dict(plot) for plot in DEFAULT_DASHBOARD_PLOTS]
+        normalized_defaults = _normalize_dashboard_plots_payload(
+            DEFAULT_DASHBOARD_PLOTS
+        )
+        return normalized_defaults if normalized_defaults is not None else []
     normalized = _normalize_dashboard_plots_payload(raw_payload)
     return normalized if normalized is not None else []
 
@@ -887,7 +935,7 @@ def _save_questions_payload(db_path: str, payload: Any) -> list[dict[str, Any]]:
     return normalized
 
 
-def _save_dashboard_plots_payload(db_path: str, payload: Any) -> list[dict[str, str]]:
+def _save_dashboard_plots_payload(db_path: str, payload: Any) -> list[dict[str, Any]]:
     normalized = _normalize_dashboard_plots_payload(payload)
     if normalized is None:
         raise ValueError("Invalid dashboard plots payload")
@@ -1177,7 +1225,9 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
                     "zone3Minutes": _as_int(row["zone3_minutes"]) if row else None,
                     "zone4Minutes": _as_int(row["zone4_minutes"]) if row else None,
                     "zone5Minutes": _as_int(row["zone5_minutes"]) if row else None,
-                    "mealToSleepGapMinutes": meal_sleep_gap_by_metric_date.get(date_key),
+                    "mealToSleepGapMinutes": meal_sleep_gap_by_metric_date.get(
+                        date_key
+                    ),
                 },
                 "metrics": metrics,
                 "coverage": coverage,
