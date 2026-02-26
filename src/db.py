@@ -609,7 +609,9 @@ def backfill_zone_minutes(
 
     Returns the number of rows updated.
     """
-    from src.garmin_client import compute_zone_minutes  # avoid circular import at module level
+    from src.garmin_client import (
+        compute_zone_minutes,
+    )  # avoid circular import at module level
 
     rows = connection.execute(
         """
