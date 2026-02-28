@@ -611,7 +611,7 @@ describe("correlation helpers", () => {
     expect(pair?.pValue).toBeCloseTo(expectedTail, 6);
   });
 
-  it("classifies low sample pairs as exploratory/insufficient", () => {
+  it("classifies low sample pairs as exploratory", () => {
     const records = buildRecords(15);
     const checkinsByDate = buildCheckins(15);
     const analysisValues = buildAnalysisValues(records, checkinsByDate);
@@ -637,7 +637,7 @@ describe("correlation helpers", () => {
       trainingOnly: false,
     });
     const tinyPair = findCorrelationPair(tinyCatalog, "question:caffeine_count", "metric:recoveryIndex");
-    expect(tinyPair?.classification).toBe("insufficient");
+    expect(tinyPair?.classification).toBe("exploratory");
   });
 
   it("keeps compatibility wrapper for scatter data", () => {

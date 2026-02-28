@@ -649,9 +649,6 @@ function applyBenjaminiHochberg(pairs: CorrelationPairResult[]): void {
 }
 
 function classifyPair(pair: CorrelationPairResult): CorrelationClassification {
-  if (pair.sampleCount < 12) {
-    return "insufficient";
-  }
   if (
     pair.sampleCount >= 20
     && pair.strength >= 0.2

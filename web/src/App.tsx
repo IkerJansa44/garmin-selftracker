@@ -119,6 +119,8 @@ gsap.registerPlugin(ScrollTrigger);
 
 type ViewKey = "dashboard" | "lab" | "checkin" | "settings";
 type MetricDirection = "higher" | "lower";
+type TopCorrelationOutcomeFilter = "all" | OutcomeKey;
+const DEFAULT_TOP_CORRELATION_OUTCOME: OutcomeKey = "metric:restingHr";
 type GarminPlotKey =
   | "steps"
   | "calories"
@@ -1145,6 +1147,9 @@ function App() {
   const [dataError, setDataError] = useState<string | null>(null);
   const [predictorKey, setPredictorKey] = useState<PredictorKey>("garmin:steps");
   const [outcomeKey, setOutcomeKey] = useState<OutcomeKey>("metric:recoveryIndex");
+  const [topCorrelationOutcomeFilter, setTopCorrelationOutcomeFilter] = useState<TopCorrelationOutcomeFilter>(
+    DEFAULT_TOP_CORRELATION_OUTCOME,
+  );
   const [showNewVariablePanel, setShowNewVariablePanel] = useState(false);
   const [derivedPredictors, setDerivedPredictors] = useState<DerivedPredictorDefinition[]>([]);
   const [derivedLoadState, setDerivedLoadState] = useState<"loading" | "ready" | "error">("loading");
@@ -1686,6 +1691,12 @@ function App() {
     [questionLibrary],
   );
   const outcomeOptions = useMemo(() => buildOutcomeOptions(questionLibrary), [questionLibrary]);
+  const topCorrelationOutcomeOptions = useMemo(
+    () => outcomeOptions.filter((option) => (
+      option.key === DEFAULT_TOP_CORRELATION_OUTCOME || option.key.startsWith("question:")
+    )),
+    [outcomeOptions],
+  );
 
   useEffect(() => {
     if (!predictorOptions.length || predictorOptions.some((option) => option.key === predictorKey)) {
@@ -1700,6 +1711,23 @@ function App() {
     }
     setOutcomeKey(outcomeOptions[0].key as OutcomeKey);
   }, [outcomeKey, outcomeOptions]);
+
+  useEffect(() => {
+    if (
+      topCorrelationOutcomeOptions.some((option) => option.key === topCorrelationOutcomeFilter)
+      || (
+        topCorrelationOutcomeFilter === "all"
+        && !topCorrelationOutcomeOptions.some((option) => option.key === DEFAULT_TOP_CORRELATION_OUTCOME)
+      )
+    ) {
+      return;
+    }
+    if (topCorrelationOutcomeOptions.some((option) => option.key === DEFAULT_TOP_CORRELATION_OUTCOME)) {
+      setTopCorrelationOutcomeFilter(DEFAULT_TOP_CORRELATION_OUTCOME);
+      return;
+    }
+    setTopCorrelationOutcomeFilter("all");
+  }, [topCorrelationOutcomeFilter, topCorrelationOutcomeOptions]);
 
   useEffect(() => {
     if (!derivedSourceOptions.length) {
@@ -1930,13 +1958,35 @@ function App() {
       questionLibrary,
     ],
   );
+  const topCorrelationCatalog = useMemo(
+    () => correlationCatalog.filter((pair) => (
+      topCorrelationOutcomeOptions.some((option) => option.key === pair.outcome)
+    )),
+    [correlationCatalog, topCorrelationOutcomeOptions],
+  );
   const meaningfulCorrelations = useMemo(
-    () => correlationCatalog.filter((pair) => pair.classification === "meaningful"),
-    [correlationCatalog],
+    () => topCorrelationCatalog.filter((pair) => pair.classification === "meaningful"),
+    [topCorrelationCatalog],
   );
   const exploratoryCorrelations = useMemo(
-    () => correlationCatalog.filter((pair) => pair.classification === "exploratory"),
-    [correlationCatalog],
+    () => topCorrelationCatalog.filter((pair) => pair.classification === "exploratory"),
+    [topCorrelationCatalog],
+  );
+  const filteredMeaningfulCorrelations = useMemo(
+    () => (
+      topCorrelationOutcomeFilter === "all"
+        ? meaningfulCorrelations
+        : meaningfulCorrelations.filter((pair) => pair.outcome === topCorrelationOutcomeFilter)
+    ),
+    [meaningfulCorrelations, topCorrelationOutcomeFilter],
+  );
+  const filteredExploratoryCorrelations = useMemo(
+    () => (
+      topCorrelationOutcomeFilter === "all"
+        ? exploratoryCorrelations
+        : exploratoryCorrelations.filter((pair) => pair.outcome === topCorrelationOutcomeFilter)
+    ),
+    [exploratoryCorrelations, topCorrelationOutcomeFilter],
   );
   const selectedCorrelationPair = useMemo(
     () => findCorrelationPair(correlationCatalog, predictorKey, outcomeKey),
@@ -2170,11 +2220,11 @@ function App() {
     }
     return ticks;
   }, [densityAxisStep, densityDomain]);
-  const displayedCorrelationCards = meaningfulCorrelations.length
-    ? meaningfulCorrelations
-    : exploratoryCorrelations;
+  const displayedCorrelationCards = filteredMeaningfulCorrelations.length
+    ? filteredMeaningfulCorrelations
+    : filteredExploratoryCorrelations;
   const isExploratoryFallback =
-    meaningfulCorrelations.length === 0 && exploratoryCorrelations.length > 0;
+    filteredMeaningfulCorrelations.length === 0 && filteredExploratoryCorrelations.length > 0;
 
   const includedQuestions = useMemo(
     () => questionLibrary.filter((question) => question.defaultIncluded),
@@ -3335,11 +3385,26 @@ function App() {
             )}
 
             <article className="panel p-6 sm:p-8">
-              <header className="mb-4">
-                <h3 className="text-lg font-semibold tracking-tight">Top Correlations</h3>
-                <p className="text-sm text-muted">
-                  Predictor values are aligned to the previous day. Outcomes are measured on the selected day.
-                </p>
+              <header className="mb-4 flex flex-wrap items-end justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-semibold tracking-tight">Top Correlations</h3>
+                  <p className="text-sm text-muted">
+                    Predictor values are aligned to the previous day. Outcomes are measured on the selected day.
+                  </p>
+                </div>
+                <label className="space-y-1 text-sm">
+                  <span className="block text-xs uppercase tracking-[0.16em] text-muted">Target variable</span>
+                  <select
+                    className="focusable min-h-11 rounded-2xl bg-subsurface px-3"
+                    value={topCorrelationOutcomeFilter}
+                    onChange={(event) => setTopCorrelationOutcomeFilter(event.target.value as TopCorrelationOutcomeFilter)}
+                  >
+                    <option value="all">All targets</option>
+                    {topCorrelationOutcomeOptions.map((option) => (
+                      <option key={option.key} value={option.key}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
               </header>
               {isExploratoryFallback && (
                 <p className="mb-3 rounded-2xl bg-[color-mix(in_srgb,var(--warning)_16%,white)] px-4 py-3 text-sm text-warning">
@@ -3348,7 +3413,9 @@ function App() {
               )}
               {!displayedCorrelationCards.length ? (
                 <p className="rounded-2xl bg-subsurface px-4 py-3 text-sm text-muted">
-                  Insufficient data for correlation cards. Keep tracking to unlock meaningful and exploratory results.
+                  {topCorrelationOutcomeFilter === "all"
+                    ? "Insufficient data for correlation cards. Keep tracking to unlock meaningful and exploratory results."
+                    : "Insufficient data for the selected target. Keep tracking to unlock meaningful and exploratory results."}
                 </p>
               ) : (
                 <div className="grid gap-3 md:grid-cols-2">
