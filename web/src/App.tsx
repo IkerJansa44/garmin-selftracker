@@ -17,6 +17,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  Bar,
   CartesianGrid,
   ComposedChart,
   Line,
@@ -56,6 +57,13 @@ import {
   mean,
 } from "./lib/mockData";
 import { mealToSleepGapMinutes, parseClockTimeToMinutes } from "./lib/time";
+import {
+  buildSleepWindowChartStats,
+  createDashboardPlotId,
+  formatOvernightClockLabel,
+  normalizeDashboardPlotPreferences as normalizeDashboardPlotPreferencesRaw,
+  type DashboardPlotChartStyle,
+} from "./lib/dashboardPlots";
 import { resolveCheckinDraftAnswers } from "./lib/checkinDraft";
 import {
   buildCorrelationCatalog,
@@ -93,7 +101,6 @@ import {
   saveQuestionSettings,
   startDateRangeImport,
   startRefreshImport,
-  type DashboardPlotPreference as ApiDashboardPlotPreference,
   type PlotAggregation,
   type PlotDirection,
   type PlotReduceMethod,
@@ -149,21 +156,38 @@ interface DashboardPlotVariableOption {
 }
 
 interface DashboardPlotPreference {
+  id: string;
   key: DashboardPlotVariableKey;
   direction: PlotDirection;
   aggregation: PlotAggregation;
   rolling: boolean;
   reduceMethod: PlotReduceMethod;
+  chartStyle: DashboardPlotChartStyle;
+}
+
+interface SleepWindowChartPoint {
+  date: string;
+  dayLabel: string;
+  sleepWindowBase: number | null;
+  sleepWindowDuration: number | null;
+  bedtimeValue: number | null;
+  wakeValue: number | null;
 }
 
 interface DashboardPlot {
+  id: string;
   key: DashboardPlotVariableKey;
   direction: PlotDirection;
   aggregation: PlotAggregation;
   rolling: boolean;
   reduceMethod: PlotReduceMethod;
+  chartStyle: DashboardPlotChartStyle;
   option: DashboardPlotVariableOption;
   points: Array<{ date: string; value: number | null }>;
+  sleepWindowPoints: SleepWindowChartPoint[] | null;
+  averageBedtime: number | null;
+  averageWakeTime: number | null;
+  sleepAxisOffsetMinutes: number;
   values: number[];
   todayValue: number | null;
   periodAverage: number | null;
@@ -210,11 +234,51 @@ const DEFAULT_RANGE_PRESET = 7;
 const TIME_STEP_MINUTES = 15;
 const TIME_SLIDER_MINUTES = { min: 0, max: 23 * 60 + 45 };
 const DEFAULT_DASHBOARD_PLOT_PREFERENCES: DashboardPlotPreference[] = [
-  { key: "metric:recoveryIndex", direction: "higher", aggregation: "daily", rolling: false, reduceMethod: "mean" },
-  { key: "metric:restingHr", direction: "lower", aggregation: "daily", rolling: false, reduceMethod: "mean" },
-  { key: "metric:stress", direction: "lower", aggregation: "daily", rolling: false, reduceMethod: "mean" },
-  { key: "metric:bodyBattery", direction: "higher", aggregation: "daily", rolling: false, reduceMethod: "mean" },
-  { key: "metric:trainingReadiness", direction: "higher", aggregation: "daily", rolling: false, reduceMethod: "mean" },
+  {
+    id: "plot_1_metric_recoveryIndex",
+    key: "metric:recoveryIndex",
+    direction: "higher",
+    aggregation: "daily",
+    rolling: false,
+    reduceMethod: "mean",
+    chartStyle: "line",
+  },
+  {
+    id: "plot_2_metric_restingHr",
+    key: "metric:restingHr",
+    direction: "lower",
+    aggregation: "daily",
+    rolling: false,
+    reduceMethod: "mean",
+    chartStyle: "line",
+  },
+  {
+    id: "plot_3_metric_stress",
+    key: "metric:stress",
+    direction: "lower",
+    aggregation: "daily",
+    rolling: false,
+    reduceMethod: "mean",
+    chartStyle: "line",
+  },
+  {
+    id: "plot_4_metric_bodyBattery",
+    key: "metric:bodyBattery",
+    direction: "higher",
+    aggregation: "daily",
+    rolling: false,
+    reduceMethod: "mean",
+    chartStyle: "line",
+  },
+  {
+    id: "plot_5_metric_trainingReadiness",
+    key: "metric:trainingReadiness",
+    direction: "higher",
+    aggregation: "daily",
+    rolling: false,
+    reduceMethod: "mean",
+    chartStyle: "line",
+  },
 ];
 const METRIC_DIRECTIONS: Record<MetricKey, MetricDirection> = {
   recoveryIndex: "higher",
@@ -299,60 +363,14 @@ function normalizeDashboardPlotPreferences(
   raw: unknown,
   fallback: DashboardPlotPreference[],
 ): DashboardPlotPreference[] {
-  if (!Array.isArray(raw)) {
-    return fallback;
-  }
-
-  const normalized: DashboardPlotPreference[] = [];
-  const seenKeys = new Set<DashboardPlotVariableKey>();
-
-  for (const entry of raw) {
-    let key: DashboardPlotVariableKey | null = null;
-    let direction: PlotDirection | null = null;
-    let aggregation: PlotAggregation = "daily";
-    let rolling = false;
-    let reduceMethod: PlotReduceMethod = "mean";
-
-    if (typeof entry === "string") {
-      key = entry as DashboardPlotVariableKey;
-      direction = defaultPlotDirection(key);
-    } else if (entry && typeof entry === "object") {
-      const objectEntry = entry as ApiDashboardPlotPreference;
-      if (typeof objectEntry.key === "string") {
-        key = objectEntry.key as DashboardPlotVariableKey;
-      }
-      if (objectEntry.direction === "higher" || objectEntry.direction === "lower") {
-        direction = objectEntry.direction;
-      }
-      if (
-        objectEntry.aggregation === "daily"
-        || objectEntry.aggregation === "3days"
-        || objectEntry.aggregation === "weekly"
-      ) {
-        aggregation = objectEntry.aggregation;
-      }
-      if (typeof objectEntry.rolling === "boolean") {
-        rolling = objectEntry.rolling;
-      }
-      if (objectEntry.reduceMethod === "mean" || objectEntry.reduceMethod === "sum") {
-        reduceMethod = objectEntry.reduceMethod;
-      }
-    }
-
-    if (!key) {
-      continue;
-    }
-    if (!direction) {
-      direction = defaultPlotDirection(key);
-    }
-    if (seenKeys.has(key)) {
-      continue;
-    }
-    seenKeys.add(key);
-    normalized.push({ key, direction, aggregation, rolling, reduceMethod });
-  }
-
-  return normalized;
+  return normalizeDashboardPlotPreferencesRaw(
+    raw,
+    fallback,
+    defaultPlotDirection,
+  ).map((plot) => ({
+    ...plot,
+    key: plot.key as DashboardPlotVariableKey,
+  }));
 }
 
 function normalizeCheckinReminderSettings(raw: unknown): CheckinReminderSettings {
@@ -383,11 +401,13 @@ function arePlotPreferencesEqual(
     return false;
   }
   return a.every((value, index) =>
-    value.key === b[index]?.key
+    value.id === b[index]?.id
+    && value.key === b[index]?.key
     && value.direction === b[index]?.direction
     && value.aggregation === b[index]?.aggregation
     && value.rolling === b[index]?.rolling
-    && value.reduceMethod === b[index]?.reduceMethod,
+    && value.reduceMethod === b[index]?.reduceMethod
+    && value.chartStyle === b[index]?.chartStyle
   );
 }
 
@@ -1060,6 +1080,28 @@ function SparklineTooltip({
   );
 }
 
+function SleepWindowTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload?: SleepWindowChartPoint }>;
+}) {
+  if (!active || !payload?.length) {
+    return null;
+  }
+  const point = payload[0]?.payload;
+  if (!point || point.bedtimeValue === null || point.wakeValue === null) {
+    return null;
+  }
+  return (
+    <div className="rounded-2xl bg-panel px-3 py-2 text-xs shadow-soft">
+      <p className="metric-number font-mono">Bed {formatOvernightClockLabel(point.bedtimeValue)}</p>
+      <p className="metric-number mt-1 font-mono">Wake {formatOvernightClockLabel(point.wakeValue)}</p>
+    </div>
+  );
+}
+
 function describeCorrelationDirection(pair: CorrelationPairResult): string {
   if (pair.direction === "similar") {
     return "No clear monotonic direction in this sample.";
@@ -1094,11 +1136,11 @@ function App() {
   const [plotSearchQuery, setPlotSearchQuery] = useState("");
   const [addPlotSearchQuery, setAddPlotSearchQuery] = useState("");
   const [pendingAddPlot, setPendingAddPlot] = useState<DashboardPlotVariableOption | null>(null);
-  const [pendingAddPlotStep, setPendingAddPlotStep] = useState<"direction" | "aggregation" | "rolling" | "reduceMethod">("direction");
+  const [pendingAddPlotStep, setPendingAddPlotStep] = useState<"direction" | "chartStyle" | "aggregation" | "rolling" | "reduceMethod">("direction");
   const [pendingAddPlotDirection, setPendingAddPlotDirection] = useState<PlotDirection>("higher");
+  const [pendingAddPlotChartStyle, setPendingAddPlotChartStyle] = useState<DashboardPlotChartStyle>("line");
   const [pendingAddPlotAggregation, setPendingAddPlotAggregation] = useState<PlotAggregation>("daily");
   const [pendingAddPlotRolling, setPendingAddPlotRolling] = useState(false);
-  const [pendingAddPlotReduceMethod, setPendingAddPlotReduceMethod] = useState<PlotReduceMethod>("mean");
   const [draftAnswers, setDraftAnswers] = usePersistentState<Record<string, string | number | boolean>>(
     "ui.checkinDraft",
     defaultDraftAnswers(),
@@ -1837,18 +1879,14 @@ function App() {
   }, [dashboardPlotOptions]);
 
   const addableDashboardPlotOptions = useMemo(() => {
-    const selected = new Set(dashboardPlotPreferences.map((plot) => plot.key));
     const query = addPlotSearchQuery.trim().toLowerCase();
     return dashboardPlotOptions.filter((option) => {
-      if (selected.has(option.key)) {
-        return false;
-      }
       if (!query) {
         return true;
       }
       return option.label.toLowerCase().includes(query) || option.key.toLowerCase().includes(query);
     });
-  }, [addPlotSearchQuery, dashboardPlotOptions, dashboardPlotPreferences]);
+  }, [addPlotSearchQuery, dashboardPlotOptions]);
   const dashboardPlots = useMemo<DashboardPlot[]>(
     () => {
       function aggregatePlotPoints(
@@ -1900,15 +1938,28 @@ function App() {
           const baselineHint = metricSummary?.baselineHint
             ?? `Average based on ${values.length} of ${points.length} samples.`;
           const comparison = describeDashboardVsAverage(plotPreference.direction, option, delta, rangePreset);
-          const yAxis = computeYAxisStats(values);
+          const sleepWindowStats = plotPreference.key === "garmin:sleepConsistency"
+            && plotPreference.chartStyle === "sleepWindowBars"
+            ? buildSleepWindowChartStats(records)
+            : null;
+          const yAxis = sleepWindowStats ? {
+            domain: sleepWindowStats.domain,
+            ticks: sleepWindowStats.ticks,
+          } : computeYAxisStats(values);
           return {
+            id: plotPreference.id,
             key: plotPreference.key,
             direction: plotPreference.direction,
+            chartStyle: plotPreference.chartStyle,
             aggregation: plotPreference.aggregation,
             rolling: plotPreference.rolling,
             reduceMethod: plotPreference.reduceMethod,
             option,
             points,
+            sleepWindowPoints: sleepWindowStats?.points ?? null,
+            averageBedtime: sleepWindowStats?.averageBedtime ?? null,
+            averageWakeTime: sleepWindowStats?.averageWakeTime ?? null,
+            sleepAxisOffsetMinutes: sleepWindowStats?.axisOffsetMinutes ?? 0,
             values,
             todayValue,
             periodAverage,
@@ -2428,9 +2479,9 @@ function App() {
     setPendingAddPlot(option);
     setPendingAddPlotStep("direction");
     setPendingAddPlotDirection("higher");
+    setPendingAddPlotChartStyle("line");
     setPendingAddPlotAggregation("daily");
     setPendingAddPlotRolling(false);
-    setPendingAddPlotReduceMethod("mean");
     setShowAddPlotMenu(false);
   };
 
@@ -2446,20 +2497,28 @@ function App() {
   const handleAddDashboardPlot = (
     plotKey: DashboardPlotVariableKey,
     direction: PlotDirection,
+    chartStyle: DashboardPlotChartStyle,
     aggregation: PlotAggregation,
     rolling: boolean,
     reduceMethod: PlotReduceMethod,
   ) => {
-    setDashboardPlotPreferences((previous) => (
-      previous.some((plot) => plot.key === plotKey)
-        ? previous
-        : [...previous, { key: plotKey, direction, aggregation, rolling, reduceMethod }]
-    ));
+    setDashboardPlotPreferences((previous) => [
+      ...previous,
+      {
+        id: createDashboardPlotId(),
+        key: plotKey,
+        direction,
+        chartStyle,
+        aggregation,
+        rolling,
+        reduceMethod,
+      },
+    ]);
     setPendingAddPlot(null);
   };
 
-  const handleRemoveDashboardPlot = (plotKey: DashboardPlotVariableKey) => {
-    setDashboardPlotPreferences((previous) => previous.filter((plot) => plot.key !== plotKey));
+  const handleRemoveDashboardPlot = (plotId: string) => {
+    setDashboardPlotPreferences((previous) => previous.filter((plot) => plot.id !== plotId));
   };
 
   const handleDashboardPlotSortEnd = (event: DragEndEvent) => {
@@ -2469,8 +2528,8 @@ function App() {
     }
 
     setDashboardPlotPreferences((previous) => {
-      const oldIndex = previous.findIndex((plot) => plot.key === active.id);
-      const newIndex = previous.findIndex((plot) => plot.key === over.id);
+      const oldIndex = previous.findIndex((plot) => plot.id === active.id);
+      const newIndex = previous.findIndex((plot) => plot.id === over.id);
       if (oldIndex === -1 || newIndex === -1) {
         return previous;
       }
@@ -2948,9 +3007,7 @@ function App() {
                         </div>
                       ) : (
                         <p className="px-2 py-2 text-sm text-muted">
-                          {addPlotSearchQuery.trim()
-                            ? "No plots match your search."
-                            : "All variables are already plotted."}
+                          No plots match your search.
                         </p>
                       )}
                     </div>
@@ -2968,7 +3025,11 @@ function App() {
                               type="button"
                               onClick={() => {
                                 setPendingAddPlotDirection("higher");
-                                setPendingAddPlotStep("aggregation");
+                                setPendingAddPlotStep(
+                                  pendingAddPlot.key === "garmin:sleepConsistency"
+                                    ? "chartStyle"
+                                    : "aggregation",
+                                );
                               }}
                             >
                               Higher better
@@ -2978,10 +3039,45 @@ function App() {
                               type="button"
                               onClick={() => {
                                 setPendingAddPlotDirection("lower");
-                                setPendingAddPlotStep("aggregation");
+                                setPendingAddPlotStep(
+                                  pendingAddPlot.key === "garmin:sleepConsistency"
+                                    ? "chartStyle"
+                                    : "aggregation",
+                                );
                               }}
                             >
                               Lower better
+                            </button>
+                          </div>
+                        </>
+                      )}
+                      {pendingAddPlotStep === "chartStyle" && (
+                        <>
+                          <p className="mt-1 text-xs text-muted">Choose the Sleep Consistency chart style.</p>
+                          <div className="mt-3 grid grid-cols-2 gap-2">
+                            <button
+                              className="focusable min-h-10 rounded-xl bg-accent px-3 text-xs font-semibold text-white"
+                              type="button"
+                              onClick={() => {
+                                setPendingAddPlotChartStyle("line");
+                                setPendingAddPlotStep("aggregation");
+                              }}
+                            >
+                              Line
+                            </button>
+                            <button
+                              className="focusable min-h-10 rounded-xl bg-subsurface px-3 text-xs font-semibold text-ink"
+                              type="button"
+                              onClick={() => handleAddDashboardPlot(
+                                pendingAddPlot.key,
+                                pendingAddPlotDirection,
+                                "sleepWindowBars",
+                                "daily",
+                                false,
+                                "mean",
+                              )}
+                            >
+                              Bed/Wake bars
                             </button>
                           </div>
                         </>
@@ -2993,7 +3089,14 @@ function App() {
                             <button
                               className="focusable min-h-10 rounded-xl bg-accent px-3 text-xs font-semibold text-white"
                               type="button"
-                              onClick={() => handleAddDashboardPlot(pendingAddPlot.key, pendingAddPlotDirection, "daily", false, "mean")}
+                              onClick={() => handleAddDashboardPlot(
+                                pendingAddPlot.key,
+                                pendingAddPlotDirection,
+                                pendingAddPlotChartStyle,
+                                "daily",
+                                false,
+                                "mean",
+                              )}
                             >
                               Daily
                             </button>
@@ -3054,14 +3157,28 @@ function App() {
                             <button
                               className="focusable min-h-10 rounded-xl bg-accent px-3 text-xs font-semibold text-white"
                               type="button"
-                              onClick={() => handleAddDashboardPlot(pendingAddPlot.key, pendingAddPlotDirection, pendingAddPlotAggregation, pendingAddPlotRolling, "mean")}
+                              onClick={() => handleAddDashboardPlot(
+                                pendingAddPlot.key,
+                                pendingAddPlotDirection,
+                                pendingAddPlotChartStyle,
+                                pendingAddPlotAggregation,
+                                pendingAddPlotRolling,
+                                "mean",
+                              )}
                             >
                               Average
                             </button>
                             <button
                               className="focusable min-h-10 rounded-xl bg-subsurface px-3 text-xs font-semibold text-ink"
                               type="button"
-                              onClick={() => handleAddDashboardPlot(pendingAddPlot.key, pendingAddPlotDirection, pendingAddPlotAggregation, pendingAddPlotRolling, "sum")}
+                              onClick={() => handleAddDashboardPlot(
+                                pendingAddPlot.key,
+                                pendingAddPlotDirection,
+                                pendingAddPlotChartStyle,
+                                pendingAddPlotAggregation,
+                                pendingAddPlotRolling,
+                                "sum",
+                              )}
                             >
                               Sum
                             </button>
@@ -3109,14 +3226,14 @@ function App() {
 
               <DndContext sensors={sensors} onDragEnd={handleDashboardPlotSortEnd}>
                 <SortableContext
-                  items={filteredDashboardPlots.map((plot) => plot.key)}
+                  items={filteredDashboardPlots.map((plot) => plot.id)}
                   strategy={rectSortingStrategy}
                 >
                   {filteredDashboardPlots.length ? (
                     <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                       {filteredDashboardPlots.map((plot) => (
                         <SortableDashboardPlotItem
-                          key={plot.key}
+                          key={plot.id}
                           dataStatus={dataStatus}
                           importState={todayRecord.importState}
                           plot={plot}
@@ -4023,17 +4140,24 @@ function SortableDashboardPlotItem({
   plot: DashboardPlot;
   rangePreset: number;
   onOpenStatus: () => void;
-  onRemove: (plotKey: DashboardPlotVariableKey) => void;
+  onRemove: (plotId: string) => void;
 }) {
-  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: plot.key });
+  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: plot.id });
   const coverageMeta = COVERAGE_META[plot.coverage];
   const isMissing = plot.coverage === "missing";
   const isPartial = plot.coverage === "partial";
   const loadingState = importState === "running" && plot.coverage !== "complete";
   const errorState = (importState === "failed" || dataStatus === "error") && isMissing;
+  const showSleepWindowBars = plot.chartStyle === "sleepWindowBars" && plot.sleepWindowPoints !== null;
+  const sleepAverageTicks = showSleepWindowBars
+    ? Array.from(new Set([plot.averageBedtime, plot.averageWakeTime].filter((value): value is number => value !== null)))
+      .sort((left, right) => left - right)
+    : [];
 
   const aggregationLabel =
-    plot.aggregation === "3days"
+    showSleepWindowBars
+      ? "Bed/Wake bars"
+      : plot.aggregation === "3days"
       ? plot.rolling
         ? `3-day rolling ${plot.reduceMethod === "sum" ? "sum" : "avg"}`
         : `3-day periods ${plot.reduceMethod === "sum" ? "sum" : "avg"}`
@@ -4074,7 +4198,7 @@ function SortableDashboardPlotItem({
             aria-label={`Remove ${plot.option.label} plot`}
             className="focusable min-h-9 rounded-capsule bg-subsurface px-3 text-muted transition hover:text-ink"
             type="button"
-            onClick={() => onRemove(plot.key)}
+            onClick={() => onRemove(plot.id)}
           >
             <X className="size-4" />
           </button>
@@ -4092,35 +4216,97 @@ function SortableDashboardPlotItem({
 
       <div className="mt-4 h-16">
         <ResponsiveContainer>
-          <ComposedChart data={plot.points}>
-            <YAxis
-              allowDecimals={false}
-              axisLine={{ stroke: "rgba(18,18,18,0.28)", strokeWidth: 1 }}
-              domain={plot.domain}
-              interval={0}
-              tickLine={false}
-              tick={{ fontSize: 10 }}
-              ticks={plot.ticks}
-              width={34}
-            />
-            {plot.periodAverage !== null && (
-              <ReferenceLine
-                ifOverflow="extendDomain"
-                stroke="rgba(18,18,18,0.45)"
-                strokeDasharray="4 4"
-                strokeWidth={1}
-                y={plot.periodAverage}
+          {showSleepWindowBars ? (
+            <ComposedChart
+              barCategoryGap="25%"
+              barGap={0}
+              data={plot.sleepWindowPoints ?? []}
+              margin={{ top: 2, right: 4, bottom: 2, left: 6 }}
+            >
+              <YAxis
+                allowDecimals={false}
+                axisLine={{ stroke: "rgba(18,18,18,0.28)", strokeWidth: 1 }}
+                domain={plot.domain}
+                interval={0}
+                reversed
+                tickFormatter={(value) =>
+                  formatOvernightClockLabel(Number(value) + plot.sleepAxisOffsetMinutes)}
+                tickLine={false}
+                tick={{ fontSize: 10 }}
+                ticks={sleepAverageTicks.length ? sleepAverageTicks : plot.ticks}
+                width={38}
               />
-            )}
-            <Line
-              dataKey="value"
-              dot={false}
-              stroke={plot.option.color}
-              strokeWidth={2}
-              type="monotone"
-            />
-            <Tooltip content={<SparklineTooltip plotKey={plot.key} />} />
-          </ComposedChart>
+              {plot.averageBedtime !== null && (
+                <ReferenceLine
+                  className="sleep-avg-bedtime-line"
+                  data-testid="sleep-avg-bedtime-line"
+                  ifOverflow="extendDomain"
+                  stroke="rgba(18,18,18,0.45)"
+                  strokeDasharray="4 4"
+                  strokeWidth={1}
+                  y={plot.averageBedtime}
+                />
+              )}
+              {plot.averageWakeTime !== null && (
+                <ReferenceLine
+                  className="sleep-avg-waketime-line"
+                  data-testid="sleep-avg-waketime-line"
+                  ifOverflow="extendDomain"
+                  stroke="rgba(18,18,18,0.45)"
+                  strokeDasharray="4 4"
+                  strokeWidth={1}
+                  y={plot.averageWakeTime}
+                />
+              )}
+              <Bar
+                dataKey="sleepWindowBase"
+                fill="transparent"
+                isAnimationActive={false}
+                stackId={`sleep-window-${plot.id}`}
+              />
+              <Bar
+                className="sleep-night-window-bar"
+                data-testid="sleep-night-window-bar"
+                dataKey="sleepWindowDuration"
+                fill={plot.option.color}
+                isAnimationActive={false}
+                maxBarSize={16}
+                radius={[6, 6, 6, 6]}
+                stackId={`sleep-window-${plot.id}`}
+              />
+              <Tooltip content={<SleepWindowTooltip />} />
+            </ComposedChart>
+          ) : (
+            <ComposedChart data={plot.points}>
+              <YAxis
+                allowDecimals={false}
+                axisLine={{ stroke: "rgba(18,18,18,0.28)", strokeWidth: 1 }}
+                domain={plot.domain}
+                interval={0}
+                tickLine={false}
+                tick={{ fontSize: 10 }}
+                ticks={plot.ticks}
+                width={34}
+              />
+              {plot.periodAverage !== null && (
+                <ReferenceLine
+                  ifOverflow="extendDomain"
+                  stroke="rgba(18,18,18,0.45)"
+                  strokeDasharray="4 4"
+                  strokeWidth={1}
+                  y={plot.periodAverage}
+                />
+              )}
+              <Line
+                dataKey="value"
+                dot={false}
+                stroke={plot.option.color}
+                strokeWidth={2}
+                type="monotone"
+              />
+              <Tooltip content={<SparklineTooltip plotKey={plot.key} />} />
+            </ComposedChart>
+          )}
         </ResponsiveContainer>
       </div>
 

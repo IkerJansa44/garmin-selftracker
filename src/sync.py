@@ -108,7 +108,9 @@ def run_sync(
             metrics = normalize_daily_metrics(day_payload)
             if zone_bounds is not None:
                 metrics.update(
-                    compute_zone_minutes(day_payload.endpoints.get("heart_rates"), zone_bounds)
+                    compute_zone_minutes(
+                        day_payload.endpoints.get("heart_rates"), zone_bounds
+                    )
                 )
             upsert_daily_metrics(connection, metrics)
             for activity in normalize_activities(day_payload):

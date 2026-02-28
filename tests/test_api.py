@@ -383,8 +383,24 @@ def test_normalize_dashboard_plots_payload_accepts_key_direction_entries() -> No
 
     normalized = _normalize_dashboard_plots_payload(payload)
     assert normalized == [
-        {"key": "metric:recoveryIndex", "direction": "higher", "aggregation": "daily", "rolling": False},
-        {"key": "metric:stress", "direction": "lower", "aggregation": "daily", "rolling": False},
+        {
+            "id": "plot_1_metric_recoveryIndex",
+            "key": "metric:recoveryIndex",
+            "direction": "higher",
+            "aggregation": "daily",
+            "rolling": False,
+            "reduceMethod": "mean",
+            "chartStyle": "line",
+        },
+        {
+            "id": "plot_2_metric_stress",
+            "key": "metric:stress",
+            "direction": "lower",
+            "aggregation": "daily",
+            "rolling": False,
+            "reduceMethod": "mean",
+            "chartStyle": "line",
+        },
     ]
 
 
@@ -393,9 +409,33 @@ def test_normalize_dashboard_plots_payload_supports_legacy_key_list() -> None:
 
     normalized = _normalize_dashboard_plots_payload(payload)
     assert normalized == [
-        {"key": "metric:stress", "direction": "lower", "aggregation": "daily", "rolling": False},
-        {"key": "garmin:sleepConsistency", "direction": "lower", "aggregation": "daily", "rolling": False},
-        {"key": "question:mood", "direction": "higher", "aggregation": "daily", "rolling": False},
+        {
+            "id": "plot_1_metric_stress",
+            "key": "metric:stress",
+            "direction": "lower",
+            "aggregation": "daily",
+            "rolling": False,
+            "reduceMethod": "mean",
+            "chartStyle": "line",
+        },
+        {
+            "id": "plot_2_garmin_sleepConsistency",
+            "key": "garmin:sleepConsistency",
+            "direction": "lower",
+            "aggregation": "daily",
+            "rolling": False,
+            "reduceMethod": "mean",
+            "chartStyle": "line",
+        },
+        {
+            "id": "plot_3_question_mood",
+            "key": "question:mood",
+            "direction": "higher",
+            "aggregation": "daily",
+            "rolling": False,
+            "reduceMethod": "mean",
+            "chartStyle": "line",
+        },
     ]
 
 
@@ -403,6 +443,34 @@ def test_normalize_dashboard_plots_payload_rejects_invalid_direction() -> None:
     payload = [{"key": "metric:recoveryIndex", "direction": "sideways"}]
 
     assert _normalize_dashboard_plots_payload(payload) is None
+
+
+def test_normalize_dashboard_plots_payload_rejects_invalid_chart_style() -> None:
+    payload = [{"key": "garmin:sleepConsistency", "chartStyle": "candlestick"}]
+
+    assert _normalize_dashboard_plots_payload(payload) is None
+
+
+def test_normalize_dashboard_plots_payload_rejects_invalid_reduce_method() -> None:
+    payload = [{"key": "metric:stress", "reduceMethod": "median"}]
+
+    assert _normalize_dashboard_plots_payload(payload) is None
+
+
+def test_normalize_dashboard_plots_payload_allows_duplicate_keys_with_unique_ids() -> (
+    None
+):
+    payload = [
+        {"id": "plot-a", "key": "metric:stress", "direction": "lower"},
+        {"id": "plot-b", "key": "metric:stress", "direction": "higher"},
+    ]
+
+    normalized = _normalize_dashboard_plots_payload(payload)
+    assert normalized is not None
+    assert len(normalized) == 2
+    assert normalized[0]["id"] == "plot-a"
+    assert normalized[1]["id"] == "plot-b"
+    assert normalized[0]["key"] == normalized[1]["key"] == "metric:stress"
 
 
 def test_normalize_checkin_reminder_settings_payload_accepts_valid_payload() -> None:
@@ -450,8 +518,33 @@ def test_checkin_reminder_settings_save_and_load_roundtrip(tmp_path: Path) -> No
 def test_dashboard_plot_settings_save_and_load_roundtrip(tmp_path: Path) -> None:
     db_path = tmp_path / "garmin.db"
     payload = [
-        {"key": "metric:recoveryIndex", "direction": "higher", "aggregation": "weekly", "rolling": True},
-        {"key": "question:felt_energized_during_day", "direction": "lower", "aggregation": "3days", "rolling": False},
+        {
+            "id": "plot-a",
+            "key": "metric:recoveryIndex",
+            "direction": "higher",
+            "aggregation": "weekly",
+            "rolling": True,
+            "reduceMethod": "sum",
+            "chartStyle": "line",
+        },
+        {
+            "id": "plot-b",
+            "key": "metric:recoveryIndex",
+            "direction": "lower",
+            "aggregation": "3days",
+            "rolling": False,
+            "reduceMethod": "mean",
+            "chartStyle": "sleepWindowBars",
+        },
+        {
+            "id": "plot-c",
+            "key": "question:felt_energized_during_day",
+            "direction": "lower",
+            "aggregation": "3days",
+            "rolling": False,
+            "reduceMethod": "mean",
+            "chartStyle": "line",
+        },
     ]
 
     saved = _save_dashboard_plots_payload(str(db_path), payload)

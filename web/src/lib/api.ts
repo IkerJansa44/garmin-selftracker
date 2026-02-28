@@ -61,12 +61,16 @@ export type PlotAggregation = "daily" | "3days" | "weekly";
 
 export type PlotReduceMethod = "mean" | "sum";
 
+export type PlotChartStyle = "line" | "sleepWindowBars";
+
 export interface DashboardPlotPreference {
+  id?: string;
   key: string;
   direction: PlotDirection;
   aggregation?: PlotAggregation;
   rolling?: boolean;
   reduceMethod?: PlotReduceMethod;
+  chartStyle?: PlotChartStyle;
 }
 
 interface DashboardPlotsApiResponse {

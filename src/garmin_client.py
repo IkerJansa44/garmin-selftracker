@@ -45,14 +45,20 @@ class GarminConnectAdapter:
             return None
         try:
             sorted_zones = sorted(result, key=lambda z: z.get("zoneNumber", 0))
-            bounds = [int(z["zoneLowBoundary"]) for z in sorted_zones if "zoneLowBoundary" in z]
+            bounds = [
+                int(z["zoneLowBoundary"])
+                for z in sorted_zones
+                if "zoneLowBoundary" in z
+            ]
         except (KeyError, TypeError, ValueError):
             return None
         if not bounds:
             return None
         return bounds
 
-    def fetch_hr_zones_from_recent_activities(self, limit: int = 20) -> list[int] | None:
+    def fetch_hr_zones_from_recent_activities(
+        self, limit: int = 20
+    ) -> list[int] | None:
         """Fetch HR zone bounds from the most recent activities.
 
         Used as a one-time bootstrap when no zone bounds are stored yet.
