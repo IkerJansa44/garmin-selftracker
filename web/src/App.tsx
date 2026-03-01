@@ -198,16 +198,27 @@ interface DashboardPlot {
   ticks: number[];
 }
 
-interface CorrelationTooltipEntry {
-  name?: string;
-  value?: number | string;
-  dataKey?: string | number;
-  payload?: {
-    date?: string;
-    predictorSourceDate?: string;
-    outcomeSourceDate?: string;
+interface CorrelationTooltipSection {
+  title: string;
+  sourceDateLabel: string | null;
+  items: Array<{ label: string; value: string }>;
+}
+
+interface ActiveCorrelationTooltip {
+  point: {
+    x: number;
+    y: number;
+    date: string;
+    predictorSourceDate: string;
+    outcomeSourceDate: string;
+  };
+  position: {
+    x: number;
+    y: number;
   };
 }
+
+const MEAL_TO_SLEEP_TOOLTIP_LABEL = "Time Between Eating & Sleep";
 
 const IMPORT_STATUS_LABELS: Record<ImportState, string> = {
   ok: "OK",
@@ -578,6 +589,22 @@ function computeYAxisStats(values: number[]): { domain: [number, number]; ticks:
   };
 }
 
+function computeNumericDomain(values: number[]): [number, number] | undefined {
+  if (!values.length) {
+    return undefined;
+  }
+  const minimum = Math.min(...values);
+  const maximum = Math.max(...values);
+  if (!Number.isFinite(minimum) || !Number.isFinite(maximum)) {
+    return undefined;
+  }
+  if (minimum === maximum) {
+    const padding = minimum === 0 ? 1 : Math.max(Math.abs(minimum) * 0.05, 0.5);
+    return [minimum - padding, maximum + padding];
+  }
+  return [minimum, maximum];
+}
+
 function parseQuestionPlotValue(
   question: QuestionFieldDefinition,
   value: unknown,
@@ -717,6 +744,156 @@ function formatSecondsAsHours(seconds: number | null): string {
     return "--";
   }
   return formatMinutesAsHours(Math.round(seconds / 60));
+}
+
+function formatTooltipNumber(value: number): string {
+  return value.toLocaleString(undefined, {
+    maximumFractionDigits: Number.isInteger(value) ? 0 : 2,
+  });
+}
+
+function formatGarminAnalysisValue(key: GarminPlotKey, value: AnalysisValueRecord): string {
+  if (key === "isTrainingDay") {
+    return value.valueBool ? "Yes" : "No";
+  }
+  if (typeof value.valueNum !== "number" || !Number.isFinite(value.valueNum)) {
+    return "--";
+  }
+  if (key === "sleepSeconds") {
+    return formatSecondsAsHours(value.valueNum);
+  }
+  const meta = GARMIN_PLOT_META[key];
+  const formatted = formatTooltipNumber(value.valueNum);
+  return meta.unit ? `${formatted} ${meta.unit}` : formatted;
+}
+
+function formatQuestionAnalysisValue(
+  question: QuestionFieldDefinition,
+  value: AnalysisValueRecord,
+): string {
+  if (question.inputType === "boolean") {
+    return value.valueBool === null ? "--" : value.valueBool ? "Yes" : "No";
+  }
+  if (question.inputType === "time") {
+    if (value.valueText) {
+      return value.valueText;
+    }
+    return typeof value.valueNum === "number" && Number.isFinite(value.valueNum)
+      ? formatMinutesAsClock(Math.round(value.valueNum))
+      : "--";
+  }
+  if (question.inputType === "multi-choice") {
+    if (value.valueText) {
+      return question.options?.find((option) => option.id === value.valueText)?.label ?? value.valueText;
+    }
+    if (typeof value.valueNum === "number" && Number.isFinite(value.valueNum)) {
+      const matchingOption = question.options?.find((option) => option.score === value.valueNum);
+      return matchingOption?.label ?? formatTooltipNumber(value.valueNum);
+    }
+    return "--";
+  }
+  if (typeof value.valueNum === "number" && Number.isFinite(value.valueNum)) {
+    return formatTooltipNumber(value.valueNum);
+  }
+  return value.valueText ?? "--";
+}
+
+function getAnalysisValueLabel(
+  featureKey: string,
+  questionFieldsById: Map<string, QuestionFieldDefinition>,
+): string {
+  if (featureKey.startsWith("metric:")) {
+    return getMetricLabel(featureKey.slice(7) as MetricKey);
+  }
+  if (featureKey.startsWith("garmin:")) {
+    const key = featureKey.slice(7) as GarminPlotKey;
+    return GARMIN_PLOT_META[key]?.label ?? featureKey;
+  }
+  if (featureKey.startsWith("question:")) {
+    return questionFieldsById.get(featureKey.slice(9))?.prompt ?? featureKey;
+  }
+  return featureKey;
+}
+
+function formatAnalysisValue(
+  value: AnalysisValueRecord,
+  questionFieldsById: Map<string, QuestionFieldDefinition>,
+): string {
+  if (value.featureKey.startsWith("metric:")) {
+    return formatMetricValue(value.featureKey.slice(7) as MetricKey, value.valueNum);
+  }
+  if (value.featureKey.startsWith("garmin:")) {
+    return formatGarminAnalysisValue(value.featureKey.slice(7) as GarminPlotKey, value);
+  }
+  if (value.featureKey.startsWith("question:")) {
+    const question = questionFieldsById.get(value.featureKey.slice(9));
+    if (!question) {
+      return value.valueText
+        ?? (typeof value.valueNum === "number" && Number.isFinite(value.valueNum)
+          ? formatTooltipNumber(value.valueNum)
+          : value.valueBool === null
+            ? "--"
+            : value.valueBool ? "Yes" : "No");
+    }
+    return formatQuestionAnalysisValue(question, value);
+  }
+  if (typeof value.valueNum === "number" && Number.isFinite(value.valueNum)) {
+    return formatTooltipNumber(value.valueNum);
+  }
+  if (value.valueBool !== null) {
+    return value.valueBool ? "Yes" : "No";
+  }
+  return value.valueText ?? "--";
+}
+
+function summarizeAnalysisSourceDates(values: AnalysisValueRecord[]): string | null {
+  const dates = Array.from(new Set(values.map((value) => value.sourceDate).filter(Boolean)));
+  if (!dates.length) {
+    return null;
+  }
+  if (dates.length === 1) {
+    return formatReadableDate(dates[0]);
+  }
+  return `${formatReadableDate(dates[0])} - ${formatReadableDate(dates[dates.length - 1])}`;
+}
+
+function appendTooltipItem(
+  items: Array<{ label: string; value: string }>,
+  label: string,
+  value: string,
+): Array<{ label: string; value: string }> {
+  if (items.some((item) => item.label === label)) {
+    return items;
+  }
+  return [...items, { label, value }];
+}
+
+function formatCorrelationPredictorValue(
+  point: { x: number },
+  pair: CorrelationPairResult | null,
+  predictorKey: PredictorKey,
+): string {
+  if (pair?.testType === "categorical") {
+    const categoryLabel = pair.categoryLabels?.[Math.round(point.x)];
+    return categoryLabel ?? formatTooltipNumber(point.x);
+  }
+  if (predictorKey === "garmin:sleepSeconds") {
+    return formatHoursAsHoursMinutes(point.x);
+  }
+  if (predictorKey === "garmin:mealToSleepGapMinutes") {
+    return formatMinutesAsHours(Math.round(point.x));
+  }
+  return formatTooltipNumber(point.x);
+}
+
+function formatCorrelationOutcomeValue(
+  point: { y: number },
+  outcomeKey: OutcomeKey,
+): string {
+  if (outcomeKey.startsWith("metric:")) {
+    return formatMetricValue(outcomeKey.slice(7) as MetricKey, point.y);
+  }
+  return formatTooltipNumber(point.y);
 }
 
 function formatIsoClockTimeLocal(value: string): string | null {
@@ -1199,6 +1376,7 @@ function App() {
   const [dataError, setDataError] = useState<string | null>(null);
   const [predictorKey, setPredictorKey] = useState<PredictorKey>("garmin:steps");
   const [outcomeKey, setOutcomeKey] = useState<OutcomeKey>("metric:recoveryIndex");
+  const [activeCorrelationTooltip, setActiveCorrelationTooltip] = useState<ActiveCorrelationTooltip | null>(null);
   const [topCorrelationOutcomeFilter, setTopCorrelationOutcomeFilter] = useState<TopCorrelationOutcomeFilter>(
     DEFAULT_TOP_CORRELATION_OUTCOME,
   );
@@ -1229,8 +1407,64 @@ function App() {
     return formatIsoDateLocal(start);
   });
   const [importToDate, setImportToDate] = useState(() => formatIsoDateLocal(new Date()));
+  const correlationChartRef = useRef<HTMLDivElement | null>(null);
+  const correlationTooltipHideTimeoutRef = useRef<number | null>(null);
 
   const sensors = useSensors(useSensor(PointerSensor));
+
+  const clearCorrelationTooltipHideTimeout = useCallback(() => {
+    if (correlationTooltipHideTimeoutRef.current !== null) {
+      window.clearTimeout(correlationTooltipHideTimeoutRef.current);
+      correlationTooltipHideTimeoutRef.current = null;
+    }
+  }, []);
+
+  const scheduleCorrelationTooltipHide = useCallback(() => {
+    clearCorrelationTooltipHideTimeout();
+    correlationTooltipHideTimeoutRef.current = window.setTimeout(() => {
+      correlationTooltipHideTimeoutRef.current = null;
+      setActiveCorrelationTooltip(null);
+    }, 180);
+  }, [clearCorrelationTooltipHideTimeout]);
+
+  const handleCorrelationTooltipEnter = useCallback(() => {
+    clearCorrelationTooltipHideTimeout();
+  }, [clearCorrelationTooltipHideTimeout]);
+
+  const handleCorrelationTooltipLeave = useCallback(() => {
+    scheduleCorrelationTooltipHide();
+  }, [scheduleCorrelationTooltipHide]);
+
+  const handleCorrelationPointEnter = useCallback((entry: {
+    payload?: ActiveCorrelationTooltip["point"];
+    tooltipPosition?: { x?: number; y?: number };
+  }) => {
+    clearCorrelationTooltipHideTimeout();
+    if (
+      !entry.payload
+      || typeof entry.tooltipPosition?.x !== "number"
+      || typeof entry.tooltipPosition?.y !== "number"
+    ) {
+      return;
+    }
+    setActiveCorrelationTooltip({
+      point: entry.payload,
+      position: {
+        x: entry.tooltipPosition.x,
+        y: entry.tooltipPosition.y,
+      },
+    });
+  }, [clearCorrelationTooltipHideTimeout]);
+
+  const handleCorrelationPointLeave = useCallback(() => {
+    scheduleCorrelationTooltipHide();
+  }, [scheduleCorrelationTooltipHide]);
+
+  useEffect(() => () => {
+    if (correlationTooltipHideTimeoutRef.current !== null) {
+      window.clearTimeout(correlationTooltipHideTimeoutRef.current);
+    }
+  }, []);
 
   const loadDashboardData = useCallback(
     async ({
@@ -1817,6 +2051,27 @@ function App() {
     () => new Map(questionFields.map((field) => [field.id, field])),
     [questionFields],
   );
+  const allRecordsByDate = useMemo(
+    () => new Map(allRecords.map((record) => [record.date, record])),
+    [allRecords],
+  );
+  const correlationDetailsByDate = useMemo(() => {
+    const grouped = new Map<string, { predictor: AnalysisValueRecord[]; target: AnalysisValueRecord[] }>();
+    for (const value of analysisValues) {
+      const bucket = grouped.get(value.analysisDate) ?? { predictor: [], target: [] };
+      bucket[value.role === "predictor" ? "predictor" : "target"].push(value);
+      grouped.set(value.analysisDate, bucket);
+    }
+    for (const bucket of grouped.values()) {
+      const sortByLabel = (left: AnalysisValueRecord, right: AnalysisValueRecord) =>
+        getAnalysisValueLabel(left.featureKey, questionFieldsById).localeCompare(
+          getAnalysisValueLabel(right.featureKey, questionFieldsById),
+        );
+      bucket.predictor.sort(sortByLabel);
+      bucket.target.sort(sortByLabel);
+    }
+    return grouped;
+  }, [analysisValues, questionFieldsById]);
   const dashboardPlotOptions = useMemo<DashboardPlotVariableOption[]>(
     () => [
       ...METRICS.map((metric) => ({
@@ -2022,20 +2277,13 @@ function App() {
     if (!selectedCorrelationPair || selectedCorrelationPair.testType !== "continuous") {
       return undefined;
     }
-    if (!selectedCorrelationPair.points.length) {
+    return computeNumericDomain(selectedCorrelationPair.points.map((point) => point.x));
+  }, [selectedCorrelationPair]);
+  const correlationExplorerYDomain = useMemo<[number, number] | undefined>(() => {
+    if (!selectedCorrelationPair) {
       return undefined;
     }
-    const xs = selectedCorrelationPair.points.map((point) => point.x);
-    const minX = Math.min(...xs);
-    const maxX = Math.max(...xs);
-    if (!Number.isFinite(minX) || !Number.isFinite(maxX)) {
-      return undefined;
-    }
-    if (minX === maxX) {
-      const padding = minX === 0 ? 1 : Math.max(Math.abs(minX) * 0.05, 0.5);
-      return [minX - padding, maxX + padding];
-    }
-    return [minX, maxX];
+    return computeNumericDomain(selectedCorrelationPair.points.map((point) => point.y));
   }, [selectedCorrelationPair]);
   const trendLineData = useMemo(() => {
     if (
@@ -2087,66 +2335,89 @@ function App() {
       ))
       .filter((entry): entry is { x: number; xJittered: number; y: number } => entry !== null);
   }, [selectedCorrelationPair]);
-  const renderCorrelationTooltip = useCallback(({ active, payload }: {
-    active?: boolean;
-    payload?: CorrelationTooltipEntry[];
-  }) => {
-    if (!active || !payload?.length) {
+  const activeCorrelationTooltipContent = useMemo(() => {
+    if (!activeCorrelationTooltip) {
       return null;
     }
-    const point = payload.find((entry) => (
-      entry.payload?.predictorSourceDate && entry.payload?.outcomeSourceDate
-    ))?.payload ?? payload.find((entry) => entry.payload?.date)?.payload;
-    let predictorSourceDate = point?.predictorSourceDate;
-    let outcomeSourceDate = point?.outcomeSourceDate;
-    let date = point?.date;
-    if ((!predictorSourceDate || !outcomeSourceDate || !date) && selectedCorrelationPair) {
-      const xEntry = payload.find((entry) => (
-        entry.dataKey === "x" || entry.dataKey === "xJittered"
-      ));
-      const yEntry = payload.find((entry) => entry.dataKey === "y");
-      const xValue = Number(xEntry?.value);
-      const yValue = Number(yEntry?.value);
-      if (Number.isFinite(xValue) && Number.isFinite(yValue)) {
-        const matchedPoint = selectedCorrelationPair.points.find((candidate) => (
-          Math.abs(candidate.x - xValue) < 1e-6 && Math.abs(candidate.y - yValue) < 1e-6
-        ));
-        if (matchedPoint) {
-          predictorSourceDate = matchedPoint.predictorSourceDate;
-          outcomeSourceDate = matchedPoint.outcomeSourceDate;
-          date = matchedPoint.date;
-        }
-      }
+    const details = correlationDetailsByDate.get(activeCorrelationTooltip.point.date);
+    const hoveredRecord = allRecordsByDate.get(activeCorrelationTooltip.point.date);
+    let predictorItems = (details?.predictor ?? []).map((value) => ({
+      label: getAnalysisValueLabel(value.featureKey, questionFieldsById),
+      value: formatAnalysisValue(value, questionFieldsById),
+    }));
+    if (hoveredRecord?.predictors.mealToSleepGapMinutes !== null && hoveredRecord?.predictors.mealToSleepGapMinutes !== undefined) {
+      predictorItems = appendTooltipItem(
+        predictorItems,
+        MEAL_TO_SLEEP_TOOLTIP_LABEL,
+        formatMinutesAsHours(hoveredRecord.predictors.mealToSleepGapMinutes),
+      );
     }
-    return (
-      <div className="rounded-lg border border-black/10 bg-white/95 px-3 py-2 shadow-sm">
-        {predictorSourceDate && outcomeSourceDate ? (
-          <p className="mb-1 text-xs text-muted">
-            Predictor: {formatReadableDate(predictorSourceDate)} | Outcome: {formatReadableDate(outcomeSourceDate)}
-          </p>
-        ) : date ? (
-          <p className="mb-1 text-xs text-muted">{formatReadableDate(date)}</p>
-        ) : null}
-        <div className="space-y-1">
-          {payload.map((entry, index) => {
-            const numericValue = typeof entry.value === "number" ? entry.value : Number(entry.value);
-            const valueText = Number.isFinite(numericValue)
-              ? selectedCorrelationPair?.testType === "continuous"
-                && predictorKey === "garmin:sleepSeconds"
-                && entry.dataKey === "x"
-                ? formatHoursAsHoursMinutes(numericValue)
-                : numericValue.toFixed(2)
-              : String(entry.value ?? "--");
-            return (
-              <p key={`${entry.name ?? "value"}:${index}`} className="text-sm text-ink">
-                {entry.name}: {valueText}
-              </p>
-            );
-          })}
-        </div>
-      </div>
-    );
-  }, [predictorKey, selectedCorrelationPair]);
+    const sections: CorrelationTooltipSection[] = [
+      {
+        title: "Predictor context",
+        sourceDateLabel: summarizeAnalysisSourceDates(details?.predictor ?? []),
+        items: predictorItems,
+      },
+      {
+        title: "Outcome context",
+        sourceDateLabel: summarizeAnalysisSourceDates(details?.target ?? []),
+        items: (details?.target ?? []).map((value) => ({
+          label: getAnalysisValueLabel(value.featureKey, questionFieldsById),
+          value: formatAnalysisValue(value, questionFieldsById),
+        })),
+      },
+    ].filter((section) => section.items.length);
+    return {
+      predictorLabel: getOptionLabel(predictorOptions, predictorKey, predictorKey),
+      predictorValue: formatCorrelationPredictorValue(
+        activeCorrelationTooltip.point,
+        selectedCorrelationPair,
+        predictorKey,
+      ),
+      outcomeLabel: getOptionLabel(outcomeOptions, outcomeKey, outcomeKey),
+      outcomeValue: formatCorrelationOutcomeValue(activeCorrelationTooltip.point, outcomeKey),
+      predictorSourceDate: activeCorrelationTooltip.point.predictorSourceDate,
+      outcomeSourceDate: activeCorrelationTooltip.point.outcomeSourceDate,
+      date: activeCorrelationTooltip.point.date,
+      sections,
+    };
+  }, [
+    activeCorrelationTooltip,
+    allRecordsByDate,
+    correlationDetailsByDate,
+    outcomeKey,
+    outcomeOptions,
+    predictorKey,
+    predictorOptions,
+    questionFieldsById,
+    selectedCorrelationPair,
+  ]);
+  const activeCorrelationTooltipStyle = useMemo(() => {
+    if (!activeCorrelationTooltip) {
+      return null;
+    }
+    const chartWidth = correlationChartRef.current?.clientWidth ?? 0;
+    const chartHeight = correlationChartRef.current?.clientHeight ?? 0;
+    const tooltipWidth = 384;
+    const tooltipHeight = 416;
+    const offset = 14;
+    let left = activeCorrelationTooltip.position.x + offset;
+    let top = activeCorrelationTooltip.position.y + offset;
+    if (chartWidth && left + tooltipWidth > chartWidth - 8) {
+      left = Math.max(8, activeCorrelationTooltip.position.x - tooltipWidth - offset);
+    }
+    if (chartHeight && top + tooltipHeight > chartHeight - 8) {
+      top = Math.max(8, chartHeight - tooltipHeight - 8);
+    }
+    return {
+      left,
+      top,
+    };
+  }, [activeCorrelationTooltip]);
+  useEffect(() => {
+    clearCorrelationTooltipHideTimeout();
+    setActiveCorrelationTooltip(null);
+  }, [clearCorrelationTooltipHideTimeout, outcomeKey, predictorKey, selectedCorrelationPair]);
   const derivedSourceValues = useMemo(
     () =>
       buildPredictorDistribution({
@@ -3611,7 +3882,7 @@ function App() {
                       ? `r=${(selectedCorrelationPair.correlation ?? 0).toFixed(3)} · slope=${selectedCorrelationPair.regression?.slope.toFixed(3) ?? "--"} · p=${selectedCorrelationPair.pValue?.toExponential(2) ?? "--"} · q=${selectedCorrelationPair.qValue?.toExponential(2) ?? "--"} · N=${selectedCorrelationPair.sampleCount}`
                       : `eta²=${(selectedCorrelationPair.etaSquared ?? 0).toFixed(3)} · F=${selectedCorrelationPair.fStatistic?.toFixed(2) ?? "--"} · p=${selectedCorrelationPair.pValue?.toExponential(2) ?? "--"} · q=${selectedCorrelationPair.qValue?.toExponential(2) ?? "--"} · N=${selectedCorrelationPair.sampleCount}`}
                   </p>
-                  <div className="h-[420px]">
+                  <div ref={correlationChartRef} className="relative h-[420px]">
                     <ResponsiveContainer>
                       <ScatterChart>
                         <CartesianGrid stroke="rgba(18,18,18,0.06)" strokeDasharray="3 6" />
@@ -3643,6 +3914,7 @@ function App() {
                         <YAxis
                           axisLine={false}
                           dataKey="y"
+                          domain={correlationExplorerYDomain}
                           label={{
                             value: getOptionLabel(outcomeOptions, outcomeKey, outcomeKey),
                             angle: -90,
@@ -3654,10 +3926,6 @@ function App() {
                           tickLine={false}
                           type="number"
                         />
-                        <Tooltip
-                          cursor={{ strokeDasharray: "3 4" }}
-                          content={renderCorrelationTooltip}
-                        />
                         <Scatter
                           data={selectedCorrelationPair.testType === "categorical"
                             ? categoricalScatterData
@@ -3665,6 +3933,8 @@ function App() {
                           fill={outcomeKey.startsWith("metric:")
                             ? getMetricColor(outcomeKey.slice("metric:".length) as MetricKey)
                             : "#3f6686"}
+                          onMouseEnter={handleCorrelationPointEnter}
+                          onMouseLeave={handleCorrelationPointLeave}
                         />
                         {selectedCorrelationPair.testType === "categorical" && (
                           <Scatter data={categoricalMeanData} fill="#CC5833" name="Group means" />
@@ -3681,6 +3951,45 @@ function App() {
                         )}
                       </ScatterChart>
                     </ResponsiveContainer>
+                    {activeCorrelationTooltipContent && activeCorrelationTooltipStyle && (
+                      <div
+                        className="absolute z-20 max-h-[26rem] w-[24rem] overflow-y-scroll rounded-lg border border-black/10 bg-white/95 px-3 py-2 shadow-sm"
+                        style={activeCorrelationTooltipStyle}
+                        onMouseEnter={handleCorrelationTooltipEnter}
+                        onMouseLeave={handleCorrelationTooltipLeave}
+                      >
+                        <p className="mb-1 text-xs text-muted">
+                          Predictor: {formatReadableDate(activeCorrelationTooltipContent.predictorSourceDate)} | Outcome: {formatReadableDate(activeCorrelationTooltipContent.outcomeSourceDate)}
+                        </p>
+                        <div className="space-y-1">
+                          <p className="text-sm text-ink">
+                            {activeCorrelationTooltipContent.predictorLabel}: {activeCorrelationTooltipContent.predictorValue}
+                          </p>
+                          <p className="text-sm text-ink">
+                            {activeCorrelationTooltipContent.outcomeLabel}: {activeCorrelationTooltipContent.outcomeValue}
+                          </p>
+                        </div>
+                        {!!activeCorrelationTooltipContent.sections.length && (
+                          <div className="mt-3 space-y-3 border-t border-black/10 pt-3">
+                            {activeCorrelationTooltipContent.sections.map((section) => (
+                              <div key={section.title}>
+                                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted">
+                                  {section.title}
+                                  {section.sourceDateLabel ? ` · ${section.sourceDateLabel}` : ""}
+                                </p>
+                                <div className="mt-1 space-y-1">
+                                  {section.items.map((item) => (
+                                    <p key={`${section.title}:${item.label}`} className="text-xs text-ink">
+                                      <span className="font-medium">{item.label}:</span> {item.value}
+                                    </p>
+                                  ))}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </>
               ) : (
