@@ -823,6 +823,14 @@ function parseIsoDate(value: string): Date | null {
   return parsed;
 }
 
+function formatIsoDateWeekday(value: string): string | null {
+  const parsed = parseIsoDate(value);
+  if (!parsed) {
+    return null;
+  }
+  return parsed.toLocaleDateString(undefined, { weekday: "long" });
+}
+
 function rangeDaysInclusive(fromDate: string, toDate: string): number | null {
   const fromParsed = parseIsoDate(fromDate);
   const toParsed = parseIsoDate(toDate);
@@ -1433,52 +1441,6 @@ function App() {
       setIsSavingDerived(false);
     }
   }, []);
-
-  useEffect(() => {
-    if (questionLoadState !== "ready") {
-      return;
-    }
-
-    const serializedQuestions = JSON.stringify(questionLibrary);
-    if (serializedQuestions === lastSavedQuestionsRef.current) {
-      return;
-    }
-
-    const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => {
-      const syncQuestions = async () => {
-        setIsSavingQuestions(true);
-        setQuestionSyncError(null);
-        try {
-          const payload = await saveQuestionSettings(
-            questionLibrary,
-            controller.signal,
-          );
-          lastSavedQuestionsRef.current = JSON.stringify(payload.questions);
-        } catch (error) {
-          if (controller.signal.aborted) {
-            return;
-          }
-          const message =
-            error instanceof Error
-              ? error.message
-              : "Failed to save question settings to SQLite.";
-          setQuestionSyncError(message);
-        } finally {
-          if (!controller.signal.aborted) {
-            setIsSavingQuestions(false);
-          }
-        }
-      };
-
-      void syncQuestions();
-    }, 350);
-
-    return () => {
-      window.clearTimeout(timeoutId);
-      controller.abort();
-    };
-  }, [questionLibrary, questionLoadState]);
 
   useEffect(() => {
     if (pendingQuestionScrollIdRef.current !== selectedQuestionId) {
@@ -2304,11 +2266,21 @@ function App() {
     () => buildSectionList(questionLibrary),
     [questionLibrary],
   );
+  const serializedQuestionLibrary = useMemo(
+    () => JSON.stringify(questionLibrary),
+    [questionLibrary],
+  );
+  const isQuestionDirty =
+    questionLoadState === "ready" && serializedQuestionLibrary !== lastSavedQuestionsRef.current;
   const selectedCheckinRecord = useMemo(
     () => allRecords.find((record) => record.date === selectedCheckinDate) ?? null,
     [allRecords, selectedCheckinDate],
   );
   const selectedCheckinEntry = checkinEntriesByDate[selectedCheckinDate];
+  const selectedCheckinWeekday = useMemo(
+    () => formatIsoDateWeekday(selectedCheckinDate),
+    [selectedCheckinDate],
+  );
   const isSelectedDateSaved = Boolean(selectedCheckinEntry);
   const isCheckinDirty = useMemo(() => {
     if (!selectedCheckinEntry) return false;
@@ -2714,6 +2686,28 @@ function App() {
       const newIndex = previous.findIndex((question) => question.id === over.id);
       return arrayMove(previous, oldIndex, newIndex);
     });
+  };
+
+  const handleSaveQuestions = async () => {
+    if (!isQuestionDirty || isSavingQuestions) {
+      return;
+    }
+    setIsSavingQuestions(true);
+    setQuestionSyncError(null);
+    try {
+      const payload = await saveQuestionSettings(questionLibrary);
+      const nextQuestions = migrateQuestionLibrary(payload.questions);
+      setQuestionLibrary(nextQuestions);
+      lastSavedQuestionsRef.current = JSON.stringify(nextQuestions);
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Failed to save question settings to SQLite.";
+      setQuestionSyncError(message);
+    } finally {
+      setIsSavingQuestions(false);
+    }
   };
 
   const topViewButtons: Array<{ key: ViewKey; label: string }> = [
@@ -3747,17 +3741,20 @@ function App() {
                 </div>
               </div>
               <div className="mb-4 rounded-2xl bg-subsurface px-4 py-3 text-sm">
-                <p className="text-muted">
-                  {isLoadingCheckins
-                    ? "Loading check-ins..."
-                    : checkinSyncError
-                      ? `SQLite sync failed: ${checkinSyncError}`
-                      : selectedCheckinEntry
-                        ? isCheckinDirty
-                          ? "Unsaved modifications."
-                          : "Loaded existing entry for this date."
-                        : "No saved entry for this date yet."}
-                </p>
+                {selectedCheckinWeekday && (
+                  <p className="text-sm font-semibold uppercase tracking-[0.16em] text-muted">
+                    {selectedCheckinWeekday}
+                  </p>
+                )}
+                {(isLoadingCheckins || checkinSyncError || (selectedCheckinEntry && isCheckinDirty)) && (
+                  <p className={clsx("text-muted", selectedCheckinWeekday && "mt-1")}>
+                    {isLoadingCheckins
+                      ? "Loading check-ins..."
+                      : checkinSyncError
+                        ? `SQLite sync failed: ${checkinSyncError}`
+                        : "Unsaved modifications."}
+                  </p>
+                )}
                 {checkinSaveMessage && <p className="mt-1 text-success">{checkinSaveMessage}</p>}
               </div>
 
@@ -3986,6 +3983,8 @@ function App() {
                           ? "Saving to SQLite..."
                           : questionSyncError
                             ? `SQLite sync failed: ${questionSyncError}`
+                            : isQuestionDirty
+                              ? "Unsaved changes. Click save to update SQLite."
                             : "Synced with SQLite."}
                     </p>
                   </div>
@@ -4023,7 +4022,14 @@ function App() {
                               <div ref={selectedQuestionEditorRef}>
                                 <QuestionEditor
                                   availableSections={editableSectionOptions}
+                                  isSaveDisabled={
+                                    !isQuestionDirty
+                                    || isSavingQuestions
+                                    || questionLoadState !== "ready"
+                                  }
+                                  isSaving={isSavingQuestions}
                                   onRenameSection={renameQuestionSection}
+                                  onSave={() => void handleSaveQuestions()}
                                   question={question}
                                   onDelete={() => removeQuestion(question.id)}
                                   onPatch={(patch) => updateQuestion(question.id, patch)}
@@ -4368,13 +4374,19 @@ const CONDITION_OPERATOR_META: Array<{
 
 function QuestionEditor({
   availableSections,
+  isSaveDisabled,
+  isSaving,
   onRenameSection,
+  onSave,
   question,
   onPatch,
   onDelete,
 }: {
   availableSections: string[];
+  isSaveDisabled: boolean;
+  isSaving: boolean;
   onRenameSection: (source: string, target: string) => void;
+  onSave: () => void;
   question: CheckInQuestion;
   onPatch: (patch: Partial<CheckInQuestion>) => void;
   onDelete: () => void;
@@ -4964,7 +4976,15 @@ function QuestionEditor({
           </div>
         </div>
       </div>
-      <div className="mt-3 flex justify-end">
+      <div className="mt-3 flex justify-end gap-2">
+        <button
+          className="focusable min-h-11 rounded-capsule bg-panel px-4 text-sm font-semibold shadow-soft transition disabled:cursor-not-allowed disabled:opacity-60"
+          disabled={isSaveDisabled}
+          type="button"
+          onClick={onSave}
+        >
+          {isSaving ? "Saving..." : "Save"}
+        </button>
         <button
           className="focusable min-h-11 rounded-capsule bg-[color-mix(in_srgb,var(--error)_16%,white)] px-4 text-sm text-error"
           type="button"
