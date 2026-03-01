@@ -1152,6 +1152,8 @@ function App() {
   const [questionSyncError, setQuestionSyncError] = useState<string | null>(null);
   const [isSavingQuestions, setIsSavingQuestions] = useState(false);
   const lastSavedQuestionsRef = useRef<string>("[]");
+  const selectedQuestionEditorRef = useRef<HTMLDivElement | null>(null);
+  const pendingQuestionScrollIdRef = useRef<string | null>(null);
   const [checkinReminderSettings, setCheckinReminderSettings] = useState<CheckinReminderSettings>(
     DEFAULT_CHECKIN_REMINDER_SETTINGS,
   );
@@ -1477,6 +1479,17 @@ function App() {
       controller.abort();
     };
   }, [questionLibrary, questionLoadState]);
+
+  useEffect(() => {
+    if (pendingQuestionScrollIdRef.current !== selectedQuestionId) {
+      return;
+    }
+    selectedQuestionEditorRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "end",
+    });
+    pendingQuestionScrollIdRef.current = null;
+  }, [questionLibrary, selectedQuestionId]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -2654,6 +2667,7 @@ function App() {
       analysisMode: "predictor_next_day",
       defaultIncluded: true,
     };
+    pendingQuestionScrollIdRef.current = id;
     setQuestionLibrary((previous) => [...previous, question]);
     setSelectedQuestionId(id);
   };
@@ -2683,7 +2697,7 @@ function App() {
     setQuestionLibrary((previous) => {
       const next = previous.filter((question) => question.id !== questionId);
       if (selectedQuestionId === questionId) {
-        setSelectedQuestionId(next[0]?.id ?? "");
+        setSelectedQuestionId("");
       }
       return next;
     });
@@ -3976,7 +3990,7 @@ function App() {
                     </p>
                   </div>
                   <button
-                    className="focusable min-h-11 rounded-capsule bg-panel px-4 text-sm shadow-soft"
+                    className="focusable min-h-11 rounded-capsule bg-accent px-4 text-sm font-semibold text-white shadow-soft transition"
                     type="button"
                     onClick={handleAddQuestion}
                   >
@@ -4006,13 +4020,15 @@ function App() {
                               }
                             />
                             {isSelected && (
-                              <QuestionEditor
-                                availableSections={editableSectionOptions}
-                                onRenameSection={renameQuestionSection}
-                                question={question}
-                                onDelete={() => removeQuestion(question.id)}
-                                onPatch={(patch) => updateQuestion(question.id, patch)}
-                              />
+                              <div ref={selectedQuestionEditorRef}>
+                                <QuestionEditor
+                                  availableSections={editableSectionOptions}
+                                  onRenameSection={renameQuestionSection}
+                                  question={question}
+                                  onDelete={() => removeQuestion(question.id)}
+                                  onPatch={(patch) => updateQuestion(question.id, patch)}
+                                />
+                              </div>
                             )}
                           </div>
                         );
