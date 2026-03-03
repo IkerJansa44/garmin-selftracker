@@ -118,6 +118,38 @@ def _extract_sleep_seconds(sleep_payload: Any) -> int | None:
     return int(sleep_seconds) if sleep_seconds is not None else None
 
 
+def _extract_daily_sleep_int(sleep_payload: Any, key: str) -> int | None:
+    if not isinstance(sleep_payload, dict):
+        return None
+
+    daily = sleep_payload.get("dailySleepDTO")
+    if not isinstance(daily, dict):
+        return None
+
+    value = daily.get(key)
+    return int(value) if value is not None else None
+
+
+def _extract_daily_sleep_float(sleep_payload: Any, key: str) -> float | None:
+    if not isinstance(sleep_payload, dict):
+        return None
+
+    daily = sleep_payload.get("dailySleepDTO")
+    if not isinstance(daily, dict):
+        return None
+
+    value = daily.get(key)
+    return float(value) if value is not None else None
+
+
+def _sleep_stage_percentage(
+    stage_seconds: int | None, sleep_seconds: int | None
+) -> float | None:
+    if stage_seconds is None or sleep_seconds is None or sleep_seconds <= 0:
+        return None
+    return round(stage_seconds * 100 / sleep_seconds, 2)
+
+
 def _normalize_timestamp(value: Any) -> str | None:
     if value is None:
         return None
@@ -199,6 +231,10 @@ def normalize_daily_metrics(day_payload: DayPayload) -> dict[str, Any]:
         stats if isinstance(stats, dict) else None,
         summary if isinstance(summary, dict) else None,
     ]
+    sleep_seconds = _extract_sleep_seconds(sleep)
+    deep_sleep_seconds = _extract_daily_sleep_int(sleep, "deepSleepSeconds")
+    light_sleep_seconds = _extract_daily_sleep_int(sleep, "lightSleepSeconds")
+    rem_sleep_seconds = _extract_daily_sleep_int(sleep, "remSleepSeconds")
 
     return {
         "metric_date": day_payload.payload_date.isoformat(),
@@ -212,7 +248,30 @@ def normalize_daily_metrics(day_payload: DayPayload) -> dict[str, Any]:
         "stress_avg": _pick_value(
             sources, ["averageStressLevel", "stressAvg", "stressAverage"]
         ),
-        "sleep_seconds": _extract_sleep_seconds(sleep),
+        "sleep_seconds": sleep_seconds,
+        "deep_sleep_seconds": deep_sleep_seconds,
+        "light_sleep_seconds": light_sleep_seconds,
+        "rem_sleep_seconds": rem_sleep_seconds,
+        "deep_sleep_percentage": _sleep_stage_percentage(
+            deep_sleep_seconds, sleep_seconds
+        ),
+        "rem_sleep_percentage": _sleep_stage_percentage(
+            rem_sleep_seconds, sleep_seconds
+        ),
+        "rem_or_deep_sleep_percentage": (
+            _sleep_stage_percentage(
+                rem_sleep_seconds + deep_sleep_seconds,
+                sleep_seconds,
+            )
+            if rem_sleep_seconds is not None and deep_sleep_seconds is not None
+            else None
+        ),
+        "average_respiration_value": _extract_daily_sleep_float(
+            sleep, "averageRespirationValue"
+        ),
+        "lowest_respiration_value": _extract_daily_sleep_float(
+            sleep, "lowestRespirationValue"
+        ),
         "fell_asleep_at": _extract_fell_asleep_at(sleep),
         "woke_up_at": _extract_woke_up_at(sleep),
         "vo2max": _pick_value(sources, ["vo2MaxValue", "vo2max", "vO2MaxValue"]),

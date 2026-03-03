@@ -295,6 +295,9 @@ const METRIC_DIRECTIONS: Record<MetricKey, MetricDirection> = {
   recoveryIndex: "higher",
   bodyBattery: "higher",
   trainingReadiness: "higher",
+  deepSleepPercentage: "higher",
+  remSleepPercentage: "higher",
+  remOrDeepSleepPercentage: "higher",
   stress: "lower",
   restingHr: "lower",
 };
@@ -305,6 +308,9 @@ const EMPTY_METRICS: Record<MetricKey, number | null> = {
   stress: null,
   bodyBattery: null,
   trainingReadiness: null,
+  deepSleepPercentage: null,
+  remSleepPercentage: null,
+  remOrDeepSleepPercentage: null,
 };
 
 const EMPTY_COVERAGE: Record<MetricKey, CoverageState> = {
@@ -313,6 +319,9 @@ const EMPTY_COVERAGE: Record<MetricKey, CoverageState> = {
   stress: "missing",
   bodyBattery: "missing",
   trainingReadiness: "missing",
+  deepSleepPercentage: "missing",
+  remSleepPercentage: "missing",
+  remOrDeepSleepPercentage: "missing",
 };
 
 const GARMIN_ONLY_QUESTION_IDS = new Set(["training_intensity", "training_type"]);
@@ -1943,9 +1952,7 @@ function App() {
   );
   const outcomeOptions = useMemo(() => buildOutcomeOptions(questionLibrary), [questionLibrary]);
   const topCorrelationOutcomeOptions = useMemo(
-    () => outcomeOptions.filter((option) => (
-      option.key === DEFAULT_TOP_CORRELATION_OUTCOME || option.key.startsWith("question:")
-    )),
+    () => outcomeOptions,
     [outcomeOptions],
   );
 

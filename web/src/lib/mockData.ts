@@ -16,6 +16,9 @@ const METRIC_RANGES: Record<MetricKey, { min: number; max: number }> = {
   stress: { min: 10, max: 85 },
   bodyBattery: { min: 15, max: 100 },
   trainingReadiness: { min: 20, max: 100 },
+  deepSleepPercentage: { min: 5, max: 40 },
+  remSleepPercentage: { min: 8, max: 35 },
+  remOrDeepSleepPercentage: { min: 20, max: 60 },
 };
 
 function clamp(value: number, min: number, max: number): number {
@@ -112,7 +115,6 @@ function metricValue(
   const weekend = weekday === 0 || weekday === 6;
   const prevAlcohol = previous?.alcoholUnits ?? 0;
   const prevIntensity = previous?.trainingIntensity ?? 5;
-  const prevLateScreen = previous?.lateScreenMinutes ?? 40;
 
   let value = 0;
 
@@ -145,13 +147,36 @@ function metricValue(
       prevAlcohol * 3.4 -
       prevIntensity * 1.2 +
       (noise(dayIndex + 5) - 0.5) * 10;
+  } else if (metric === "deepSleepPercentage") {
+    value =
+      20 +
+      (weekend ? 1.8 : 0) +
+      current.mood * 0.4 -
+      prevAlcohol * 1.4 -
+      prevIntensity * 0.35 +
+      (noise(dayIndex + 6) - 0.5) * 6;
+  } else if (metric === "remSleepPercentage") {
+    value =
+      21 +
+      current.mood * 0.45 -
+      prevAlcohol * 1.1 -
+      current.caffeineCount * 0.35 +
+      (noise(dayIndex + 7) - 0.5) * 6;
+  } else if (metric === "remOrDeepSleepPercentage") {
+    value =
+      41 +
+      (weekend ? 2.0 : 0) +
+      current.mood * 0.7 -
+      prevAlcohol * 2.1 -
+      prevIntensity * 0.45 +
+      (noise(dayIndex + 8) - 0.5) * 8;
   } else {
     value =
       70 +
       current.mood * 1.2 -
       prevAlcohol * 4.2 -
       prevIntensity * 1.4 +
-      (noise(dayIndex + 6) - 0.5) * 10;
+      (noise(dayIndex + 9) - 0.5) * 10;
   }
 
   const range = METRIC_RANGES[metric];
@@ -181,6 +206,9 @@ export function generateMockRecords(totalDays = TOTAL_DAYS): DailyRecord[] {
       stress: null,
       bodyBattery: null,
       trainingReadiness: null,
+      deepSleepPercentage: null,
+      remSleepPercentage: null,
+      remOrDeepSleepPercentage: null,
     };
 
     const coverage: DailyRecord["coverage"] = {
@@ -189,6 +217,9 @@ export function generateMockRecords(totalDays = TOTAL_DAYS): DailyRecord[] {
       stress: "missing",
       bodyBattery: "missing",
       trainingReadiness: "missing",
+      deepSleepPercentage: "missing",
+      remSleepPercentage: "missing",
+      remOrDeepSleepPercentage: "missing",
     };
 
     (Object.keys(metrics) as MetricKey[]).forEach((metric) => {

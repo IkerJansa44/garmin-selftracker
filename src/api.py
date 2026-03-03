@@ -431,7 +431,9 @@ def _import_status_message(
     return f"{progress_message} · {_format_eta_seconds(eta_seconds)}"
 
 
-def _metric_payload(row: Any | None) -> tuple[dict[str, int | None], dict[str, str]]:
+def _metric_payload(
+    row: Any | None,
+) -> tuple[dict[str, int | float | None], dict[str, str]]:
     if row is None:
         metrics = {
             "recoveryIndex": None,
@@ -439,6 +441,9 @@ def _metric_payload(row: Any | None) -> tuple[dict[str, int | None], dict[str, s
             "stress": None,
             "bodyBattery": None,
             "trainingReadiness": None,
+            "deepSleepPercentage": None,
+            "remSleepPercentage": None,
+            "remOrDeepSleepPercentage": None,
         }
         coverage = {key: "missing" for key in metrics}
         return metrics, coverage
@@ -458,6 +463,9 @@ def _metric_payload(row: Any | None) -> tuple[dict[str, int | None], dict[str, s
         "stress": stress_value,
         "bodyBattery": body_battery,
         "trainingReadiness": readiness,
+        "deepSleepPercentage": _as_float(row["deep_sleep_percentage"]),
+        "remSleepPercentage": _as_float(row["rem_sleep_percentage"]),
+        "remOrDeepSleepPercentage": _as_float(row["rem_or_deep_sleep_percentage"]),
     }
     coverage = {key: _coverage(True, value) for key, value in metrics.items()}
     return metrics, coverage
@@ -1088,6 +1096,9 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
             body_battery,
             stress_avg,
             sleep_seconds,
+            deep_sleep_percentage,
+            rem_sleep_percentage,
+            rem_or_deep_sleep_percentage,
             fell_asleep_at,
             woke_up_at,
             zone0_minutes,
