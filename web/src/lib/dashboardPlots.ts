@@ -17,6 +17,7 @@ export interface SleepWindowChartRecord {
   date: string;
   fellAsleepAt?: string | null;
   wokeUpAt?: string | null;
+  sleepConsistency?: number | null;
 }
 
 export interface SleepWindowChartPoint {
@@ -26,12 +27,15 @@ export interface SleepWindowChartPoint {
   sleepWindowDuration: number | null;
   bedtimeValue: number | null;
   wakeValue: number | null;
+  sleepConsistencyValue: number | null;
+  sleepConsistencyPlotValue: number | null;
 }
 
 export interface SleepWindowChartStats {
   points: SleepWindowChartPoint[];
   averageBedtime: number | null;
   averageWakeTime: number | null;
+  sleepConsistencyDomain: [number, number];
   axisOffsetMinutes: number;
   domain: [number, number];
   ticks: number[];
@@ -51,6 +55,35 @@ function average(values: number[]): number | null {
 
 function unique(values: number[]): number[] {
   return Array.from(new Set(values));
+}
+
+function computeNumericDomain(values: number[]): [number, number] {
+  if (!values.length) {
+    return [0, 1];
+  }
+  const minimum = Math.min(...values);
+  const maximum = Math.max(...values);
+  if (minimum === maximum) {
+    return [minimum - 1, maximum + 1];
+  }
+  return [minimum, maximum];
+}
+
+function scaleSleepConsistencyValue(
+  value: number | null,
+  sourceDomain: [number, number],
+  targetDomain: [number, number],
+): number | null {
+  if (value === null) {
+    return null;
+  }
+  const [sourceMin, sourceMax] = sourceDomain;
+  const [targetMin, targetMax] = targetDomain;
+  if (sourceMin === sourceMax) {
+    return (targetMin + targetMax) / 2;
+  }
+  const progress = (value - sourceMin) / (sourceMax - sourceMin);
+  return targetMax - progress * (targetMax - targetMin);
 }
 
 function sanitizePlotKeyForId(plotKey: string): string {
@@ -190,6 +223,7 @@ export function buildSleepWindowChartStats(
   const bedtimes: number[] = [];
   const wakeTimes: number[] = [];
   const allValues: number[] = [];
+  const sleepConsistencyValues: number[] = [];
 
   for (const record of records) {
     const fellAsleepMinutes = typeof record.fellAsleepAt === "string"
@@ -198,6 +232,14 @@ export function buildSleepWindowChartStats(
     const wokeUpMinutes = typeof record.wokeUpAt === "string"
       ? parseClockTimeToMinutes(record.wokeUpAt)
       : null;
+    const sleepConsistencyValue = typeof record.sleepConsistency === "number"
+      && Number.isFinite(record.sleepConsistency)
+      ? record.sleepConsistency
+      : null;
+
+    if (sleepConsistencyValue !== null) {
+      sleepConsistencyValues.push(sleepConsistencyValue);
+    }
 
     if (fellAsleepMinutes === null || wokeUpMinutes === null) {
       points.push({
@@ -207,6 +249,8 @@ export function buildSleepWindowChartStats(
         sleepWindowDuration: null,
         bedtimeValue: null,
         wakeValue: null,
+        sleepConsistencyValue,
+        sleepConsistencyPlotValue: null,
       });
       continue;
     }
@@ -225,6 +269,8 @@ export function buildSleepWindowChartStats(
       sleepWindowDuration,
       bedtimeValue,
       wakeValue,
+      sleepConsistencyValue,
+      sleepConsistencyPlotValue: null,
     });
     bedtimes.push(bedtimeValue);
     wakeTimes.push(wakeValue);
@@ -233,6 +279,7 @@ export function buildSleepWindowChartStats(
 
   const averageBedtime = average(bedtimes);
   const averageWakeTime = average(wakeTimes);
+  const sleepConsistencyDomain = computeNumericDomain(sleepConsistencyValues);
   if (!allValues.length) {
     const start = DEFAULT_SLEEP_WINDOW_DOMAIN[0];
     const end = DEFAULT_SLEEP_WINDOW_DOMAIN[1];
@@ -240,6 +287,7 @@ export function buildSleepWindowChartStats(
       points,
       averageBedtime,
       averageWakeTime,
+      sleepConsistencyDomain,
       axisOffsetMinutes: start,
       domain: [0, end - start],
       ticks: [0, 4 * 60, 12 * 60],
@@ -257,13 +305,26 @@ export function buildSleepWindowChartStats(
     .map((value) => value - start);
   const shiftedAverageBedtime = averageBedtime === null ? null : averageBedtime - start;
   const shiftedAverageWakeTime = averageWakeTime === null ? null : averageWakeTime - start;
+  const shiftedDomain: [number, number] = [0, end - start];
   const shiftedPoints = points.map((point) => {
     if (point.sleepWindowBase === null) {
-      return point;
+      return {
+        ...point,
+        sleepConsistencyPlotValue: scaleSleepConsistencyValue(
+          point.sleepConsistencyValue,
+          sleepConsistencyDomain,
+          shiftedDomain,
+        ),
+      };
     }
     return {
       ...point,
       sleepWindowBase: point.sleepWindowBase - start,
+      sleepConsistencyPlotValue: scaleSleepConsistencyValue(
+        point.sleepConsistencyValue,
+        sleepConsistencyDomain,
+        shiftedDomain,
+      ),
     };
   });
 
@@ -271,8 +332,9 @@ export function buildSleepWindowChartStats(
     points: shiftedPoints,
     averageBedtime: shiftedAverageBedtime,
     averageWakeTime: shiftedAverageWakeTime,
+    sleepConsistencyDomain,
     axisOffsetMinutes: start,
-    domain: [0, end - start],
+    domain: shiftedDomain,
     ticks,
   };
 }
