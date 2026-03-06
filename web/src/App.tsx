@@ -17,7 +17,6 @@ import {
   X,
 } from "lucide-react";
 import {
-  Bar,
   CartesianGrid,
   ComposedChart,
   Line,
@@ -44,6 +43,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { SleepWindowChart } from "./components/SleepWindowChart";
 import {
   DEFAULT_QUESTIONS,
   METRICS,
@@ -60,8 +60,8 @@ import { mealToSleepGapMinutes, parseClockTimeToMinutes } from "./lib/time";
 import {
   buildSleepWindowChartStats,
   createDashboardPlotId,
-  formatOvernightClockLabel,
   normalizeDashboardPlotPreferences as normalizeDashboardPlotPreferencesRaw,
+  type SleepWindowChartPoint,
   type DashboardPlotChartStyle,
 } from "./lib/dashboardPlots";
 import { resolveCheckinDraftAnswers } from "./lib/checkinDraft";
@@ -163,15 +163,6 @@ interface DashboardPlotPreference {
   rolling: boolean;
   reduceMethod: PlotReduceMethod;
   chartStyle: DashboardPlotChartStyle;
-}
-
-interface SleepWindowChartPoint {
-  date: string;
-  dayLabel: string;
-  sleepWindowBase: number | null;
-  sleepWindowDuration: number | null;
-  bedtimeValue: number | null;
-  wakeValue: number | null;
 }
 
 interface DashboardPlot {
@@ -295,6 +286,9 @@ const METRIC_DIRECTIONS: Record<MetricKey, MetricDirection> = {
   recoveryIndex: "higher",
   bodyBattery: "higher",
   trainingReadiness: "higher",
+  deepSleepPercentage: "higher",
+  remSleepPercentage: "higher",
+  remOrDeepSleepPercentage: "higher",
   stress: "lower",
   restingHr: "lower",
 };
@@ -305,6 +299,9 @@ const EMPTY_METRICS: Record<MetricKey, number | null> = {
   stress: null,
   bodyBattery: null,
   trainingReadiness: null,
+  deepSleepPercentage: null,
+  remSleepPercentage: null,
+  remOrDeepSleepPercentage: null,
 };
 
 const EMPTY_COVERAGE: Record<MetricKey, CoverageState> = {
@@ -313,6 +310,9 @@ const EMPTY_COVERAGE: Record<MetricKey, CoverageState> = {
   stress: "missing",
   bodyBattery: "missing",
   trainingReadiness: "missing",
+  deepSleepPercentage: "missing",
+  remSleepPercentage: "missing",
+  remOrDeepSleepPercentage: "missing",
 };
 
 const GARMIN_ONLY_QUESTION_IDS = new Set(["training_intensity", "training_type"]);
@@ -1265,28 +1265,6 @@ function SparklineTooltip({
   );
 }
 
-function SleepWindowTooltip({
-  active,
-  payload,
-}: {
-  active?: boolean;
-  payload?: Array<{ payload?: SleepWindowChartPoint }>;
-}) {
-  if (!active || !payload?.length) {
-    return null;
-  }
-  const point = payload[0]?.payload;
-  if (!point || point.bedtimeValue === null || point.wakeValue === null) {
-    return null;
-  }
-  return (
-    <div className="rounded-2xl bg-panel px-3 py-2 text-xs shadow-soft">
-      <p className="metric-number font-mono">Bed {formatOvernightClockLabel(point.bedtimeValue)}</p>
-      <p className="metric-number mt-1 font-mono">Wake {formatOvernightClockLabel(point.wakeValue)}</p>
-    </div>
-  );
-}
-
 function describeCorrelationDirection(pair: CorrelationPairResult): string {
   if (pair.direction === "similar") {
     return "No clear monotonic direction in this sample.";
@@ -1943,9 +1921,7 @@ function App() {
   );
   const outcomeOptions = useMemo(() => buildOutcomeOptions(questionLibrary), [questionLibrary]);
   const topCorrelationOutcomeOptions = useMemo(
-    () => outcomeOptions.filter((option) => (
-      option.key === DEFAULT_TOP_CORRELATION_OUTCOME || option.key.startsWith("question:")
-    )),
+    () => outcomeOptions,
     [outcomeOptions],
   );
 
@@ -2170,7 +2146,12 @@ function App() {
           const comparison = describeDashboardVsAverage(plotPreference.direction, option, delta, rangePreset);
           const sleepWindowStats = plotPreference.key === "garmin:sleepConsistency"
             && plotPreference.chartStyle === "sleepWindowBars"
-            ? buildSleepWindowChartStats(records)
+            ? buildSleepWindowChartStats(records.map((record) => ({
+              date: record.date,
+              fellAsleepAt: record.fellAsleepAt,
+              wokeUpAt: record.wokeUpAt,
+              sleepConsistency: record.predictors.sleepConsistency,
+            })))
             : null;
           const yAxis = sleepWindowStats ? {
             domain: sleepWindowStats.domain,
@@ -4480,10 +4461,6 @@ function SortableDashboardPlotItem({
   const loadingState = importState === "running" && plot.coverage !== "complete";
   const errorState = (importState === "failed" || dataStatus === "error") && isMissing;
   const showSleepWindowBars = plot.chartStyle === "sleepWindowBars" && plot.sleepWindowPoints !== null;
-  const sleepAverageTicks = showSleepWindowBars
-    ? Array.from(new Set([plot.averageBedtime, plot.averageWakeTime].filter((value): value is number => value !== null)))
-      .sort((left, right) => left - right)
-    : [];
 
   const aggregationLabel =
     showSleepWindowBars
@@ -4546,68 +4523,18 @@ function SortableDashboardPlotItem({
       </div>
 
       <div className="mt-4 h-16">
-        <ResponsiveContainer>
-          {showSleepWindowBars ? (
-            <ComposedChart
-              barCategoryGap="25%"
-              barGap={0}
-              data={plot.sleepWindowPoints ?? []}
-              margin={{ top: 2, right: 4, bottom: 2, left: 6 }}
-            >
-              <YAxis
-                allowDecimals={false}
-                axisLine={{ stroke: "rgba(18,18,18,0.28)", strokeWidth: 1 }}
-                domain={plot.domain}
-                interval={0}
-                reversed
-                tickFormatter={(value) =>
-                  formatOvernightClockLabel(Number(value) + plot.sleepAxisOffsetMinutes)}
-                tickLine={false}
-                tick={{ fontSize: 10 }}
-                ticks={sleepAverageTicks.length ? sleepAverageTicks : plot.ticks}
-                width={38}
-              />
-              {plot.averageBedtime !== null && (
-                <ReferenceLine
-                  className="sleep-avg-bedtime-line"
-                  data-testid="sleep-avg-bedtime-line"
-                  ifOverflow="extendDomain"
-                  stroke="rgba(18,18,18,0.45)"
-                  strokeDasharray="4 4"
-                  strokeWidth={1}
-                  y={plot.averageBedtime}
-                />
-              )}
-              {plot.averageWakeTime !== null && (
-                <ReferenceLine
-                  className="sleep-avg-waketime-line"
-                  data-testid="sleep-avg-waketime-line"
-                  ifOverflow="extendDomain"
-                  stroke="rgba(18,18,18,0.45)"
-                  strokeDasharray="4 4"
-                  strokeWidth={1}
-                  y={plot.averageWakeTime}
-                />
-              )}
-              <Bar
-                dataKey="sleepWindowBase"
-                fill="transparent"
-                isAnimationActive={false}
-                stackId={`sleep-window-${plot.id}`}
-              />
-              <Bar
-                className="sleep-night-window-bar"
-                data-testid="sleep-night-window-bar"
-                dataKey="sleepWindowDuration"
-                fill={plot.option.color}
-                isAnimationActive={false}
-                maxBarSize={16}
-                radius={[6, 6, 6, 6]}
-                stackId={`sleep-window-${plot.id}`}
-              />
-              <Tooltip content={<SleepWindowTooltip />} />
-            </ComposedChart>
-          ) : (
+        {showSleepWindowBars ? (
+          <SleepWindowChart
+            averageBedtime={plot.averageBedtime}
+            averageWakeTime={plot.averageWakeTime}
+            axisOffsetMinutes={plot.sleepAxisOffsetMinutes}
+            barColor={plot.option.color}
+            chartId={plot.id}
+            domain={plot.domain}
+            points={plot.sleepWindowPoints ?? []}
+          />
+        ) : (
+          <ResponsiveContainer>
             <ComposedChart data={plot.points}>
               <YAxis
                 allowDecimals={false}
@@ -4637,8 +4564,8 @@ function SortableDashboardPlotItem({
               />
               <Tooltip content={<SparklineTooltip plotKey={plot.key} />} />
             </ComposedChart>
-          )}
-        </ResponsiveContainer>
+          </ResponsiveContainer>
+        )}
       </div>
 
       <div className="mt-3 min-h-8 text-xs text-muted">

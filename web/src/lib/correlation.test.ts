@@ -100,6 +100,9 @@ function buildRecords(days: number): DailyRecord[] {
         stress: 28 + previousCaffeine,
         bodyBattery: 70 - previousCaffeine,
         trainingReadiness: recoveryIndex - 4,
+        deepSleepPercentage: 18 + (index % 4) * 2,
+        remSleepPercentage: 20 + (index % 3) * 2,
+        remOrDeepSleepPercentage: 38 + (index % 5) * 2,
       },
       coverage: {
         recoveryIndex: "complete",
@@ -107,6 +110,9 @@ function buildRecords(days: number): DailyRecord[] {
         stress: "complete",
         bodyBattery: "complete",
         trainingReadiness: "complete",
+        deepSleepPercentage: "complete",
+        remSleepPercentage: "complete",
+        remOrDeepSleepPercentage: "complete",
       },
     };
   });
@@ -283,6 +289,9 @@ function buildModerateAnovaRecords(days: number): DailyRecord[] {
         stress: 28 + priorGroup,
         bodyBattery: 70 - priorGroup,
         trainingReadiness: recoveryIndex - 4,
+        deepSleepPercentage: 18 + (index % 4) * 2,
+        remSleepPercentage: 20 + (index % 3) * 2,
+        remOrDeepSleepPercentage: 38 + (index % 5) * 2,
       },
       coverage: {
         recoveryIndex: "complete",
@@ -290,6 +299,9 @@ function buildModerateAnovaRecords(days: number): DailyRecord[] {
         stress: "complete",
         bodyBattery: "complete",
         trainingReadiness: "complete",
+        deepSleepPercentage: "complete",
+        remSleepPercentage: "complete",
+        remOrDeepSleepPercentage: "complete",
       },
     };
   });
@@ -319,10 +331,16 @@ describe("correlation helpers", () => {
 
     expect(predictors.some((option) => option.key === "question:caffeine_count")).toBe(true);
     expect(predictors.some((option) => option.key === "garmin:mealToSleepGapMinutes")).toBe(true);
+    expect(predictors.some((option) => option.key === "garmin:deepSleepPercentage")).toBe(false);
+    expect(predictors.some((option) => option.key === "garmin:remSleepPercentage")).toBe(false);
+    expect(predictors.some((option) => option.key === "garmin:remOrDeepSleepPercentage")).toBe(false);
     expect(predictors.some((option) => option.key === "garmin:sleepConsistency")).toBe(true);
     expect(outcomes.some((option) => option.key === "metric:recoveryIndex")).toBe(true);
     expect(outcomes.some((option) => option.key === "metric:stress")).toBe(true);
     expect(outcomes.some((option) => option.key === "metric:bodyBattery")).toBe(true);
+    expect(outcomes.some((option) => option.key === "metric:deepSleepPercentage")).toBe(true);
+    expect(outcomes.some((option) => option.key === "metric:remSleepPercentage")).toBe(true);
+    expect(outcomes.some((option) => option.key === "metric:remOrDeepSleepPercentage")).toBe(true);
     expect(outcomes.some((option) => option.key === "question:notes")).toBe(false);
   });
 
@@ -331,6 +349,9 @@ describe("correlation helpers", () => {
 
     expect(options.some((option) => option.key === "garmin:steps")).toBe(true);
     expect(options.some((option) => option.key === "garmin:mealToSleepGapMinutes")).toBe(true);
+    expect(options.some((option) => option.key === "garmin:deepSleepPercentage")).toBe(false);
+    expect(options.some((option) => option.key === "garmin:remSleepPercentage")).toBe(false);
+    expect(options.some((option) => option.key === "garmin:remOrDeepSleepPercentage")).toBe(false);
     expect(options.some((option) => option.key === "garmin:sleepConsistency")).toBe(true);
     expect(options.some((option) => option.key === "garmin:isTrainingDay")).toBe(false);
     expect(options.some((option) => option.key === "question:caffeine_count")).toBe(true);
@@ -454,6 +475,9 @@ describe("correlation helpers", () => {
           stress: 20,
           bodyBattery: 70,
           trainingReadiness: 62,
+          deepSleepPercentage: 20,
+          remSleepPercentage: 22,
+          remOrDeepSleepPercentage: 42,
         },
         coverage: {
           recoveryIndex: "complete",
@@ -461,6 +485,9 @@ describe("correlation helpers", () => {
           stress: "complete",
           bodyBattery: "complete",
           trainingReadiness: "complete",
+          deepSleepPercentage: "complete",
+          remSleepPercentage: "complete",
+          remOrDeepSleepPercentage: "complete",
         },
       },
       {
@@ -493,6 +520,9 @@ describe("correlation helpers", () => {
           stress: 22,
           bodyBattery: 69,
           trainingReadiness: 70,
+          deepSleepPercentage: 21,
+          remSleepPercentage: 23,
+          remOrDeepSleepPercentage: 44,
         },
         coverage: {
           recoveryIndex: "complete",
@@ -500,6 +530,9 @@ describe("correlation helpers", () => {
           stress: "complete",
           bodyBattery: "complete",
           trainingReadiness: "complete",
+          deepSleepPercentage: "complete",
+          remSleepPercentage: "complete",
+          remOrDeepSleepPercentage: "complete",
         },
       },
       {
@@ -532,6 +565,9 @@ describe("correlation helpers", () => {
           stress: 24,
           bodyBattery: 68,
           trainingReadiness: 78,
+          deepSleepPercentage: 19,
+          remSleepPercentage: 24,
+          remOrDeepSleepPercentage: 43,
         },
         coverage: {
           recoveryIndex: "complete",
@@ -539,6 +575,9 @@ describe("correlation helpers", () => {
           stress: "complete",
           bodyBattery: "complete",
           trainingReadiness: "complete",
+          deepSleepPercentage: "complete",
+          remSleepPercentage: "complete",
+          remOrDeepSleepPercentage: "complete",
         },
       },
     ];

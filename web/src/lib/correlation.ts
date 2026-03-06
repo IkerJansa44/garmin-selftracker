@@ -86,6 +86,9 @@ const OUTCOME_LABELS: Record<MetricKey, string> = {
   stress: "Stress",
   bodyBattery: "Body Battery",
   trainingReadiness: "Training Readiness",
+  deepSleepPercentage: "Deep Sleep (%)",
+  remSleepPercentage: "REM Sleep (%)",
+  remOrDeepSleepPercentage: "REM + Deep Sleep (%)",
 };
 
 function clamp(value: number, minimum: number, maximum: number): number {

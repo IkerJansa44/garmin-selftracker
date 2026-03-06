@@ -3,7 +3,10 @@ export type MetricKey =
   | "restingHr"
   | "stress"
   | "bodyBattery"
-  | "trainingReadiness";
+  | "trainingReadiness"
+  | "deepSleepPercentage"
+  | "remSleepPercentage"
+  | "remOrDeepSleepPercentage";
 
 export type CoverageState = "complete" | "partial" | "missing";
 export type ImportState = "ok" | "running" | "failed";
