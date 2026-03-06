@@ -824,10 +824,13 @@ def test_load_correlation_values_payload_uses_materialized_analysis_values(
             body_battery,
             stress_avg,
             sleep_seconds,
+            deep_sleep_percentage,
+            rem_sleep_percentage,
+            rem_or_deep_sleep_percentage,
             fell_asleep_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             "2026-02-20",
@@ -837,6 +840,9 @@ def test_load_correlation_values_payload_uses_materialized_analysis_values(
             70,
             30,
             25200,
+            22.0,
+            18.0,
+            40.0,
             "2026-02-19T22:40:00+00:00",
             "2026-02-21T06:00:00+00:00",
         ),
@@ -851,10 +857,13 @@ def test_load_correlation_values_payload_uses_materialized_analysis_values(
             body_battery,
             stress_avg,
             sleep_seconds,
+            deep_sleep_percentage,
+            rem_sleep_percentage,
+            rem_or_deep_sleep_percentage,
             fell_asleep_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             "2026-02-21",
@@ -864,6 +873,9 @@ def test_load_correlation_values_payload_uses_materialized_analysis_values(
             72,
             25,
             28800,
+            24.0,
+            19.0,
+            43.0,
             "2026-02-20T22:45:00+00:00",
             "2026-02-22T06:00:00+00:00",
         ),
@@ -912,6 +924,20 @@ def test_load_correlation_values_payload_uses_materialized_analysis_values(
     assert target_recovery_index["valueNum"] == 37
     assert target_recovery_index["sourceDate"] == "2026-02-21"
 
+    target_deep_pct = values_by_key[("target", "metric:deepSleepPercentage")]
+    assert target_deep_pct["valueNum"] == 24.0
+    assert target_deep_pct["sourceDate"] == "2026-02-21"
+
+    target_rem_pct = values_by_key[("target", "metric:remSleepPercentage")]
+    assert target_rem_pct["valueNum"] == 19.0
+    assert target_rem_pct["sourceDate"] == "2026-02-21"
+
+    target_rem_or_deep_pct = values_by_key[
+        ("target", "metric:remOrDeepSleepPercentage")
+    ]
+    assert target_rem_or_deep_pct["valueNum"] == 43.0
+    assert target_rem_or_deep_pct["sourceDate"] == "2026-02-21"
+
 
 def test_load_dashboard_payload_includes_fell_asleep_iso_field(tmp_path: Path) -> None:
     db_path = tmp_path / "garmin.db"
@@ -922,10 +948,26 @@ def test_load_dashboard_payload_includes_fell_asleep_iso_field(tmp_path: Path) -
     init_db(connection)
     connection.execute(
         """
-        INSERT INTO daily_metrics (metric_date, sleep_seconds, fell_asleep_at, updated_at)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO daily_metrics (
+            metric_date,
+            sleep_seconds,
+            deep_sleep_percentage,
+            rem_sleep_percentage,
+            rem_or_deep_sleep_percentage,
+            fell_asleep_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (metric_date, 29220, fell_asleep_at, "2026-02-21T06:00:00+00:00"),
+        (
+            metric_date,
+            29220,
+            23.5,
+            19.1,
+            42.6,
+            fell_asleep_at,
+            "2026-02-21T06:00:00+00:00",
+        ),
     )
     connection.commit()
     connection.close()
@@ -939,6 +981,9 @@ def test_load_dashboard_payload_includes_fell_asleep_iso_field(tmp_path: Path) -
     assert record is not None
     assert record["fellAsleepAtIso"] == fell_asleep_at
     assert record["fellAsleepAt"] == "22:44"
+    assert record["metrics"]["deepSleepPercentage"] == 23.5
+    assert record["metrics"]["remSleepPercentage"] == 19.1
+    assert record["metrics"]["remOrDeepSleepPercentage"] == 42.6
     assert "sleepConsistency" in record["predictors"]
 
 

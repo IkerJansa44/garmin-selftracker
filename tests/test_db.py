@@ -50,6 +50,14 @@ def test_upserts_are_idempotent(tmp_path: Path) -> None:
             "body_battery": 60,
             "stress_avg": 30,
             "sleep_seconds": 24000,
+            "deep_sleep_seconds": 5400,
+            "light_sleep_seconds": 15600,
+            "rem_sleep_seconds": 3000,
+            "deep_sleep_percentage": 22.5,
+            "rem_sleep_percentage": 12.5,
+            "rem_or_deep_sleep_percentage": 35.0,
+            "average_respiration_value": 12.0,
+            "lowest_respiration_value": 9.0,
             "fell_asleep_at": "2026-02-19T23:22:00+00:00",
             "woke_up_at": "2026-02-20T06:44:00+00:00",
             "vo2max": 48,
@@ -65,6 +73,14 @@ def test_upserts_are_idempotent(tmp_path: Path) -> None:
             "body_battery": 62,
             "stress_avg": 28,
             "sleep_seconds": 25000,
+            "deep_sleep_seconds": 6300,
+            "light_sleep_seconds": 14800,
+            "rem_sleep_seconds": 3900,
+            "deep_sleep_percentage": 25.2,
+            "rem_sleep_percentage": 15.6,
+            "rem_or_deep_sleep_percentage": 40.8,
+            "average_respiration_value": 11.5,
+            "lowest_respiration_value": 8.5,
             "fell_asleep_at": "2026-02-19T23:11:00+00:00",
             "woke_up_at": "2026-02-20T06:30:00+00:00",
             "vo2max": 49,
@@ -110,14 +126,33 @@ def test_upserts_are_idempotent(tmp_path: Path) -> None:
 
     metric_row = conn.execute(
         """
-        SELECT steps, fell_asleep_at, woke_up_at
+        SELECT
+            steps,
+            deep_sleep_seconds,
+            light_sleep_seconds,
+            rem_sleep_seconds,
+            deep_sleep_percentage,
+            rem_sleep_percentage,
+            rem_or_deep_sleep_percentage,
+            average_respiration_value,
+            lowest_respiration_value,
+            fell_asleep_at,
+            woke_up_at
         FROM daily_metrics
         WHERE metric_date = '2026-02-20'
         """
     ).fetchone()
     assert metric_row[0] == 3000
-    fell_asleep_at = metric_row[1]
-    woke_up_at = metric_row[2]
+    assert metric_row[1] == 6300
+    assert metric_row[2] == 14800
+    assert metric_row[3] == 3900
+    assert metric_row[4] == 25.2
+    assert metric_row[5] == 15.6
+    assert metric_row[6] == 40.8
+    assert metric_row[7] == 11.5
+    assert metric_row[8] == 8.5
+    fell_asleep_at = metric_row[9]
+    woke_up_at = metric_row[10]
     assert fell_asleep_at == "2026-02-19T23:11:00+00:00"
     assert woke_up_at == "2026-02-20T06:30:00+00:00"
 

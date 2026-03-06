@@ -52,6 +52,30 @@ export const METRICS: MetricDefinition[] = [
     decimals: 0,
     baselineHint: "Summarizes readiness from recovery and load.",
   },
+  {
+    key: "deepSleepPercentage",
+    label: "Deep Sleep",
+    unit: "%",
+    color: "#2c6e8f",
+    decimals: 1,
+    baselineHint: "Higher shares can indicate better slow-wave recovery.",
+  },
+  {
+    key: "remSleepPercentage",
+    label: "REM Sleep",
+    unit: "%",
+    color: "#3f8f7b",
+    decimals: 1,
+    baselineHint: "Tracks the share of sleep spent in REM.",
+  },
+  {
+    key: "remOrDeepSleepPercentage",
+    label: "REM + Deep Sleep",
+    unit: "%",
+    color: "#2f7f68",
+    decimals: 1,
+    baselineHint: "Combines the restorative share of REM and deep sleep.",
+  },
 ];
 
 export const DEFAULT_SELECTED_METRICS: MetricKey[] = [

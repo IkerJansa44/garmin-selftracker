@@ -9,6 +9,14 @@ from typing import Any
 
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "sql" / "schema.sql"
 REQUIRED_DAILY_METRICS_COLUMNS = {
+    "deep_sleep_seconds": "INTEGER",
+    "light_sleep_seconds": "INTEGER",
+    "rem_sleep_seconds": "INTEGER",
+    "deep_sleep_percentage": "REAL",
+    "rem_sleep_percentage": "REAL",
+    "rem_or_deep_sleep_percentage": "REAL",
+    "average_respiration_value": "REAL",
+    "lowest_respiration_value": "REAL",
     "fell_asleep_at": "TEXT",
     "woke_up_at": "TEXT",
     "zone0_minutes": "INTEGER",
@@ -136,6 +144,14 @@ def upsert_daily_metrics(
             body_battery,
             stress_avg,
             sleep_seconds,
+            deep_sleep_seconds,
+            light_sleep_seconds,
+            rem_sleep_seconds,
+            deep_sleep_percentage,
+            rem_sleep_percentage,
+            rem_or_deep_sleep_percentage,
+            average_respiration_value,
+            lowest_respiration_value,
             fell_asleep_at,
             woke_up_at,
             vo2max,
@@ -147,7 +163,7 @@ def upsert_daily_metrics(
             zone5_minutes,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(metric_date) DO UPDATE SET
             steps = excluded.steps,
             calories = excluded.calories,
@@ -155,6 +171,14 @@ def upsert_daily_metrics(
             body_battery = excluded.body_battery,
             stress_avg = excluded.stress_avg,
             sleep_seconds = excluded.sleep_seconds,
+            deep_sleep_seconds = excluded.deep_sleep_seconds,
+            light_sleep_seconds = excluded.light_sleep_seconds,
+            rem_sleep_seconds = excluded.rem_sleep_seconds,
+            deep_sleep_percentage = excluded.deep_sleep_percentage,
+            rem_sleep_percentage = excluded.rem_sleep_percentage,
+            rem_or_deep_sleep_percentage = excluded.rem_or_deep_sleep_percentage,
+            average_respiration_value = excluded.average_respiration_value,
+            lowest_respiration_value = excluded.lowest_respiration_value,
             fell_asleep_at = excluded.fell_asleep_at,
             woke_up_at = excluded.woke_up_at,
             vo2max = excluded.vo2max,
@@ -174,6 +198,14 @@ def upsert_daily_metrics(
             metrics.get("body_battery"),
             metrics.get("stress_avg"),
             metrics.get("sleep_seconds"),
+            metrics.get("deep_sleep_seconds"),
+            metrics.get("light_sleep_seconds"),
+            metrics.get("rem_sleep_seconds"),
+            metrics.get("deep_sleep_percentage"),
+            metrics.get("rem_sleep_percentage"),
+            metrics.get("rem_or_deep_sleep_percentage"),
+            metrics.get("average_respiration_value"),
+            metrics.get("lowest_respiration_value"),
             metrics.get("fell_asleep_at"),
             metrics.get("woke_up_at"),
             metrics.get("vo2max"),
@@ -389,7 +421,7 @@ def _training_readiness(
 
 def _metric_features_from_daily_metrics_row(
     row: sqlite3.Row,
-) -> dict[str, int | None]:
+) -> dict[str, int | float | None]:
     resting_hr = _as_int(row["resting_heart_rate"])
     body_battery = _as_int(row["body_battery"])
     stress_avg = _as_float(row["stress_avg"])
@@ -401,6 +433,11 @@ def _metric_features_from_daily_metrics_row(
         "metric:bodyBattery": body_battery,
         "metric:trainingReadiness": _training_readiness(
             body_battery, sleep_seconds, stress_avg
+        ),
+        "metric:deepSleepPercentage": _as_float(row["deep_sleep_percentage"]),
+        "metric:remSleepPercentage": _as_float(row["rem_sleep_percentage"]),
+        "metric:remOrDeepSleepPercentage": _as_float(
+            row["rem_or_deep_sleep_percentage"]
         ),
     }
 
@@ -735,6 +772,9 @@ def rebuild_analysis_values(connection: sqlite3.Connection) -> None:
             stress_avg,
             body_battery,
             sleep_seconds,
+            deep_sleep_percentage,
+            rem_sleep_percentage,
+            rem_or_deep_sleep_percentage,
             resting_heart_rate,
             fell_asleep_at,
             woke_up_at
