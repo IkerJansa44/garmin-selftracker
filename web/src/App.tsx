@@ -43,6 +43,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { DerivedMetricCard } from "./components/DerivedMetricCard";
 import { SleepWindowChart } from "./components/SleepWindowChart";
 import {
   DEFAULT_QUESTIONS,
@@ -51,15 +52,22 @@ import {
   SECTION_ORDER,
 } from "./lib/constants";
 import {
+  CAFFEINE_LAST_TIME_QUESTION_ID,
+  DERIVED_GAP_METRIC_KEYS,
+  DERIVED_GAP_METRICS,
+  DERIVED_ONLY_QUESTION_IDS,
+  MEAL_FINISH_QUESTION_ID,
+  type DerivedGapMetricKey,
+} from "./lib/derivedMetrics";
+import {
   defaultDraftAnswers,
   formatReadableDate,
   formatTime,
   mean,
 } from "./lib/mockData";
 import {
-  caffeineToSleepGapMinutes,
-  mealToSleepGapMinutes,
   parseClockTimeToMinutes,
+  timeToSleepGapMinutes,
 } from "./lib/time";
 import {
   buildSleepWindowChartStats,
@@ -146,8 +154,7 @@ type GarminPlotKey =
   | "zone3Minutes"
   | "zone4Minutes"
   | "zone5Minutes"
-  | "mealToSleepGapMinutes"
-  | "caffeineToSleepGapMinutes";
+  | DerivedGapMetricKey;
 type DashboardPlotVariableKey =
   | `metric:${MetricKey}`
   | `garmin:${GarminPlotKey}`
@@ -213,9 +220,6 @@ interface ActiveCorrelationTooltip {
     y: number;
   };
 }
-
-const MEAL_TO_SLEEP_TOOLTIP_LABEL = "Time Between Eating & Sleep";
-const CAFFEINE_TO_SLEEP_TOOLTIP_LABEL = "Time Between Caffeine & Sleep";
 
 const IMPORT_STATUS_LABELS: Record<ImportState, string> = {
   ok: "OK",
@@ -330,14 +334,11 @@ const REMOVED_DEFAULT_QUESTION_IDS = new Set([
   "notes",
 ]);
 const CAFFEINE_QUESTION_ID = "caffeine_count";
-const CAFFEINE_LAST_TIME_CHILD_ID = "caffeine_last_time";
 const ALCOHOL_QUESTION_ID = "alcohol_units";
 const ALCOHOL_LAST_TIME_CHILD_ID = "alcohol_last_time";
-const MEAL_FINISH_QUESTION_ID = "late_meal";
 const SLEEP_TIME_QUESTION_ID = "sleep_time";
 const FULLNESS_QUESTION_ID = "nutrition_fullness";
 const ENERGY_TARGET_QUESTION_ID = "felt_energized_during_day";
-const DERIVED_ONLY_QUESTION_IDS = new Set([MEAL_FINISH_QUESTION_ID, CAFFEINE_LAST_TIME_CHILD_ID]);
 const IMPORT_POLL_INTERVAL_MS = 5000;
 const DASHBOARD_REFRESH_INTERVAL_MS = 60000;
 const MAX_IMPORT_RANGE_DAYS = 365;
@@ -345,6 +346,16 @@ const DEFAULT_CHECKIN_REMINDER_SETTINGS: CheckinReminderSettings = {
   enabled: true,
   notifyAfter: "22:30",
 };
+const EMPTY_DERIVED_GAP_PREDICTORS = Object.fromEntries(
+  DERIVED_GAP_METRICS.map((metric) => [metric.key, null]),
+) as Record<DerivedGapMetricKey, number | null>;
+const DERIVED_GAP_PLOT_META = Object.fromEntries(
+  DERIVED_GAP_METRICS.map((metric) => [
+    metric.key,
+    { label: metric.plotLabel, color: metric.color, unit: "min" },
+  ]),
+) as Record<DerivedGapMetricKey, Omit<DashboardPlotVariableOption, "key">>;
+
 const GARMIN_PLOT_META: Record<GarminPlotKey, Omit<DashboardPlotVariableOption, "key">> = {
   steps: { label: "Steps", color: "#4f7e65", unit: "steps" },
   calories: { label: "Calories", color: "#8a5a4e", unit: "kcal" },
@@ -359,8 +370,7 @@ const GARMIN_PLOT_META: Record<GarminPlotKey, Omit<DashboardPlotVariableOption, 
   zone3Minutes: { label: "Zone 3 Time", color: "#d4a843", unit: "min" },
   zone4Minutes: { label: "Zone 4 Time", color: "#c0693a", unit: "min" },
   zone5Minutes: { label: "Zone 5 Time", color: "#a63228", unit: "min" },
-  mealToSleepGapMinutes: { label: "Time Before Sleep (Eating)", color: "#7b6d8d", unit: "min" },
-  caffeineToSleepGapMinutes: { label: "Time Before Sleep (Caffeine)", color: "#8b5c6f", unit: "min" },
+  ...DERIVED_GAP_PLOT_META,
 };
 const GARMIN_PLOT_DIRECTIONS: Partial<Record<GarminPlotKey, PlotDirection>> = {
   sleepConsistency: "lower",
@@ -889,8 +899,8 @@ function formatCorrelationPredictorValue(
     return formatHoursAsHoursMinutes(point.x);
   }
   if (
-    predictorKey === "garmin:mealToSleepGapMinutes"
-    || predictorKey === "garmin:caffeineToSleepGapMinutes"
+    predictorKey.startsWith("garmin:")
+    && DERIVED_GAP_METRIC_KEYS.has(predictorKey.slice(7) as DerivedGapMetricKey)
   ) {
     return formatMinutesAsHours(Math.round(point.x));
   }
@@ -1084,7 +1094,7 @@ function migrateQuestionLibrary(questions: CheckInQuestion[]): CheckInQuestion[]
         if (!nextQuestion.children?.length) {
           nextQuestion.children = [
             {
-              id: CAFFEINE_LAST_TIME_CHILD_ID,
+              id: CAFFEINE_LAST_TIME_QUESTION_ID,
               prompt: "Last caffeine drink",
               inputType: "time",
               analysisMode: nextQuestion.analysisMode,
@@ -2000,8 +2010,7 @@ function App() {
         zone3Minutes: null,
         zone4Minutes: null,
         zone5Minutes: null,
-        mealToSleepGapMinutes: null,
-        caffeineToSleepGapMinutes: null,
+        ...EMPTY_DERIVED_GAP_PREDICTORS,
       },
       metrics: EMPTY_METRICS,
       coverage: EMPTY_COVERAGE,
@@ -2339,22 +2348,18 @@ function App() {
       label: getAnalysisValueLabel(value.featureKey, questionFieldsById),
       value: formatAnalysisValue(value, questionFieldsById),
     }));
-    if (hoveredRecord?.predictors.mealToSleepGapMinutes !== null && hoveredRecord?.predictors.mealToSleepGapMinutes !== undefined) {
-      predictorItems = appendTooltipItem(
-        predictorItems,
-        MEAL_TO_SLEEP_TOOLTIP_LABEL,
-        formatMinutesAsHours(hoveredRecord.predictors.mealToSleepGapMinutes),
-      );
-    }
-    if (
-      hoveredRecord?.predictors.caffeineToSleepGapMinutes !== null
-      && hoveredRecord?.predictors.caffeineToSleepGapMinutes !== undefined
-    ) {
-      predictorItems = appendTooltipItem(
-        predictorItems,
-        CAFFEINE_TO_SLEEP_TOOLTIP_LABEL,
-        formatMinutesAsHours(hoveredRecord.predictors.caffeineToSleepGapMinutes),
-      );
+    if (hoveredRecord) {
+      for (const metric of DERIVED_GAP_METRICS) {
+        const value = hoveredRecord.predictors[metric.key];
+        if (value === null || value === undefined) {
+          continue;
+        }
+        predictorItems = appendTooltipItem(
+          predictorItems,
+          metric.tooltipLabel,
+          formatMinutesAsHours(value),
+        );
+      }
     }
     const sections: CorrelationTooltipSection[] = [
       {
@@ -2604,31 +2609,27 @@ function App() {
       ? "Activity detected"
       : "No activity logged";
   }, [selectedCheckinRecord]);
-  const hasMealTimeAnswer = useMemo(() => {
-    const mealTime = draftAnswers[MEAL_FINISH_QUESTION_ID];
-    return typeof mealTime === "string" && parseClockTimeToMinutes(mealTime) !== null;
-  }, [draftAnswers]);
-  const hasCaffeineTimeAnswer = useMemo(() => {
-    const caffeineTime = draftAnswers[CAFFEINE_LAST_TIME_CHILD_ID];
-    return typeof caffeineTime === "string" && parseClockTimeToMinutes(caffeineTime) !== null;
-  }, [draftAnswers]);
-
-  const mealSleepGapValue = useMemo(() => {
-    const mealTime = draftAnswers[MEAL_FINISH_QUESTION_ID];
-    const sleepTime = selectedFellAsleepTime;
-    if (typeof mealTime !== "string" || typeof sleepTime !== "string") {
-      return null;
-    }
-    return mealToSleepGapMinutes(mealTime, sleepTime);
-  }, [draftAnswers, selectedFellAsleepTime]);
-  const caffeineSleepGapValue = useMemo(() => {
-    const caffeineTime = draftAnswers[CAFFEINE_LAST_TIME_CHILD_ID];
-    const sleepTime = selectedFellAsleepTime;
-    if (typeof caffeineTime !== "string" || typeof sleepTime !== "string") {
-      return null;
-    }
-    return caffeineToSleepGapMinutes(caffeineTime, sleepTime);
-  }, [draftAnswers, selectedFellAsleepTime]);
+  const derivedGapMetricCards = useMemo(
+    () =>
+      DERIVED_GAP_METRICS.map((metric) => {
+        const answer = draftAnswers[metric.questionId];
+        const hasAnswer = typeof answer === "string" && parseClockTimeToMinutes(answer) !== null;
+        const value = typeof answer === "string" && typeof selectedFellAsleepTime === "string"
+          ? timeToSleepGapMinutes(answer, selectedFellAsleepTime)
+          : null;
+        return {
+          key: metric.key,
+          label: metric.detailLabel,
+          value: value === null ? "Unknown" : formatMinutesAsHours(value),
+          helperText: !hasAnswer
+            ? metric.missingAnswerHint
+            : selectedFellAsleepTime
+              ? metric.computedHint
+              : "Updates after Garmin records sleep start time for this date.",
+        };
+      }),
+    [draftAnswers, selectedFellAsleepTime],
+  );
 
   const todayDateLabel = new Date().toLocaleDateString(undefined, {
     weekday: "long",
@@ -4169,35 +4170,14 @@ function App() {
                 </div>
               </div>
 
-              <div className="mt-5 rounded-[22px] bg-subsurface p-4">
-                <p className="text-xs uppercase tracking-[0.16em] text-muted">Derived Metric</p>
-                <p className="mt-2 text-sm text-muted">Time Between Eating And Sleep</p>
-                <p className="metric-number mt-1 text-2xl font-semibold text-ink">
-                  {mealSleepGapValue === null ? "Unknown" : formatMinutesAsHours(mealSleepGapValue)}
-                </p>
-                <p className="mt-1 text-xs text-muted">
-                  {!hasMealTimeAnswer
-                    ? "Add 'Finished eating at' to calculate this metric."
-                    : selectedFellAsleepTime
-                    ? "Computed from check-in meal time and Garmin sleep start."
-                    : "Updates after Garmin records sleep start time for this date."}
-                </p>
-              </div>
-
-              <div className="mt-5 rounded-[22px] bg-subsurface p-4">
-                <p className="text-xs uppercase tracking-[0.16em] text-muted">Derived Metric</p>
-                <p className="mt-2 text-sm text-muted">Time Between Caffeine And Sleep</p>
-                <p className="metric-number mt-1 text-2xl font-semibold text-ink">
-                  {caffeineSleepGapValue === null ? "Unknown" : formatMinutesAsHours(caffeineSleepGapValue)}
-                </p>
-                <p className="mt-1 text-xs text-muted">
-                  {!hasCaffeineTimeAnswer
-                    ? "Add 'Last caffeine drink' to calculate this metric."
-                    : selectedFellAsleepTime
-                    ? "Computed from check-in caffeine time and Garmin sleep start."
-                    : "Updates after Garmin records sleep start time for this date."}
-                </p>
-              </div>
+              {derivedGapMetricCards.map((metric) => (
+                <DerivedMetricCard
+                  key={metric.key}
+                  label={metric.label}
+                  value={metric.value}
+                  helperText={metric.helperText}
+                />
+              ))}
 
               <div className="mt-6 flex justify-end">
                 <button

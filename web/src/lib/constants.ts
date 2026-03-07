@@ -1,3 +1,7 @@
+import {
+  CAFFEINE_LAST_TIME_QUESTION_ID,
+  MEAL_FINISH_QUESTION_ID,
+} from "./derivedMetrics";
 import { CheckInQuestion, MetricKey } from "./types";
 
 export interface MetricDefinition {
@@ -102,7 +106,7 @@ export const DEFAULT_QUESTIONS: CheckInQuestion[] = [
     step: 1,
     children: [
       {
-        id: "caffeine_last_time",
+        id: CAFFEINE_LAST_TIME_QUESTION_ID,
         prompt: "Last caffeine drink",
         inputType: "time",
         analysisMode: "predictor_next_day",
@@ -142,7 +146,7 @@ export const DEFAULT_QUESTIONS: CheckInQuestion[] = [
     defaultIncluded: true,
   },
   {
-    id: "late_meal",
+    id: MEAL_FINISH_QUESTION_ID,
     section: "Nutrition & Substances",
     prompt: "Finished eating at",
     inputType: "time",

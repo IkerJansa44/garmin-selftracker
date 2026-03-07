@@ -1,4 +1,9 @@
 import { mean, pearsonCorrelation } from "./mockData";
+import {
+  DERIVED_GAP_METRICS,
+  DERIVED_ONLY_QUESTION_IDS,
+  type DerivedGapMetricKey,
+} from "./derivedMetrics";
 import { flattenQuestionFields, type QuestionFieldDefinition } from "./questions";
 import {
   type AnalysisValueRecord,
@@ -19,8 +24,7 @@ type GarminPredictorKey =
   | "stressAvg"
   | "bodyBattery"
   | "sleepSeconds"
-  | "mealToSleepGapMinutes"
-  | "caffeineToSleepGapMinutes"
+  | DerivedGapMetricKey
   | "sleepConsistency"
   | "isTrainingDay";
 
@@ -70,18 +74,20 @@ export interface CorrelationPairResult {
   categoryCounts: number[] | null;
 }
 
+const GAP_PREDICTOR_LABELS = Object.fromEntries(
+  DERIVED_GAP_METRICS.map((metric) => [metric.key, metric.predictorLabel]),
+) as Record<DerivedGapMetricKey, string>;
+
 const GARMIN_PREDICTOR_LABELS: Record<GarminPredictorKey, string> = {
   steps: "Steps",
   calories: "Calories",
   stressAvg: "Stress Avg",
   bodyBattery: "Body Battery",
   sleepSeconds: "Sleep Duration (h)",
-  mealToSleepGapMinutes: "Time Between Eating & Sleep (min)",
-  caffeineToSleepGapMinutes: "Time Between Caffeine & Sleep (min)",
+  ...GAP_PREDICTOR_LABELS,
   sleepConsistency: "Sleep Consistency (min)",
   isTrainingDay: "Training Day (1/0)",
 };
-const DERIVED_ONLY_QUESTION_IDS = new Set(["late_meal", "caffeine_last_time"]);
 
 const OUTCOME_LABELS: Record<MetricKey, string> = {
   recoveryIndex: "Recovery Index",

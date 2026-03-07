@@ -15,8 +15,7 @@ from urllib.parse import parse_qs, urlparse
 
 from src.config import SettingsError, load_settings
 from src.db import (
-    build_caffeine_sleep_gap_by_metric_date,
-    build_meal_sleep_gap_by_metric_date,
+    build_time_to_sleep_gap_by_metric_date,
     build_sleep_consistency_by_source_date,
     connect_db,
     get_analysis_values,
@@ -27,6 +26,10 @@ from src.db import (
     rebuild_analysis_values,
     upsert_checkin_entry,
     upsert_setting_json,
+)
+from src.derived_metrics import (
+    TIME_TO_SLEEP_GAP_DASHBOARD_KEYS,
+    TIME_TO_SLEEP_GAP_METRICS,
 )
 from src.reminders import (
     CHECKIN_REMINDER_SETTINGS_KEY,
@@ -87,8 +90,7 @@ DERIVED_PREDICTOR_SOURCE_GARMIN_KEYS = {
     "bodyBattery",
     "sleepSeconds",
     "sleepConsistency",
-    "mealToSleepGapMinutes",
-    "caffeineToSleepGapMinutes",
+    *TIME_TO_SLEEP_GAP_DASHBOARD_KEYS,
 }
 
 
@@ -1129,18 +1131,16 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
     sleep_consistency_by_source_date = build_sleep_consistency_by_source_date(
         metric_rows
     )
-    meal_sleep_gap_by_metric_date = build_meal_sleep_gap_by_metric_date(
-        connection,
-        metric_rows,
-        start_date=lookback_start_date.isoformat(),
-        end_date=end_date.isoformat(),
-    )
-    caffeine_sleep_gap_by_metric_date = build_caffeine_sleep_gap_by_metric_date(
-        connection,
-        metric_rows,
-        start_date=lookback_start_date.isoformat(),
-        end_date=end_date.isoformat(),
-    )
+    time_to_sleep_gap_by_dashboard_key = {
+        metric.dashboard_key: build_time_to_sleep_gap_by_metric_date(
+            connection,
+            metric_rows,
+            start_date=lookback_start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            metric=metric,
+        )
+        for metric in TIME_TO_SLEEP_GAP_METRICS
+    }
 
     activity_rows = connection.execute(
         """
@@ -1210,6 +1210,29 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
         ):
             import_state = "failed"
 
+        predictors = {
+            "steps": _as_int(row["steps"]) if row else None,
+            "calories": _as_int(row["calories"]) if row else None,
+            "stressAvg": _as_float(row["stress_avg"]) if row else None,
+            "bodyBattery": _as_int(row["body_battery"]) if row else None,
+            "sleepSeconds": _as_int(row["sleep_seconds"]) if row else None,
+            "sleepConsistency": sleep_consistency_by_source_date.get(date_key),
+            "isTrainingDay": date_key in training_days,
+            "zone0Minutes": _as_int(row["zone0_minutes"]) if row else None,
+            "zone1Minutes": _as_int(row["zone1_minutes"]) if row else None,
+            "zone2Minutes": _as_int(row["zone2_minutes"]) if row else None,
+            "zone3Minutes": _as_int(row["zone3_minutes"]) if row else None,
+            "zone4Minutes": _as_int(row["zone4_minutes"]) if row else None,
+            "zone5Minutes": _as_int(row["zone5_minutes"]) if row else None,
+        }
+        predictors.update(
+            {
+                metric.dashboard_key: time_to_sleep_gap_by_dashboard_key[
+                    metric.dashboard_key
+                ].get(date_key)
+                for metric in TIME_TO_SLEEP_GAP_METRICS
+            }
+        )
         records.append(
             {
                 "date": date_key,
@@ -1230,27 +1253,7 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
                     if row and row["woke_up_at"] is not None
                     else None
                 ),
-                "predictors": {
-                    "steps": _as_int(row["steps"]) if row else None,
-                    "calories": _as_int(row["calories"]) if row else None,
-                    "stressAvg": _as_float(row["stress_avg"]) if row else None,
-                    "bodyBattery": _as_int(row["body_battery"]) if row else None,
-                    "sleepSeconds": _as_int(row["sleep_seconds"]) if row else None,
-                    "sleepConsistency": sleep_consistency_by_source_date.get(date_key),
-                    "isTrainingDay": date_key in training_days,
-                    "zone0Minutes": _as_int(row["zone0_minutes"]) if row else None,
-                    "zone1Minutes": _as_int(row["zone1_minutes"]) if row else None,
-                    "zone2Minutes": _as_int(row["zone2_minutes"]) if row else None,
-                    "zone3Minutes": _as_int(row["zone3_minutes"]) if row else None,
-                    "zone4Minutes": _as_int(row["zone4_minutes"]) if row else None,
-                    "zone5Minutes": _as_int(row["zone5_minutes"]) if row else None,
-                    "mealToSleepGapMinutes": meal_sleep_gap_by_metric_date.get(
-                        date_key
-                    ),
-                    "caffeineToSleepGapMinutes": (
-                        caffeine_sleep_gap_by_metric_date.get(date_key)
-                    ),
-                },
+                "predictors": predictors,
                 "metrics": metrics,
                 "coverage": coverage,
             }

@@ -7,6 +7,12 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from src.derived_metrics import (
+    DERIVED_ONLY_QUESTION_KEYS,
+    TIME_TO_SLEEP_GAP_METRICS,
+    TimeToSleepGapMetric,
+)
+
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "sql" / "schema.sql"
 REQUIRED_DAILY_METRICS_COLUMNS = {
     "deep_sleep_seconds": "INTEGER",
@@ -26,7 +32,6 @@ REQUIRED_DAILY_METRICS_COLUMNS = {
     "zone4_minutes": "INTEGER",
     "zone5_minutes": "INTEGER",
 }
-DERIVED_ONLY_QUESTION_KEYS = {"late_meal", "caffeine_last_time"}
 
 
 def utc_now() -> str:
@@ -584,12 +589,12 @@ def build_sleep_consistency_by_source_date(
     return consistency_by_source_date
 
 
-def build_checkin_time_to_sleep_gap_by_metric_date(
+def build_time_to_sleep_gap_by_metric_date(
     connection: sqlite3.Connection,
     daily_metric_rows: list[sqlite3.Row],
     start_date: str,
     end_date: str,
-    answer_key: str,
+    metric: TimeToSleepGapMetric,
 ) -> dict[str, int]:
     """Return a mapping of metric_date → check-in time-to-sleep gap in minutes.
 
@@ -629,7 +634,7 @@ def build_checkin_time_to_sleep_gap_by_metric_date(
             continue
         if not isinstance(answers, dict):
             continue
-        event_minutes = _clock_minutes(answers.get(answer_key))
+        event_minutes = _clock_minutes(answers.get(metric.answer_key))
         sleep_minutes = sleep_minutes_by_date.get(metric_date)
         if event_minutes is None or sleep_minutes is None:
             continue
@@ -638,36 +643,6 @@ def build_checkin_time_to_sleep_gap_by_metric_date(
         )
 
     return gap_by_metric_date
-
-
-def build_meal_sleep_gap_by_metric_date(
-    connection: sqlite3.Connection,
-    daily_metric_rows: list[sqlite3.Row],
-    start_date: str,
-    end_date: str,
-) -> dict[str, int]:
-    return build_checkin_time_to_sleep_gap_by_metric_date(
-        connection,
-        daily_metric_rows,
-        start_date,
-        end_date,
-        answer_key="late_meal",
-    )
-
-
-def build_caffeine_sleep_gap_by_metric_date(
-    connection: sqlite3.Connection,
-    daily_metric_rows: list[sqlite3.Row],
-    start_date: str,
-    end_date: str,
-) -> dict[str, int]:
-    return build_checkin_time_to_sleep_gap_by_metric_date(
-        connection,
-        daily_metric_rows,
-        start_date,
-        end_date,
-        answer_key="caffeine_last_time",
-    )
 
 
 def backfill_zone_minutes(
@@ -985,26 +960,15 @@ def rebuild_analysis_values(connection: sqlite3.Connection) -> None:
         sleep_minutes = sleep_start_minutes_by_metric_date.get(predictor_analysis_date)
         if sleep_minutes is None:
             continue
-        for answer_key, feature_key, alignment_rule in (
-            (
-                "late_meal",
-                "garmin:mealToSleepGapMinutes",
-                "meal_sleep_gap_previous_day",
-            ),
-            (
-                "caffeine_last_time",
-                "garmin:caffeineToSleepGapMinutes",
-                "caffeine_sleep_gap_previous_day",
-            ),
-        ):
-            event_minutes = _clock_minutes(answers.get(answer_key))
+        for metric in TIME_TO_SLEEP_GAP_METRICS:
+            event_minutes = _clock_minutes(answers.get(metric.answer_key))
             if event_minutes is None:
                 continue
             _append_analysis_row(
                 rows_to_insert,
                 analysis_date=predictor_analysis_date,
                 role="predictor",
-                feature_key=feature_key,
+                feature_key=metric.predictor_key,
                 value_num=float(
                     _time_to_sleep_gap_minutes(event_minutes, sleep_minutes)
                 ),
@@ -1012,7 +976,7 @@ def rebuild_analysis_values(connection: sqlite3.Connection) -> None:
                 value_bool=None,
                 source_date=source_date,
                 lag_days=-1,
-                alignment_rule=alignment_rule,
+                alignment_rule=metric.alignment_rule,
                 refreshed_at=refreshed_at,
             )
 
