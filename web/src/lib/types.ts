@@ -56,6 +56,7 @@ export interface DailyRecord {
     zone4Minutes: number | null;
     zone5Minutes: number | null;
     mealToSleepGapMinutes: number | null;
+    caffeineToSleepGapMinutes: number | null;
   };
   metrics: Record<MetricKey, number | null>;
   coverage: Record<MetricKey, CoverageState>;

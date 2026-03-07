@@ -14,17 +14,31 @@ export function parseClockTimeToMinutes(value: string): number | null {
   return hours * 60 + minutes;
 }
 
+export function timeToSleepGapMinutes(
+  eventTime: string,
+  sleepTime: string,
+): number | null {
+  const eventMinutes = parseClockTimeToMinutes(eventTime);
+  const sleepMinutes = parseClockTimeToMinutes(sleepTime);
+  if (eventMinutes === null || sleepMinutes === null) {
+    return null;
+  }
+  if (sleepMinutes >= eventMinutes) {
+    return sleepMinutes - eventMinutes;
+  }
+  return 24 * 60 - eventMinutes + sleepMinutes;
+}
+
 export function mealToSleepGapMinutes(
   mealTime: string,
   sleepTime: string,
 ): number | null {
-  const mealMinutes = parseClockTimeToMinutes(mealTime);
-  const sleepMinutes = parseClockTimeToMinutes(sleepTime);
-  if (mealMinutes === null || sleepMinutes === null) {
-    return null;
-  }
-  if (sleepMinutes >= mealMinutes) {
-    return sleepMinutes - mealMinutes;
-  }
-  return 24 * 60 - mealMinutes + sleepMinutes;
+  return timeToSleepGapMinutes(mealTime, sleepTime);
+}
+
+export function caffeineToSleepGapMinutes(
+  caffeineTime: string,
+  sleepTime: string,
+): number | null {
+  return timeToSleepGapMinutes(caffeineTime, sleepTime);
 }

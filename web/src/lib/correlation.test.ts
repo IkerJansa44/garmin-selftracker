@@ -93,6 +93,7 @@ function buildRecords(days: number): DailyRecord[] {
         zone4Minutes: null,
         zone5Minutes: null,
         mealToSleepGapMinutes: null,
+        caffeineToSleepGapMinutes: null,
       },
       metrics: {
         recoveryIndex,
@@ -282,6 +283,7 @@ function buildModerateAnovaRecords(days: number): DailyRecord[] {
         zone4Minutes: null,
         zone5Minutes: null,
         mealToSleepGapMinutes: null,
+        caffeineToSleepGapMinutes: null,
       },
       metrics: {
         recoveryIndex,
@@ -331,10 +333,13 @@ describe("correlation helpers", () => {
 
     expect(predictors.some((option) => option.key === "question:caffeine_count")).toBe(true);
     expect(predictors.some((option) => option.key === "garmin:mealToSleepGapMinutes")).toBe(true);
+    expect(predictors.some((option) => option.key === "garmin:caffeineToSleepGapMinutes")).toBe(true);
     expect(predictors.some((option) => option.key === "garmin:deepSleepPercentage")).toBe(false);
     expect(predictors.some((option) => option.key === "garmin:remSleepPercentage")).toBe(false);
     expect(predictors.some((option) => option.key === "garmin:remOrDeepSleepPercentage")).toBe(false);
     expect(predictors.some((option) => option.key === "garmin:sleepConsistency")).toBe(true);
+    expect(predictors.some((option) => option.key === "question:late_meal")).toBe(false);
+    expect(predictors.some((option) => option.key === "question:caffeine_last_time")).toBe(false);
     expect(outcomes.some((option) => option.key === "metric:recoveryIndex")).toBe(true);
     expect(outcomes.some((option) => option.key === "metric:stress")).toBe(true);
     expect(outcomes.some((option) => option.key === "metric:bodyBattery")).toBe(true);
@@ -349,13 +354,15 @@ describe("correlation helpers", () => {
 
     expect(options.some((option) => option.key === "garmin:steps")).toBe(true);
     expect(options.some((option) => option.key === "garmin:mealToSleepGapMinutes")).toBe(true);
+    expect(options.some((option) => option.key === "garmin:caffeineToSleepGapMinutes")).toBe(true);
     expect(options.some((option) => option.key === "garmin:deepSleepPercentage")).toBe(false);
     expect(options.some((option) => option.key === "garmin:remSleepPercentage")).toBe(false);
     expect(options.some((option) => option.key === "garmin:remOrDeepSleepPercentage")).toBe(false);
     expect(options.some((option) => option.key === "garmin:sleepConsistency")).toBe(true);
     expect(options.some((option) => option.key === "garmin:isTrainingDay")).toBe(false);
     expect(options.some((option) => option.key === "question:caffeine_count")).toBe(true);
-    expect(options.some((option) => option.key === "question:late_meal")).toBe(true);
+    expect(options.some((option) => option.key === "question:late_meal")).toBe(false);
+    expect(options.some((option) => option.key === "question:caffeine_last_time")).toBe(false);
   });
 
   it("computes quantile cut points for 2..5 bins", () => {
@@ -468,6 +475,7 @@ describe("correlation helpers", () => {
           zone4Minutes: null,
           zone5Minutes: null,
           mealToSleepGapMinutes: null,
+          caffeineToSleepGapMinutes: null,
         },
         metrics: {
           recoveryIndex: 60,
@@ -513,6 +521,7 @@ describe("correlation helpers", () => {
           zone4Minutes: null,
           zone5Minutes: null,
           mealToSleepGapMinutes: null,
+          caffeineToSleepGapMinutes: null,
         },
         metrics: {
           recoveryIndex: 70,
@@ -558,6 +567,7 @@ describe("correlation helpers", () => {
           zone4Minutes: null,
           zone5Minutes: null,
           mealToSleepGapMinutes: null,
+          caffeineToSleepGapMinutes: null,
         },
         metrics: {
           recoveryIndex: 80,

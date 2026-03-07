@@ -596,6 +596,14 @@ def test_normalize_derived_predictors_payload_accepts_valid_payload() -> None:
             "cutPoints": [120],
             "labels": ["tight", "wide"],
         },
+        {
+            "id": "caffeine_sleep_gap_bins",
+            "name": "Caffeine Sleep Gap",
+            "sourceKey": "garmin:caffeineToSleepGapMinutes",
+            "mode": "threshold",
+            "cutPoints": [360],
+            "labels": ["early", "late"],
+        },
     ]
 
     normalized = _normalize_derived_predictors_payload(payload)
@@ -604,6 +612,7 @@ def test_normalize_derived_predictors_payload_accepts_valid_payload() -> None:
     assert normalized[1]["mode"] == "quantile"
     assert normalized[2]["sourceKey"] == "garmin:sleepConsistency"
     assert normalized[3]["sourceKey"] == "garmin:mealToSleepGapMinutes"
+    assert normalized[4]["sourceKey"] == "garmin:caffeineToSleepGapMinutes"
 
 
 @pytest.mark.parametrize(
@@ -887,7 +896,7 @@ def test_load_correlation_values_payload_uses_materialized_analysis_values(
         """,
         (
             "2026-02-20",
-            '{"caffeine_count": 2, "late_meal": "21:15", "felt_energized_during_day": "normal"}',
+            '{"caffeine_count": 2, "caffeine_last_time": "18:45", "late_meal": "21:15", "felt_energized_during_day": "normal"}',
             "2026-02-20T21:00:00+00:00",
             "2026-02-20T21:00:00+00:00",
         ),
@@ -915,10 +924,20 @@ def test_load_correlation_values_payload_uses_materialized_analysis_values(
     predictor_question = values_by_key[("predictor", "question:caffeine_count")]
     assert predictor_question["valueNum"] == 2
     assert predictor_question["alignmentRule"] == "checkin_previous_day"
+    assert ("predictor", "question:caffeine_last_time") not in values_by_key
+    assert ("predictor", "question:late_meal") not in values_by_key
 
     predictor_meal_sleep = values_by_key[("predictor", "garmin:mealToSleepGapMinutes")]
     assert predictor_meal_sleep["valueNum"] == 90
     assert predictor_meal_sleep["alignmentRule"] == "meal_sleep_gap_previous_day"
+
+    predictor_caffeine_sleep = values_by_key[
+        ("predictor", "garmin:caffeineToSleepGapMinutes")
+    ]
+    assert predictor_caffeine_sleep["valueNum"] == 240
+    assert (
+        predictor_caffeine_sleep["alignmentRule"] == "caffeine_sleep_gap_previous_day"
+    )
 
     target_recovery_index = values_by_key[("target", "metric:recoveryIndex")]
     assert target_recovery_index["valueNum"] == 37
@@ -985,6 +1004,53 @@ def test_load_dashboard_payload_includes_fell_asleep_iso_field(tmp_path: Path) -
     assert record["metrics"]["remSleepPercentage"] == 19.1
     assert record["metrics"]["remOrDeepSleepPercentage"] == 42.6
     assert "sleepConsistency" in record["predictors"]
+
+
+def test_load_dashboard_payload_includes_caffeine_sleep_gap_predictor(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "garmin.db"
+
+    connection = connect_db(str(db_path))
+    init_db(connection)
+    connection.execute(
+        """
+        INSERT INTO daily_metrics (
+            metric_date,
+            fell_asleep_at,
+            updated_at
+        )
+        VALUES (?, ?, ?)
+        """,
+        (
+            "2026-02-21",
+            "2026-02-21T00:30:00+00:00",
+            "2026-02-21T06:00:00+00:00",
+        ),
+    )
+    connection.execute(
+        """
+        INSERT INTO checkin_entries (checkin_date, answers_json, completed_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            "2026-02-20",
+            '{"caffeine_count": 2, "caffeine_last_time": "18:45"}',
+            "2026-02-20T21:00:00+00:00",
+            "2026-02-20T21:00:00+00:00",
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+    payload = _load_dashboard_payload(str(db_path), 30)
+    record = next(
+        (entry for entry in payload["records"] if entry["date"] == "2026-02-21"),
+        None,
+    )
+
+    assert record is not None
+    assert record["predictors"]["caffeineToSleepGapMinutes"] == 345
 
 
 def test_load_correlation_values_payload_includes_sleep_consistency_predictor(

@@ -26,6 +26,7 @@ REQUIRED_DAILY_METRICS_COLUMNS = {
     "zone4_minutes": "INTEGER",
     "zone5_minutes": "INTEGER",
 }
+DERIVED_ONLY_QUESTION_KEYS = {"late_meal", "caffeine_last_time"}
 
 
 def utc_now() -> str:
@@ -522,10 +523,10 @@ def _circular_stddev_minutes(values: list[int]) -> float | None:
     return math.sqrt(variance)
 
 
-def _meal_to_sleep_gap_minutes(meal_minutes: int, sleep_minutes: int) -> int:
-    if sleep_minutes >= meal_minutes:
-        return sleep_minutes - meal_minutes
-    return 24 * 60 - meal_minutes + sleep_minutes
+def _time_to_sleep_gap_minutes(event_minutes: int, sleep_minutes: int) -> int:
+    if sleep_minutes >= event_minutes:
+        return sleep_minutes - event_minutes
+    return 24 * 60 - event_minutes + sleep_minutes
 
 
 def build_sleep_consistency_by_source_date(
@@ -583,15 +584,16 @@ def build_sleep_consistency_by_source_date(
     return consistency_by_source_date
 
 
-def build_meal_sleep_gap_by_metric_date(
+def build_checkin_time_to_sleep_gap_by_metric_date(
     connection: sqlite3.Connection,
     daily_metric_rows: list[sqlite3.Row],
     start_date: str,
     end_date: str,
+    answer_key: str,
 ) -> dict[str, int]:
-    """Return a mapping of metric_date → meal-to-sleep gap in minutes.
+    """Return a mapping of metric_date → check-in time-to-sleep gap in minutes.
 
-    For each metric date D the gap is computed from the ``late_meal`` answer
+    For each metric date D the gap is computed from the given check-in answer
     recorded in the check-in for D-1 and the ``fell_asleep_at`` value stored
     in the daily_metrics row for D (the same alignment used in the analysis
     values table).
@@ -604,7 +606,7 @@ def build_meal_sleep_gap_by_metric_date(
         if minutes is not None:
             sleep_minutes_by_date[metric_date] = minutes
 
-    # Query late_meal from check-ins for D-1 (one day before start_date to end_date)
+    # Query relevant time answer from check-ins for D-1.
     prior_start = _shift_iso_date(start_date, -1) or start_date
     checkin_rows = connection.execute(
         """
@@ -627,15 +629,45 @@ def build_meal_sleep_gap_by_metric_date(
             continue
         if not isinstance(answers, dict):
             continue
-        meal_minutes = _clock_minutes(answers.get("late_meal"))
+        event_minutes = _clock_minutes(answers.get(answer_key))
         sleep_minutes = sleep_minutes_by_date.get(metric_date)
-        if meal_minutes is None or sleep_minutes is None:
+        if event_minutes is None or sleep_minutes is None:
             continue
-        gap_by_metric_date[metric_date] = _meal_to_sleep_gap_minutes(
-            meal_minutes, sleep_minutes
+        gap_by_metric_date[metric_date] = _time_to_sleep_gap_minutes(
+            event_minutes, sleep_minutes
         )
 
     return gap_by_metric_date
+
+
+def build_meal_sleep_gap_by_metric_date(
+    connection: sqlite3.Connection,
+    daily_metric_rows: list[sqlite3.Row],
+    start_date: str,
+    end_date: str,
+) -> dict[str, int]:
+    return build_checkin_time_to_sleep_gap_by_metric_date(
+        connection,
+        daily_metric_rows,
+        start_date,
+        end_date,
+        answer_key="late_meal",
+    )
+
+
+def build_caffeine_sleep_gap_by_metric_date(
+    connection: sqlite3.Connection,
+    daily_metric_rows: list[sqlite3.Row],
+    start_date: str,
+    end_date: str,
+) -> dict[str, int]:
+    return build_checkin_time_to_sleep_gap_by_metric_date(
+        connection,
+        daily_metric_rows,
+        start_date,
+        end_date,
+        answer_key="caffeine_last_time",
+    )
 
 
 def backfill_zone_minutes(
@@ -910,6 +942,8 @@ def rebuild_analysis_values(connection: sqlite3.Connection) -> None:
             key = raw_key.strip()
             if not key:
                 continue
+            if key in DERIVED_ONLY_QUESTION_KEYS:
+                continue
             value_columns = _analysis_value_columns(raw_value)
             if value_columns is None:
                 continue
@@ -948,23 +982,39 @@ def rebuild_analysis_values(connection: sqlite3.Connection) -> None:
 
         if predictor_analysis_date is None:
             continue
-        meal_minutes = _clock_minutes(answers.get("late_meal"))
         sleep_minutes = sleep_start_minutes_by_metric_date.get(predictor_analysis_date)
-        if meal_minutes is None or sleep_minutes is None:
+        if sleep_minutes is None:
             continue
-        _append_analysis_row(
-            rows_to_insert,
-            analysis_date=predictor_analysis_date,
-            role="predictor",
-            feature_key="garmin:mealToSleepGapMinutes",
-            value_num=float(_meal_to_sleep_gap_minutes(meal_minutes, sleep_minutes)),
-            value_text=None,
-            value_bool=None,
-            source_date=source_date,
-            lag_days=-1,
-            alignment_rule="meal_sleep_gap_previous_day",
-            refreshed_at=refreshed_at,
-        )
+        for answer_key, feature_key, alignment_rule in (
+            (
+                "late_meal",
+                "garmin:mealToSleepGapMinutes",
+                "meal_sleep_gap_previous_day",
+            ),
+            (
+                "caffeine_last_time",
+                "garmin:caffeineToSleepGapMinutes",
+                "caffeine_sleep_gap_previous_day",
+            ),
+        ):
+            event_minutes = _clock_minutes(answers.get(answer_key))
+            if event_minutes is None:
+                continue
+            _append_analysis_row(
+                rows_to_insert,
+                analysis_date=predictor_analysis_date,
+                role="predictor",
+                feature_key=feature_key,
+                value_num=float(
+                    _time_to_sleep_gap_minutes(event_minutes, sleep_minutes)
+                ),
+                value_text=None,
+                value_bool=None,
+                source_date=source_date,
+                lag_days=-1,
+                alignment_rule=alignment_rule,
+                refreshed_at=refreshed_at,
+            )
 
     if rows_to_insert:
         connection.executemany(

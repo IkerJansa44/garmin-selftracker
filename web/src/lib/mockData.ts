@@ -259,6 +259,7 @@ export function generateMockRecords(totalDays = TOTAL_DAYS): DailyRecord[] {
         zone4Minutes: null,
         zone5Minutes: null,
         mealToSleepGapMinutes: currentFactors.lateMeal ? 135 : 195,
+        caffeineToSleepGapMinutes: currentFactors.caffeineCount > 0 ? 420 : null,
       },
       metrics,
       coverage,

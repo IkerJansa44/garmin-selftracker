@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlparse
 
 from src.config import SettingsError, load_settings
 from src.db import (
+    build_caffeine_sleep_gap_by_metric_date,
     build_meal_sleep_gap_by_metric_date,
     build_sleep_consistency_by_source_date,
     connect_db,
@@ -87,6 +88,7 @@ DERIVED_PREDICTOR_SOURCE_GARMIN_KEYS = {
     "sleepSeconds",
     "sleepConsistency",
     "mealToSleepGapMinutes",
+    "caffeineToSleepGapMinutes",
 }
 
 
@@ -1133,6 +1135,12 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
         start_date=lookback_start_date.isoformat(),
         end_date=end_date.isoformat(),
     )
+    caffeine_sleep_gap_by_metric_date = build_caffeine_sleep_gap_by_metric_date(
+        connection,
+        metric_rows,
+        start_date=lookback_start_date.isoformat(),
+        end_date=end_date.isoformat(),
+    )
 
     activity_rows = connection.execute(
         """
@@ -1238,6 +1246,9 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
                     "zone5Minutes": _as_int(row["zone5_minutes"]) if row else None,
                     "mealToSleepGapMinutes": meal_sleep_gap_by_metric_date.get(
                         date_key
+                    ),
+                    "caffeineToSleepGapMinutes": (
+                        caffeine_sleep_gap_by_metric_date.get(date_key)
                     ),
                 },
                 "metrics": metrics,

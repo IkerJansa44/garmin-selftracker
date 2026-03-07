@@ -20,6 +20,7 @@ type GarminPredictorKey =
   | "bodyBattery"
   | "sleepSeconds"
   | "mealToSleepGapMinutes"
+  | "caffeineToSleepGapMinutes"
   | "sleepConsistency"
   | "isTrainingDay";
 
@@ -76,9 +77,11 @@ const GARMIN_PREDICTOR_LABELS: Record<GarminPredictorKey, string> = {
   bodyBattery: "Body Battery",
   sleepSeconds: "Sleep Duration (h)",
   mealToSleepGapMinutes: "Time Between Eating & Sleep (min)",
+  caffeineToSleepGapMinutes: "Time Between Caffeine & Sleep (min)",
   sleepConsistency: "Sleep Consistency (min)",
   isTrainingDay: "Training Day (1/0)",
 };
+const DERIVED_ONLY_QUESTION_IDS = new Set(["late_meal", "caffeine_last_time"]);
 
 const OUTCOME_LABELS: Record<MetricKey, string> = {
   recoveryIndex: "Recovery Index",
@@ -677,6 +680,7 @@ export function buildDerivedPredictorSourceOptions(questions: CheckInQuestion[])
     }));
   const questionOptions = fields
     .filter((question) => question.analysisMode === "predictor_next_day")
+    .filter((question) => !DERIVED_ONLY_QUESTION_IDS.has(question.id))
     .filter((question) => question.inputType === "slider" || question.inputType === "time")
     .map((question) => ({
       key: `question:${question.id}`,
@@ -698,6 +702,7 @@ export function buildPredictorOptions(
   );
   const questionOptions = fields
     .filter((question) => question.analysisMode === "predictor_next_day")
+    .filter((question) => !DERIVED_ONLY_QUESTION_IDS.has(question.id))
     .filter((question) => question.inputType !== "text")
     .map((question) => ({
       key: `question:${question.id}`,

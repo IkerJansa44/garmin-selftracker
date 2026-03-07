@@ -56,7 +56,11 @@ import {
   formatTime,
   mean,
 } from "./lib/mockData";
-import { mealToSleepGapMinutes, parseClockTimeToMinutes } from "./lib/time";
+import {
+  caffeineToSleepGapMinutes,
+  mealToSleepGapMinutes,
+  parseClockTimeToMinutes,
+} from "./lib/time";
 import {
   buildSleepWindowChartStats,
   createDashboardPlotId,
@@ -142,7 +146,8 @@ type GarminPlotKey =
   | "zone3Minutes"
   | "zone4Minutes"
   | "zone5Minutes"
-  | "mealToSleepGapMinutes";
+  | "mealToSleepGapMinutes"
+  | "caffeineToSleepGapMinutes";
 type DashboardPlotVariableKey =
   | `metric:${MetricKey}`
   | `garmin:${GarminPlotKey}`
@@ -210,6 +215,7 @@ interface ActiveCorrelationTooltip {
 }
 
 const MEAL_TO_SLEEP_TOOLTIP_LABEL = "Time Between Eating & Sleep";
+const CAFFEINE_TO_SLEEP_TOOLTIP_LABEL = "Time Between Caffeine & Sleep";
 
 const IMPORT_STATUS_LABELS: Record<ImportState, string> = {
   ok: "OK",
@@ -331,6 +337,7 @@ const MEAL_FINISH_QUESTION_ID = "late_meal";
 const SLEEP_TIME_QUESTION_ID = "sleep_time";
 const FULLNESS_QUESTION_ID = "nutrition_fullness";
 const ENERGY_TARGET_QUESTION_ID = "felt_energized_during_day";
+const DERIVED_ONLY_QUESTION_IDS = new Set([MEAL_FINISH_QUESTION_ID, CAFFEINE_LAST_TIME_CHILD_ID]);
 const IMPORT_POLL_INTERVAL_MS = 5000;
 const DASHBOARD_REFRESH_INTERVAL_MS = 60000;
 const MAX_IMPORT_RANGE_DAYS = 365;
@@ -353,6 +360,7 @@ const GARMIN_PLOT_META: Record<GarminPlotKey, Omit<DashboardPlotVariableOption, 
   zone4Minutes: { label: "Zone 4 Time", color: "#c0693a", unit: "min" },
   zone5Minutes: { label: "Zone 5 Time", color: "#a63228", unit: "min" },
   mealToSleepGapMinutes: { label: "Time Before Sleep (Eating)", color: "#7b6d8d", unit: "min" },
+  caffeineToSleepGapMinutes: { label: "Time Before Sleep (Caffeine)", color: "#8b5c6f", unit: "min" },
 };
 const GARMIN_PLOT_DIRECTIONS: Partial<Record<GarminPlotKey, PlotDirection>> = {
   sleepConsistency: "lower",
@@ -880,7 +888,10 @@ function formatCorrelationPredictorValue(
   if (predictorKey === "garmin:sleepSeconds") {
     return formatHoursAsHoursMinutes(point.x);
   }
-  if (predictorKey === "garmin:mealToSleepGapMinutes") {
+  if (
+    predictorKey === "garmin:mealToSleepGapMinutes"
+    || predictorKey === "garmin:caffeineToSleepGapMinutes"
+  ) {
     return formatMinutesAsHours(Math.round(point.x));
   }
   return formatTooltipNumber(point.x);
@@ -1990,6 +2001,7 @@ function App() {
         zone4Minutes: null,
         zone5Minutes: null,
         mealToSleepGapMinutes: null,
+        caffeineToSleepGapMinutes: null,
       },
       metrics: EMPTY_METRICS,
       coverage: EMPTY_COVERAGE,
@@ -2063,6 +2075,7 @@ function App() {
         }),
       ),
       ...questionFields
+        .filter((field) => !DERIVED_ONLY_QUESTION_IDS.has(field.id))
         .filter((field) => field.inputType !== "text")
         .map((field) => ({
           key: `question:${field.id}` as DashboardPlotVariableKey,
@@ -2333,6 +2346,16 @@ function App() {
         formatMinutesAsHours(hoveredRecord.predictors.mealToSleepGapMinutes),
       );
     }
+    if (
+      hoveredRecord?.predictors.caffeineToSleepGapMinutes !== null
+      && hoveredRecord?.predictors.caffeineToSleepGapMinutes !== undefined
+    ) {
+      predictorItems = appendTooltipItem(
+        predictorItems,
+        CAFFEINE_TO_SLEEP_TOOLTIP_LABEL,
+        formatMinutesAsHours(hoveredRecord.predictors.caffeineToSleepGapMinutes),
+      );
+    }
     const sections: CorrelationTooltipSection[] = [
       {
         title: "Predictor context",
@@ -2585,6 +2608,10 @@ function App() {
     const mealTime = draftAnswers[MEAL_FINISH_QUESTION_ID];
     return typeof mealTime === "string" && parseClockTimeToMinutes(mealTime) !== null;
   }, [draftAnswers]);
+  const hasCaffeineTimeAnswer = useMemo(() => {
+    const caffeineTime = draftAnswers[CAFFEINE_LAST_TIME_CHILD_ID];
+    return typeof caffeineTime === "string" && parseClockTimeToMinutes(caffeineTime) !== null;
+  }, [draftAnswers]);
 
   const mealSleepGapValue = useMemo(() => {
     const mealTime = draftAnswers[MEAL_FINISH_QUESTION_ID];
@@ -2593,6 +2620,14 @@ function App() {
       return null;
     }
     return mealToSleepGapMinutes(mealTime, sleepTime);
+  }, [draftAnswers, selectedFellAsleepTime]);
+  const caffeineSleepGapValue = useMemo(() => {
+    const caffeineTime = draftAnswers[CAFFEINE_LAST_TIME_CHILD_ID];
+    const sleepTime = selectedFellAsleepTime;
+    if (typeof caffeineTime !== "string" || typeof sleepTime !== "string") {
+      return null;
+    }
+    return caffeineToSleepGapMinutes(caffeineTime, sleepTime);
   }, [draftAnswers, selectedFellAsleepTime]);
 
   const todayDateLabel = new Date().toLocaleDateString(undefined, {
@@ -4145,6 +4180,21 @@ function App() {
                     ? "Add 'Finished eating at' to calculate this metric."
                     : selectedFellAsleepTime
                     ? "Computed from check-in meal time and Garmin sleep start."
+                    : "Updates after Garmin records sleep start time for this date."}
+                </p>
+              </div>
+
+              <div className="mt-5 rounded-[22px] bg-subsurface p-4">
+                <p className="text-xs uppercase tracking-[0.16em] text-muted">Derived Metric</p>
+                <p className="mt-2 text-sm text-muted">Time Between Caffeine And Sleep</p>
+                <p className="metric-number mt-1 text-2xl font-semibold text-ink">
+                  {caffeineSleepGapValue === null ? "Unknown" : formatMinutesAsHours(caffeineSleepGapValue)}
+                </p>
+                <p className="mt-1 text-xs text-muted">
+                  {!hasCaffeineTimeAnswer
+                    ? "Add 'Last caffeine drink' to calculate this metric."
+                    : selectedFellAsleepTime
+                    ? "Computed from check-in caffeine time and Garmin sleep start."
                     : "Updates after Garmin records sleep start time for this date."}
                 </p>
               </div>
