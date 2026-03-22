@@ -69,6 +69,7 @@ import {
   parseClockTimeToMinutes,
   timeToSleepGapMinutes,
 } from "./lib/time";
+import { getZone2PlusMinutes } from "./lib/heartRateZones";
 import {
   buildSleepWindowChartStats,
   createDashboardPlotId,
@@ -154,6 +155,7 @@ type GarminPlotKey =
   | "zone3Minutes"
   | "zone4Minutes"
   | "zone5Minutes"
+  | "zone2PlusMinutes"
   | DerivedGapMetricKey;
 type DashboardPlotVariableKey =
   | `metric:${MetricKey}`
@@ -370,6 +372,7 @@ const GARMIN_PLOT_META: Record<GarminPlotKey, Omit<DashboardPlotVariableOption, 
   zone3Minutes: { label: "Zone 3 Time", color: "#d4a843", unit: "min" },
   zone4Minutes: { label: "Zone 4 Time", color: "#c0693a", unit: "min" },
   zone5Minutes: { label: "Zone 5 Time", color: "#a63228", unit: "min" },
+  zone2PlusMinutes: { label: "Zone 2+ Time", color: "#8d6a2d", unit: "min" },
   ...DERIVED_GAP_PLOT_META,
 };
 const GARMIN_PLOT_DIRECTIONS: Partial<Record<GarminPlotKey, PlotDirection>> = {
@@ -684,6 +687,9 @@ function getDashboardPlotValue(
     const key = variable.slice(7) as GarminPlotKey;
     if (key === "isTrainingDay") {
       return record.predictors.isTrainingDay ? 1 : 0;
+    }
+    if (key === "zone2PlusMinutes") {
+      return getZone2PlusMinutes(record.predictors);
     }
     const value = record.predictors[key];
     if (typeof value !== "number" || !Number.isFinite(value)) {
