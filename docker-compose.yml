@@ -20,6 +20,7 @@ services:
       dockerfile: Dockerfile
     environment:
       VITE_PROXY_TARGET: http://api:8000
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-}
     depends_on:
       - api
     ports:
