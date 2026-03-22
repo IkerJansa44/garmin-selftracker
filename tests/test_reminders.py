@@ -17,6 +17,7 @@ from src.reminders import (
     CHECKIN_REMINDER_SETTINGS_KEY,
     CheckinReminderService,
     ReminderServiceSettings,
+    build_checkin_reminder_email_body,
 )
 
 
@@ -38,6 +39,7 @@ def _build_service(
             smtp_user=smtp_user,
             smtp_pass=smtp_pass,
             recipient_email=recipient_email,
+            dashboard_url="http://localhost:5180",
         ),
         now_fn=now_fn,
         send_email_fn=send_email_fn,
@@ -214,3 +216,13 @@ def test_missing_smtp_config_skips_send_without_log_spam(
         assert last_sent is None
     finally:
         connection.close()
+
+
+def test_build_checkin_reminder_email_body_includes_dashboard_url() -> None:
+    body = build_checkin_reminder_email_body(
+        "22:45",
+        "http://100.110.196.86:5180",
+    )
+
+    assert "22:45" in body
+    assert "http://100.110.196.86:5180" in body

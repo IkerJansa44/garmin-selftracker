@@ -10,6 +10,7 @@ class Settings:
     garmin_password: str
     db_path: str
     default_sync_days: int
+    dashboard_url: str
     smtp_host: str
     smtp_port: int
     smtp_user: str
@@ -39,6 +40,7 @@ def load_settings(*, require_garmin_credentials: bool = True) -> Settings:
     )
     db_path = os.getenv("SQLITE_DB_PATH", "/data/garmin.db")
     default_sync_days = int(os.getenv("DEFAULT_SYNC_DAYS", "2"))
+    dashboard_url = _optional_env("DASHBOARD_URL", default="http://localhost:5180")
     smtp_port_raw = _optional_env("SMTP_PORT", default="587")
     try:
         smtp_port = int(smtp_port_raw)
@@ -50,6 +52,7 @@ def load_settings(*, require_garmin_credentials: bool = True) -> Settings:
         garmin_password=garmin_password,
         db_path=db_path,
         default_sync_days=default_sync_days,
+        dashboard_url=dashboard_url,
         smtp_host=_optional_env("SMTP_HOST"),
         smtp_port=smtp_port,
         smtp_user=_optional_env("SMTP_USER"),

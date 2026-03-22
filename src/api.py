@@ -1729,6 +1729,7 @@ def main() -> int:
             smtp_user=settings.smtp_user,
             smtp_pass=settings.smtp_pass,
             recipient_email=settings.garmin_email,
+            dashboard_url=settings.dashboard_url,
         )
     )
     reminder_service.start()
