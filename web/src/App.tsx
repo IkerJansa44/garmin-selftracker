@@ -3122,25 +3122,25 @@ function App() {
   };
 
   return (
-    <div ref={appRef} className="min-h-screen px-4 pb-10 pt-32 text-ink sm:px-6 lg:px-9">
+    <div ref={appRef} className="min-h-screen px-4 pb-10 pt-4 text-ink sm:px-6 sm:pt-32 lg:px-9">
       <header
         className={clsx(
-          "fixed inset-x-3 top-4 z-50 rounded-[32px] bg-[rgba(255,255,255,0.78)] p-3 shadow-soft transition lg:inset-x-7",
+          "z-50 mb-6 rounded-[32px] bg-[rgba(255,255,255,0.78)] p-3 shadow-soft transition sm:fixed sm:inset-x-3 sm:top-4 sm:mb-0 lg:inset-x-7",
           isScrolled && "backdrop-blur-md",
         )}
       >
-        <div className="overflow-x-auto">
-          <div className="flex min-w-max items-center gap-3 whitespace-nowrap">
-            <div className="panel gsap-fade flex min-h-16 shrink-0 items-center gap-5 px-4 py-2 whitespace-nowrap">
+        <div className="flex flex-col gap-3 sm:overflow-x-auto">
+          <div className="flex flex-col gap-3 sm:min-w-max sm:flex-row sm:items-center sm:whitespace-nowrap">
+            <div className="panel gsap-fade flex min-h-16 flex-col gap-4 px-4 py-3 sm:shrink-0 sm:flex-row sm:items-center sm:gap-5 sm:py-2 sm:whitespace-nowrap">
               <div className="shrink-0">
                 <p className="text-sm text-muted">Garmin Selftracker</p>
                 <p className="text-lg font-semibold tracking-tight">{todayDateLabel}</p>
               </div>
               <div
                 aria-hidden="true"
-                className="h-10 w-px shrink-0 bg-[rgba(18,18,18,0.14)]"
+                className="hidden h-10 w-px shrink-0 bg-[rgba(18,18,18,0.14)] sm:block"
               />
-              <div className="max-w-[360px] shrink-0 whitespace-normal">
+              <div className="max-w-none whitespace-normal sm:max-w-[360px] sm:shrink-0">
                 <p className="text-xs uppercase tracking-[0.14em] text-muted">Import</p>
                 {importSummary.state === "running" && runningImportProgress && runningImportRange ? (
                   <>
@@ -3162,7 +3162,7 @@ function App() {
                   Last import {lastImportLabel}
                 </p>
               </div>
-              <div className="flex shrink-0 items-center gap-2">
+              <div className="flex flex-nowrap items-center gap-2 sm:shrink-0">
                 <div
                   className={clsx(
                     "rounded-capsule px-3 py-2 text-sm font-semibold",
@@ -3174,7 +3174,7 @@ function App() {
                   {IMPORT_STATUS_LABELS[importSummary.state]}
                 </div>
                 <button
-                  className="focusable min-h-11 rounded-capsule bg-panel px-4 text-sm font-semibold shadow-soft transition disabled:cursor-not-allowed disabled:opacity-60"
+                  className="focusable min-h-10 rounded-capsule bg-panel px-3 text-xs font-semibold shadow-soft transition disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-11 sm:px-4 sm:text-sm"
                   disabled={isImportSubmitting}
                   type="button"
                   onClick={() => void handleRefreshImport()}
@@ -3182,30 +3182,35 @@ function App() {
                   {isImportSubmitting ? (
                     <span className="inline-flex items-center gap-2">
                       <LoaderCircle className="size-4 animate-spin" />
-                      Importing
+                      <span className="sm:hidden">Syncing</span>
+                      <span className="hidden sm:inline">Importing</span>
                     </span>
                   ) : (
-                    "Refresh import"
+                    <>
+                      <span className="sm:hidden">Refresh</span>
+                      <span className="hidden sm:inline">Refresh import</span>
+                    </>
                   )}
                 </button>
                 <button
-                  className="focusable min-h-11 rounded-capsule bg-panel px-4 text-sm font-semibold shadow-soft transition disabled:cursor-not-allowed disabled:opacity-60"
+                  className="focusable min-h-10 rounded-capsule bg-panel px-3 text-xs font-semibold shadow-soft transition disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-11 sm:px-4 sm:text-sm"
                   disabled={isImportSubmitting}
                   type="button"
                   onClick={() => setShowImportModal(true)}
                 >
-                  Import dates
+                  <span className="sm:hidden">Dates</span>
+                  <span className="hidden sm:inline">Import dates</span>
                 </button>
               </div>
               {importFeedback && <p className="text-sm font-medium text-error">{importFeedback}</p>}
             </div>
             <div
               aria-hidden="true"
-              className="h-10 w-px shrink-0 bg-[rgba(18,18,18,0.14)]"
+              className="hidden h-10 w-px shrink-0 bg-[rgba(18,18,18,0.14)] sm:block"
             />
 
-            <div className="panel gsap-fade flex min-h-16 shrink-0 items-center px-4 py-2 whitespace-nowrap">
-              <div className="flex flex-nowrap items-center gap-2">
+            <div className="panel gsap-fade flex min-h-16 px-4 py-2 sm:shrink-0 sm:items-center sm:whitespace-nowrap">
+              <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:flex-nowrap sm:items-center">
                 {topViewButtons.map((button) => (
                   <button
                     key={button.key}
@@ -3242,18 +3247,18 @@ function App() {
         )}
 
         {activeView === "dashboard" && (
-          <section ref={heroRef} className="panel gsap-fade overflow-hidden p-7 sm:p-10">
-            <div className="min-h-[42vh] rounded-[30px] bg-[radial-gradient(circle_at_0%_5%,#ffffff_0%,#f8f6f1_40%,#efede6_100%)] p-8 shadow-inset">
+          <section ref={heroRef} className="panel gsap-fade overflow-hidden p-4 sm:p-10">
+            <div className="min-h-[42vh] rounded-[30px] bg-[radial-gradient(circle_at_0%_5%,#ffffff_0%,#f8f6f1_40%,#efede6_100%)] p-5 shadow-inset sm:p-8">
               <p className="text-sm text-muted">{rangePreset}-Day Dashboard</p>
-              <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] lg:items-center">
-                <h1 className="text-4xl font-semibold tracking-tight xl:text-5xl">Dashboard</h1>
-                <div className="flex flex-col items-center gap-3 lg:justify-self-center">
-                  <div className="flex w-fit gap-2 rounded-capsule bg-subsurface p-1">
+              <div className="mt-4 grid w-full grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] lg:items-center">
+                <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl xl:text-5xl">Dashboard</h1>
+                <div className="flex w-full flex-col items-start gap-3 lg:w-auto lg:items-center lg:justify-self-center">
+                  <div className="scrollbar-hide flex w-full flex-nowrap gap-2 overflow-x-auto rounded-[24px] bg-subsurface p-1 sm:w-fit sm:rounded-capsule">
                     {RANGE_PRESETS.map((preset) => (
                       <button
                         key={preset}
                         className={clsx(
-                          "focusable min-h-11 rounded-capsule px-4 text-sm font-semibold transition",
+                          "focusable min-h-10 min-w-0 shrink-0 rounded-capsule px-3 text-xs font-semibold transition sm:min-h-11 sm:px-4 sm:text-sm",
                           rangePreset === preset ? "bg-accent text-white" : "text-muted hover:text-ink",
                         )}
                         type="button"
@@ -3263,14 +3268,14 @@ function App() {
                       </button>
                     ))}
                   </div>
-                  <p className="text-center text-base text-muted lg:text-lg">
+                  <p className="text-left text-base text-muted lg:text-center lg:text-lg">
                     Today vs rolling {rangePreset}-day average.
                   </p>
                 </div>
-                <div ref={addPlotMenuRef} className="relative w-fit lg:justify-self-end">
+                <div ref={addPlotMenuRef} className="relative w-full lg:w-fit lg:justify-self-end">
                   <button
                     aria-expanded={showAddPlotMenu}
-                    className="focusable min-h-11 rounded-capsule bg-accent px-4 text-sm font-semibold text-white shadow-soft transition"
+                    className="focusable min-h-11 w-full rounded-capsule bg-accent px-4 text-sm font-semibold text-white shadow-soft transition lg:w-auto"
                     type="button"
                     onClick={() => setShowAddPlotMenu((previous) => !previous)}
                   >
@@ -3280,7 +3285,7 @@ function App() {
                     </span>
                   </button>
                   {showAddPlotMenu && (
-                    <div className="absolute right-0 top-full z-20 mt-2 w-72 rounded-2xl bg-panel p-2 shadow-soft">
+                    <div className="absolute inset-x-0 top-full z-20 mt-2 rounded-2xl bg-panel p-2 shadow-soft sm:left-auto sm:right-0 sm:w-72">
                       <input
                         className="focusable mb-2 min-h-10 w-full rounded-xl bg-subsurface px-3 text-sm"
                         placeholder="Search plots"
@@ -3309,7 +3314,7 @@ function App() {
                     </div>
                   )}
                   {pendingAddPlot && (
-                    <div className="absolute right-0 top-full z-20 mt-2 w-72 rounded-2xl bg-panel p-3 shadow-soft">
+                    <div className="absolute inset-x-0 top-full z-20 mt-2 rounded-2xl bg-panel p-3 shadow-soft sm:left-auto sm:right-0 sm:w-72">
                       <p className="text-xs uppercase tracking-[0.14em] text-muted">Plot preference</p>
                       <p className="mt-1 text-sm font-semibold">{pendingAddPlot.label}</p>
                       {pendingAddPlotStep === "direction" && (
@@ -3526,7 +3531,7 @@ function App() {
                   strategy={rectSortingStrategy}
                 >
                   {filteredDashboardPlots.length ? (
-                    <div className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                    <div className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
                       {filteredDashboardPlots.map((plot) => (
                         <SortableDashboardPlotItem
                           key={plot.id}
@@ -4508,19 +4513,19 @@ function SortableDashboardPlotItem({
   return (
     <article
       ref={setNodeRef}
-      className="rounded-[24px] bg-panel p-5 shadow-soft"
+      className="mx-auto w-full max-w-[26rem] rounded-[24px] bg-panel p-5 shadow-soft md:max-w-none"
       style={{
         transform: CSS.Transform.toString(transform),
         transition,
       }}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
           <p className="text-sm text-muted">{plot.option.label}</p>
           {aggregationLabel && (
             <p className="mt-0.5 text-xs text-muted">{aggregationLabel}</p>
           )}
-          <p className="metric-number mt-2 text-3xl font-semibold tracking-tight">
+          <p className="metric-number mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">
             {formatDashboardValue(plot.key, plot.option, plot.todayValue)}
           </p>
           <p className="metric-number mt-1 text-xs text-muted">
@@ -4528,7 +4533,7 @@ function SortableDashboardPlotItem({
           </p>
           <p className={clsx("mt-1 text-xs font-medium", plot.comparison.tone)}>{plot.comparison.text}</p>
         </div>
-        <div className="flex items-start gap-2">
+        <div className="flex flex-wrap items-start gap-2 sm:justify-end">
           <span className={clsx("rounded-capsule px-3 py-1 text-xs font-semibold", coverageMeta.tone)}>
             {coverageMeta.label}
           </span>
@@ -4552,7 +4557,7 @@ function SortableDashboardPlotItem({
         </div>
       </div>
 
-      <div className="mt-4 h-16">
+      <div className="mt-4 h-24 sm:h-20 lg:h-16">
         {showSleepWindowBars ? (
           <SleepWindowChart
             averageBedtime={plot.averageBedtime}
@@ -4600,12 +4605,12 @@ function SortableDashboardPlotItem({
 
       <div className="mt-3 min-h-8 text-xs text-muted">
         {loadingState ? (
-          <span className="inline-flex items-center gap-2 text-warning">
+          <span className="inline-flex flex-wrap items-center gap-2 text-warning">
             <LoaderCircle className="size-3 animate-spin" /> Import in progress. This tile will
             update when sync completes.
           </span>
         ) : errorState ? (
-          <span className="inline-flex items-center gap-2 text-error">
+          <span className="inline-flex flex-wrap items-center gap-2 text-error">
             <AlertCircle className="size-3" />
             {dataStatus === "error" ? "Unable to load data API." : "No data yet. Last import failed."}
             <button

@@ -93,6 +93,19 @@ class ReminderServiceSettings:
     smtp_user: str
     smtp_pass: str
     recipient_email: str
+    dashboard_url: str
+
+
+def build_checkin_reminder_email_body(current_hour: str, dashboard_url: str) -> str:
+    dashboard_line = f"\n\nDashboard: {dashboard_url}" if dashboard_url else ""
+    return (
+        "Hola petit,\n"
+        f"Ja són les {current_hour} i encara no has introduit les dades del teu dia d'avui. "
+        "Fes el favor i que no t'ho hagi de repetir."
+        f"{dashboard_line}\n\n"
+        "Espavila,\n"
+        "Iker"
+    )
 
 
 class CheckinReminderService:
@@ -228,11 +241,10 @@ class CheckinReminderService:
         message["From"] = self._settings.smtp_user
         message["To"] = self._settings.recipient_email
         message.set_content(
-            "Hola petit,\n"
-            f"Ja són les {current_hour} i encara no has introduit les dades del teu dia d'avui. "
-            "Fes el favor i que no t'ho hagi de repetir.\n\n"
-            "Espavila,\n"
-            "Iker"
+            build_checkin_reminder_email_body(
+                current_hour,
+                self._settings.dashboard_url,
+            )
         )
 
         with smtplib.SMTP(
