@@ -20,6 +20,8 @@ from src.reminders import (
     build_checkin_reminder_email_body,
 )
 
+TEST_DASHBOARD_URL = "http://dashboard.test"
+
 
 def _build_service(
     db_path: Path,
@@ -39,7 +41,7 @@ def _build_service(
             smtp_user=smtp_user,
             smtp_pass=smtp_pass,
             recipient_email=recipient_email,
-            dashboard_url="http://localhost:5180",
+            dashboard_url=TEST_DASHBOARD_URL,
         ),
         now_fn=now_fn,
         send_email_fn=send_email_fn,
@@ -221,8 +223,8 @@ def test_missing_smtp_config_skips_send_without_log_spam(
 def test_build_checkin_reminder_email_body_includes_dashboard_url() -> None:
     body = build_checkin_reminder_email_body(
         "22:45",
-        "http://100.110.196.86:5180",
+        TEST_DASHBOARD_URL,
     )
 
     assert "22:45" in body
-    assert "http://100.110.196.86:5180" in body
+    assert TEST_DASHBOARD_URL in body
