@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from argparse import Namespace
 from datetime import date, datetime, timedelta, timezone
 from http import HTTPStatus
 from pathlib import Path
@@ -12,6 +13,7 @@ from src.api import (
     ImportJobManager,
     ImportRequest,
     _as_clock_time,
+    _build_settings,
     _load_derived_predictors_payload,
     _load_checkin_reminder_settings_payload,
     _import_status_message,
@@ -29,6 +31,7 @@ from src.api import (
     _save_checkin_reminder_settings_payload,
     _save_dashboard_plots_payload,
 )
+from src.config import Settings
 from src.db import connect_db, init_db
 
 
@@ -1229,6 +1232,7 @@ def test_import_job_manager_rejects_when_sync_run_already_running(
         garmin_email="user@example.com",
         garmin_password="secret",
         default_sync_days=2,
+        dashboard_url="http://dashboard.example.com",
         smtp_host="smtp.example.com",
         smtp_port=587,
         smtp_user="smtp-user",
@@ -1242,3 +1246,29 @@ def test_import_job_manager_rejects_when_sync_run_already_running(
     )
 
     assert manager.start(settings=settings, request=request) is False
+
+
+def test_build_settings_includes_dashboard_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "src.api._parse_args",
+        lambda: Namespace(host="127.0.0.1", port=8000, db_path=None),
+    )
+    monkeypatch.setattr(
+        "src.api.load_settings",
+        lambda require_garmin_credentials: Settings(
+            garmin_email="user@example.com",
+            garmin_password="secret",
+            db_path="/tmp/garmin.db",
+            default_sync_days=2,
+            dashboard_url="http://phone.example.com:5180",
+            smtp_host="smtp.example.com",
+            smtp_port=587,
+            smtp_user="smtp-user",
+            smtp_pass="smtp-pass",
+            timezone="Europe/Madrid",
+        ),
+    )
+
+    settings = _build_settings()
+
+    assert settings.dashboard_url == "http://phone.example.com:5180"

@@ -102,6 +102,7 @@ class ApiSettings:
     garmin_email: str
     garmin_password: str
     default_sync_days: int
+    dashboard_url: str
     smtp_host: str
     smtp_port: int
     smtp_user: str
@@ -1700,6 +1701,7 @@ def _build_settings() -> ApiSettings:
         garmin_email=env_settings.garmin_email,
         garmin_password=env_settings.garmin_password,
         default_sync_days=env_settings.default_sync_days,
+        dashboard_url=env_settings.dashboard_url,
         smtp_host=env_settings.smtp_host,
         smtp_port=env_settings.smtp_port,
         smtp_user=env_settings.smtp_user,
