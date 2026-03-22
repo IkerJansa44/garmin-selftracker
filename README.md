@@ -58,17 +58,24 @@
 cp .env.example .env
 ```
 
-2. Set Garmin credentials in `.env` and email configuration if you want an email reminder:
+2. Set Garmin credentials in `.env`.
+
+If you want reminder emails to open the dashboard on your phone, set `DASHBOARD_URL` to a phone-reachable address for the machine running Docker and add that host to `ALLOWED_HOSTS`:
 
 ```bash
 GARMIN_EMAIL=you@example.com
 GARMIN_PASSWORD=your_password
+DASHBOARD_URL=http://<your-computer-ip-or-hostname>:5180
+ALLOWED_HOSTS=<your-computer-ip-or-hostname>,localhost,127.0.0.1
+
 # Email
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
 SMTP_USER=example@gmail.com
 SMTP_PASS=<insert_pass>
 ```
+
+If you only use the dashboard from the same computer, `DASHBOARD_URL=http://localhost:5180` is still fine.
 
 3. Start services:
 
@@ -79,3 +86,4 @@ docker compose up --build
 4. Open dashboard:
 
 - [http://localhost:5180](http://localhost:5180)
+- `http://<your-computer-ip-or-hostname>:5180` from your phone on the same network or VPN
