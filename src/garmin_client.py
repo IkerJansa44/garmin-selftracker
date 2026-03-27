@@ -2,8 +2,26 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
+
+
+GARMIN_RATE_LIMIT_COOLDOWN = timedelta(minutes=15)
+
+
+class GarminRateLimitError(RuntimeError):
+    """Raised when Garmin rejects login attempts with HTTP 429."""
+
+
+def is_garmin_rate_limited_error(value: Any) -> bool:
+    message = str(value).lower()
+    markers = (
+        "too many requests",
+        "429 client error",
+        "http 429",
+        "rate limit",
+    )
+    return any(marker in message for marker in markers)
 
 
 @dataclass(frozen=True)
@@ -22,7 +40,15 @@ class GarminConnectAdapter:
         garmin_module = __import__("garminconnect", fromlist=["Garmin"])
         garmin_cls = getattr(garmin_module, "Garmin")
         self._client = garmin_cls(self._email, self._password)
-        self._client.login()
+        try:
+            self._client.login()
+        except Exception as exc:
+            if is_garmin_rate_limited_error(exc):
+                minutes = int(GARMIN_RATE_LIMIT_COOLDOWN.total_seconds() // 60)
+                raise GarminRateLimitError(
+                    f"Garmin login rate-limited (HTTP 429). Wait {minutes} minutes before retrying."
+                ) from exc
+            raise
 
     def fetch_day(self, day: date) -> DayPayload:
         if self._client is None:

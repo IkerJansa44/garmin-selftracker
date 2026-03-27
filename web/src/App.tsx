@@ -1372,10 +1372,12 @@ function App() {
     state: ImportState;
     lastImportAt: string | null;
     message: string;
+    errorDetail: string | null;
   }>({
     state: "running",
     lastImportAt: null,
     message: "Daily import scheduled · 06:00 local",
+    errorDetail: null,
   });
   const [dataStatus, setDataStatus] = useState<"loading" | "ready" | "error">("loading");
   const [dataError, setDataError] = useState<string | null>(null);
@@ -3135,7 +3137,7 @@ function App() {
           isScrolled && "backdrop-blur-md",
         )}
       >
-        <div className="flex flex-col gap-3 sm:overflow-x-auto">
+        <div className="flex flex-col gap-3 sm:overflow-visible">
           <div className="flex flex-col gap-3 sm:min-w-max sm:flex-row sm:items-center sm:whitespace-nowrap">
             <div className="panel gsap-fade flex min-h-16 flex-col gap-4 px-4 py-3 sm:shrink-0 sm:flex-row sm:items-center sm:gap-5 sm:py-2 sm:whitespace-nowrap">
               <div className="shrink-0">
@@ -3161,23 +3163,37 @@ function App() {
                       />
                     </div>
                   </>
-                ) : (
+                ) : importSummary.state !== "failed" ? (
                   <p className="text-sm font-semibold">{importSummary.message}</p>
-                )}
-                <p className="metric-number text-xs text-muted">
+                ) : null}
+                <p
+                  className={clsx(
+                    "metric-number text-xs text-muted",
+                    importSummary.state === "failed" && "mt-1",
+                  )}
+                >
                   Last import {lastImportLabel}
                 </p>
               </div>
               <div className="flex flex-nowrap items-center gap-2 sm:shrink-0">
-                <div
-                  className={clsx(
-                    "rounded-capsule px-3 py-2 text-sm font-semibold",
-                    importSummary.state === "ok" && "bg-[color-mix(in_srgb,var(--success)_14%,white)] text-success",
-                    importSummary.state === "running" && "bg-[color-mix(in_srgb,var(--warning)_16%,white)] text-warning",
-                    importSummary.state === "failed" && "bg-[color-mix(in_srgb,var(--error)_16%,white)] text-error",
-                  )}
-                >
-                  {IMPORT_STATUS_LABELS[importSummary.state]}
+                <div className="group relative">
+                  <div
+                    className={clsx(
+                      "rounded-capsule px-3 py-2 text-sm font-semibold",
+                      importSummary.state === "ok" && "bg-[color-mix(in_srgb,var(--success)_14%,white)] text-success",
+                      importSummary.state === "running" && "bg-[color-mix(in_srgb,var(--warning)_16%,white)] text-warning",
+                      importSummary.state === "failed"
+                        && "bg-[color-mix(in_srgb,var(--error)_16%,white)] text-error",
+                    )}
+                    tabIndex={importSummary.state === "failed" && importSummary.errorDetail ? 0 : -1}
+                  >
+                    {IMPORT_STATUS_LABELS[importSummary.state]}
+                  </div>
+                  {importSummary.state === "failed" && importSummary.errorDetail ? (
+                    <div className="pointer-events-none absolute right-0 top-full z-20 mt-2 hidden w-72 whitespace-normal break-words rounded-2xl bg-panel p-3 text-left text-xs leading-relaxed text-muted opacity-0 shadow-soft transition duration-150 group-hover:opacity-100 group-focus-within:opacity-100 sm:block">
+                      {importSummary.errorDetail}
+                    </div>
+                  ) : null}
                 </div>
                 <button
                   className="focusable min-h-10 rounded-capsule bg-panel px-3 text-xs font-semibold shadow-soft transition disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-11 sm:px-4 sm:text-sm"

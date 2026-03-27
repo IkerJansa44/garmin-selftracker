@@ -740,6 +740,19 @@ def test_import_status_message_returns_default_when_not_running() -> None:
     assert message == "Daily import scheduled · 06:00 local"
 
 
+def test_import_status_message_surfaces_garmin_rate_limit() -> None:
+    message = _import_status_message(
+        state="failed",
+        started_at="2026-02-21T06:00:00+00:00",
+        ended_at="2026-02-21T06:05:00+00:00",
+        days_requested=2,
+        days_succeeded=0,
+        error_message="Garmin login rate-limited (HTTP 429). Wait 15 minutes before retrying.",
+        now_utc=datetime(2026, 2, 21, 6, 10, tzinfo=timezone.utc),
+    )
+    assert message == "Garmin login rate-limited · Retry in ~10 min"
+
+
 def test_parse_import_request_refresh_uses_default_days() -> None:
     request = _parse_import_request(
         {"mode": "refresh"},
@@ -1013,6 +1026,8 @@ def test_load_dashboard_payload_includes_caffeine_sleep_gap_predictor(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "garmin.db"
+    metric_date = date.today() - timedelta(days=1)
+    source_date = metric_date - timedelta(days=1)
 
     connection = connect_db(str(db_path))
     init_db(connection)
@@ -1026,9 +1041,9 @@ def test_load_dashboard_payload_includes_caffeine_sleep_gap_predictor(
         VALUES (?, ?, ?)
         """,
         (
-            "2026-02-21",
-            "2026-02-21T00:30:00+00:00",
-            "2026-02-21T06:00:00+00:00",
+            metric_date.isoformat(),
+            f"{metric_date.isoformat()}T00:30:00+00:00",
+            f"{metric_date.isoformat()}T06:00:00+00:00",
         ),
     )
     connection.execute(
@@ -1037,10 +1052,10 @@ def test_load_dashboard_payload_includes_caffeine_sleep_gap_predictor(
         VALUES (?, ?, ?, ?)
         """,
         (
-            "2026-02-20",
+            source_date.isoformat(),
             '{"caffeine_count": 2, "caffeine_last_time": "18:45"}',
-            "2026-02-20T21:00:00+00:00",
-            "2026-02-20T21:00:00+00:00",
+            f"{source_date.isoformat()}T21:00:00+00:00",
+            f"{source_date.isoformat()}T21:00:00+00:00",
         ),
     )
     connection.commit()
@@ -1048,7 +1063,11 @@ def test_load_dashboard_payload_includes_caffeine_sleep_gap_predictor(
 
     payload = _load_dashboard_payload(str(db_path), 30)
     record = next(
-        (entry for entry in payload["records"] if entry["date"] == "2026-02-21"),
+        (
+            entry
+            for entry in payload["records"]
+            if entry["date"] == metric_date.isoformat()
+        ),
         None,
     )
 
@@ -1245,7 +1264,109 @@ def test_import_job_manager_rejects_when_sync_run_already_running(
         end_date=date(2026, 2, 21),
     )
 
-    assert manager.start(settings=settings, request=request) is False
+    result = manager.start(settings=settings, request=request)
+
+    assert result.accepted is False
+    assert result.rejection_reason == "already_running"
+
+
+def test_import_job_manager_rejects_during_garmin_rate_limit_cooldown(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "garmin.db"
+    connection = connect_db(str(db_path))
+    init_db(connection)
+    connection.execute(
+        """
+        INSERT INTO sync_runs (
+            started_at,
+            ended_at,
+            status,
+            days_requested,
+            days_succeeded,
+            error_message
+        )
+        VALUES (
+            '2026-02-21T06:00:00+00:00',
+            '2026-02-21T06:05:00+00:00',
+            'failed',
+            2,
+            0,
+            'Garmin login rate-limited (HTTP 429). Wait 15 minutes before retrying.'
+        )
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    manager = ImportJobManager()
+    settings = ApiSettings(
+        db_path=str(db_path),
+        host="127.0.0.1",
+        port=8000,
+        garmin_email="user@example.com",
+        garmin_password="secret",
+        default_sync_days=2,
+        dashboard_url="http://dashboard.example.com",
+        smtp_host="smtp.example.com",
+        smtp_port=587,
+        smtp_user="smtp-user",
+        smtp_pass="smtp-pass",
+        timezone="Europe/Madrid",
+    )
+    request = ImportRequest(
+        mode="refresh",
+        start_date=date(2026, 2, 20),
+        end_date=date(2026, 2, 21),
+    )
+
+    result = manager.start(
+        settings=settings,
+        request=request,
+        now_utc=datetime(2026, 2, 21, 6, 10, tzinfo=timezone.utc),
+    )
+
+    assert result.accepted is False
+    assert result.rejection_reason == "rate_limited"
+    assert result.retry_at == datetime(2026, 2, 21, 6, 20, tzinfo=timezone.utc)
+
+
+def test_load_dashboard_payload_includes_failed_import_error_detail(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "garmin.db"
+    connection = connect_db(str(db_path))
+    init_db(connection)
+    connection.execute(
+        """
+        INSERT INTO sync_runs (
+            started_at,
+            ended_at,
+            status,
+            days_requested,
+            days_succeeded,
+            error_message
+        )
+        VALUES (
+            '2026-02-21T06:00:00+00:00',
+            '2026-02-21T06:05:00+00:00',
+            'failed',
+            2,
+            0,
+            'Garmin login rate-limited (HTTP 429). Wait 15 minutes before retrying.'
+        )
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    payload = _load_dashboard_payload(str(db_path), 7)
+
+    assert payload["importStatus"]["state"] == "failed"
+    assert payload["importStatus"]["errorDetail"] == (
+        "Garmin is temporarily blocking sign-in attempts. Try again after "
+        "Sat 21 Feb, 06:20 UTC."
+    )
 
 
 def test_build_settings_includes_dashboard_url(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -31,6 +31,10 @@ from src.derived_metrics import (
     TIME_TO_SLEEP_GAP_DASHBOARD_KEYS,
     TIME_TO_SLEEP_GAP_METRICS,
 )
+from src.garmin_client import (
+    GARMIN_RATE_LIMIT_COOLDOWN,
+    is_garmin_rate_limited_error,
+)
 from src.reminders import (
     CHECKIN_REMINDER_SETTINGS_KEY,
     CheckinReminderService,
@@ -115,6 +119,13 @@ class ImportRequest:
     mode: str
     start_date: date
     end_date: date
+
+
+@dataclass(frozen=True)
+class ImportStartResult:
+    accepted: bool
+    rejection_reason: str | None = None
+    retry_at: datetime | None = None
 
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
@@ -249,13 +260,13 @@ def _parse_import_request(
     return ImportRequest(mode=mode, start_date=start_date, end_date=end_date)
 
 
-def _latest_sync_run_status(db_path: str) -> str | None:
+def _latest_sync_run(db_path: str) -> Any | None:
     connection = connect_db(db_path)
     try:
         init_db(connection)
         row = connection.execute(
             """
-            SELECT status
+            SELECT status, started_at, ended_at, days_requested, days_succeeded, error_message
             FROM sync_runs
             ORDER BY id DESC
             LIMIT 1
@@ -263,9 +274,7 @@ def _latest_sync_run_status(db_path: str) -> str | None:
         ).fetchone()
     finally:
         connection.close()
-    if row is None:
-        return None
-    return str(row["status"])
+    return row
 
 
 class ImportJobManager:
@@ -273,12 +282,38 @@ class ImportJobManager:
         self._lock = threading.Lock()
         self._running = False
 
-    def start(self, *, settings: ApiSettings, request: ImportRequest) -> bool:
+    def start(
+        self,
+        *,
+        settings: ApiSettings,
+        request: ImportRequest,
+        now_utc: datetime | None = None,
+    ) -> ImportStartResult:
         with self._lock:
             if self._running:
-                return False
-            if _latest_sync_run_status(settings.db_path) == "running":
-                return False
+                return ImportStartResult(
+                    accepted=False,
+                    rejection_reason="already_running",
+                )
+            latest_run = _latest_sync_run(settings.db_path)
+            if latest_run is not None and str(latest_run["status"]) == "running":
+                return ImportStartResult(
+                    accepted=False,
+                    rejection_reason="already_running",
+                )
+            retry_at = _garmin_rate_limit_retry_at(
+                ended_at=latest_run["ended_at"] if latest_run is not None else None,
+                error_message=(
+                    latest_run["error_message"] if latest_run is not None else None
+                ),
+                now_utc=now_utc,
+            )
+            if retry_at is not None:
+                return ImportStartResult(
+                    accepted=False,
+                    rejection_reason="rate_limited",
+                    retry_at=retry_at,
+                )
             self._running = True
 
         thread = threading.Thread(
@@ -292,7 +327,7 @@ class ImportJobManager:
             with self._lock:
                 self._running = False
             raise
-        return True
+        return ImportStartResult(accepted=True)
 
     def _run_job(self, settings: ApiSettings, request: ImportRequest) -> None:
         try:
@@ -374,6 +409,55 @@ def _parse_iso_datetime(value: Any) -> datetime | None:
         return None
 
 
+def _utc_datetime(value: Any) -> datetime | None:
+    parsed = _parse_iso_datetime(value)
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _format_duration_label(seconds: float) -> str:
+    rounded_seconds = int(round(seconds))
+    if rounded_seconds < 60:
+        return "<1 min"
+
+    total_minutes = max(1, rounded_seconds // 60)
+    if total_minutes < 60:
+        return f"~{total_minutes} min"
+
+    hours, minutes = divmod(total_minutes, 60)
+    if minutes == 0:
+        return f"~{hours}h"
+    return f"~{hours}h {minutes}m"
+
+
+def _garmin_rate_limit_retry_at(
+    *,
+    ended_at: Any,
+    error_message: Any,
+    now_utc: datetime | None = None,
+) -> datetime | None:
+    if not is_garmin_rate_limited_error(error_message):
+        return None
+
+    ended_at_datetime = _utc_datetime(ended_at)
+    if ended_at_datetime is None:
+        return None
+
+    retry_at = ended_at_datetime + GARMIN_RATE_LIMIT_COOLDOWN
+    if now_utc is None:
+        current_time = datetime.now(timezone.utc)
+    elif now_utc.tzinfo is None:
+        current_time = now_utc.replace(tzinfo=timezone.utc)
+    else:
+        current_time = now_utc.astimezone(timezone.utc)
+    if retry_at <= current_time:
+        return None
+    return retry_at
+
+
 def _format_eta_seconds(seconds: float) -> str:
     rounded_seconds = int(round(seconds))
     if rounded_seconds < 60:
@@ -393,11 +477,34 @@ def _import_status_message(
     *,
     state: str,
     started_at: Any,
+    ended_at: Any = None,
     days_requested: Any,
     days_succeeded: Any,
+    error_message: Any = None,
     now_utc: datetime | None = None,
 ) -> str:
     default_message = "Daily import scheduled · 06:00 local"
+    retry_at = _garmin_rate_limit_retry_at(
+        ended_at=ended_at,
+        error_message=error_message,
+        now_utc=now_utc,
+    )
+    if retry_at is not None:
+        current_time = now_utc or datetime.now(timezone.utc)
+        if current_time.tzinfo is None:
+            current_time = current_time.replace(tzinfo=timezone.utc)
+        retry_in_seconds = max(
+            0.0,
+            (
+                retry_at.astimezone(timezone.utc)
+                - current_time.astimezone(timezone.utc)
+            ).total_seconds(),
+        )
+        return (
+            "Garmin login rate-limited"
+            f" · Retry in {_format_duration_label(retry_in_seconds)}"
+        )
+
     if state != "running":
         return default_message
 
@@ -434,6 +541,31 @@ def _import_status_message(
 
     eta_seconds = (elapsed_seconds / completed_days) * remaining_days
     return f"{progress_message} · {_format_eta_seconds(eta_seconds)}"
+
+
+def _import_error_detail(
+    *,
+    state: str,
+    ended_at: Any,
+    error_message: Any,
+) -> str | None:
+    if state != "failed":
+        return None
+    if is_garmin_rate_limited_error(error_message):
+        ended_at_datetime = _utc_datetime(ended_at)
+        if ended_at_datetime is not None:
+            retry_at = ended_at_datetime + GARMIN_RATE_LIMIT_COOLDOWN
+            retry_label = retry_at.astimezone(timezone.utc).strftime(
+                "%a %d %b, %H:%M UTC"
+            )
+            return (
+                "Garmin is temporarily blocking sign-in attempts. "
+                f"Try again after {retry_label}."
+            )
+        return "Garmin is temporarily blocking sign-in attempts. Try again shortly."
+    if error_message is None:
+        return None
+    return str(error_message)
 
 
 def _metric_payload(
@@ -1163,7 +1295,7 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
 
     latest_run = connection.execute(
         """
-        SELECT status, started_at, ended_at, days_requested, days_succeeded
+        SELECT status, started_at, ended_at, days_requested, days_succeeded, error_message
         FROM sync_runs
         ORDER BY id DESC
         LIMIT 1
@@ -1177,6 +1309,7 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
         summary_state = "ok" if available_days else "failed"
         last_import_at = None
         import_status_message = "Daily import scheduled · 06:00 local"
+        import_error_detail = None
     else:
         raw_status = str(latest_run["status"])
         summary_state = "ok"
@@ -1188,8 +1321,15 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
         import_status_message = _import_status_message(
             state=summary_state,
             started_at=latest_run["started_at"],
+            ended_at=latest_run["ended_at"],
             days_requested=latest_run["days_requested"],
             days_succeeded=latest_run["days_succeeded"],
+            error_message=latest_run["error_message"],
+        )
+        import_error_detail = _import_error_detail(
+            state=summary_state,
+            ended_at=latest_run["ended_at"],
+            error_message=latest_run["error_message"],
         )
 
     records: list[dict[str, Any]] = []
@@ -1266,6 +1406,7 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
             "state": summary_state,
             "lastImportAt": last_import_at,
             "message": import_status_message,
+            "errorDetail": import_error_detail,
         },
         "meta": {
             "source": "sqlite",
@@ -1450,7 +1591,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            started = self.import_job_manager.start(
+            start_result = self.import_job_manager.start(
                 settings=self.settings,
                 request=request,
             )
@@ -1462,7 +1603,25 @@ class ApiHandler(BaseHTTPRequestHandler):
             )
             return
 
-        if not started:
+        if not start_result.accepted:
+            if start_result.rejection_reason == "rate_limited":
+                retry_at = (
+                    start_result.retry_at.astimezone(timezone.utc).isoformat()
+                    if start_result.retry_at is not None
+                    else None
+                )
+                self._send_json(
+                    HTTPStatus.TOO_MANY_REQUESTS,
+                    {
+                        "error": "Garmin login rate-limited",
+                        "details": (
+                            "Garmin rejected the last login attempt with HTTP 429. "
+                            f"Retry after {retry_at}."
+                        ),
+                        "retryAt": retry_at,
+                    },
+                )
+                return
             self._send_json(
                 HTTPStatus.CONFLICT,
                 {"error": "Import already running"},

@@ -19,6 +19,7 @@ from src.db import (
 )
 from src.garmin_client import (
     GarminConnectAdapter,
+    GarminRateLimitError,
     compute_zone_minutes,
     normalize_activities,
     normalize_daily_metrics,
@@ -124,6 +125,11 @@ def run_sync(
             )
             connection.commit()
             logger.info("Synced %s", day.isoformat())
+    except GarminRateLimitError as exc:
+        connection.rollback()
+        status = "failed"
+        error_message = str(exc)
+        logger.warning("Sync run blocked by Garmin rate limit: %s", exc)
     except Exception as exc:
         connection.rollback()
         status = "failed"

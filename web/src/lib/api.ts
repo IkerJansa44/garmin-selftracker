@@ -12,6 +12,7 @@ interface ImportStatusSummary {
   state: ImportState;
   lastImportAt: string | null;
   message: string;
+  errorDetail: string | null;
 }
 
 interface DashboardMeta {
