@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 
-GARMIN_RATE_LIMIT_COOLDOWN = timedelta(minutes=15)
+logger = logging.getLogger(__name__)
+GARMIN_RATE_LIMIT_COOLDOWN = timedelta(hours=24)
 
 
 class GarminRateLimitError(RuntimeError):
@@ -30,25 +33,69 @@ class DayPayload:
     endpoints: dict[str, Any]
 
 
+def _garmin_class() -> type[Any]:
+    garmin_module = __import__("garminconnect", fromlist=["Garmin"])
+    return getattr(garmin_module, "Garmin")
+
+
 class GarminConnectAdapter:
-    def __init__(self, email: str, password: str) -> None:
+    def __init__(
+        self,
+        email: str,
+        password: str,
+        *,
+        tokenstore: str | None = None,
+    ) -> None:
         self._email = email
         self._password = password
+        self._tokenstore = tokenstore
         self._client = None
 
     def login(self) -> None:
-        garmin_module = __import__("garminconnect", fromlist=["Garmin"])
-        garmin_cls = getattr(garmin_module, "Garmin")
+        garmin_cls = _garmin_class()
         self._client = garmin_cls(self._email, self._password)
         try:
-            self._client.login()
+            tokenstore = (
+                self._tokenstore if self._tokenstore_is_bootstrapped() else None
+            )
+            if self._tokenstore and tokenstore is None:
+                logger.info(
+                    "Garmin token store missing or incomplete at %s; using credential login",
+                    self._tokenstore,
+                )
+            self._client.login(tokenstore=tokenstore)
+            self._persist_tokens()
         except Exception as exc:
             if is_garmin_rate_limited_error(exc):
-                minutes = int(GARMIN_RATE_LIMIT_COOLDOWN.total_seconds() // 60)
+                hours = int(GARMIN_RATE_LIMIT_COOLDOWN.total_seconds() // 3600)
                 raise GarminRateLimitError(
-                    f"Garmin login rate-limited (HTTP 429). Wait {minutes} minutes before retrying."
+                    f"Garmin login rate-limited (HTTP 429). Wait {hours} hours before retrying."
                 ) from exc
             raise
+
+    def _tokenstore_is_bootstrapped(self) -> bool:
+        if not self._tokenstore:
+            return False
+
+        token_dir = Path(self._tokenstore).expanduser()
+        required_files = ("oauth1_token.json", "oauth2_token.json")
+        return all((token_dir / filename).is_file() for filename in required_files)
+
+    def _persist_tokens(self) -> None:
+        if self._client is None or not self._tokenstore:
+            return
+
+        garth_client = getattr(self._client, "garth", None)
+        dump_tokens = getattr(garth_client, "dump", None)
+        if not callable(dump_tokens):
+            return
+
+        try:
+            dump_tokens(self._tokenstore)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.warning(
+                "Failed to persist Garmin tokens to %s: %s", self._tokenstore, exc
+            )
 
     def fetch_day(self, day: date) -> DayPayload:
         if self._client is None:

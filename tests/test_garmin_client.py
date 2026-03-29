@@ -1,10 +1,109 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 import pytest
 
-from src.garmin_client import DayPayload, normalize_daily_metrics
+from src.garmin_client import (
+    DayPayload,
+    GarminConnectAdapter,
+    normalize_daily_metrics,
+)
+
+
+def test_login_uses_tokenstore_and_persists_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, str | None]] = []
+    dumps: list[str] = []
+
+    class FakeGarth:
+        def dump(self, tokenstore: str) -> None:
+            dumps.append(tokenstore)
+
+    class FakeGarmin:
+        def __init__(self, email: str, password: str) -> None:
+            self.email = email
+            self.password = password
+            self.garth = FakeGarth()
+
+        def login(self, tokenstore: str | None = None) -> None:
+            calls.append(("login", tokenstore))
+
+    monkeypatch.setattr("src.garmin_client._garmin_class", lambda: FakeGarmin)
+    tokenstore = tmp_path / "garmin-tokens"
+    tokenstore.mkdir()
+    (tokenstore / "oauth1_token.json").write_text("{}", encoding="utf-8")
+    (tokenstore / "oauth2_token.json").write_text("{}", encoding="utf-8")
+
+    adapter = GarminConnectAdapter(
+        "user@example.com",
+        "secret",
+        tokenstore=str(tokenstore),
+    )
+
+    adapter.login()
+
+    assert calls == [("login", str(tokenstore))]
+    assert dumps == [str(tokenstore)]
+
+
+def test_login_without_tokenstore_does_not_dump_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dumps: list[str] = []
+
+    class FakeGarth:
+        def dump(self, tokenstore: str) -> None:
+            dumps.append(tokenstore)
+
+    class FakeGarmin:
+        def __init__(self, email: str, password: str) -> None:
+            self.garth = FakeGarth()
+
+        def login(self, tokenstore: str | None = None) -> None:
+            _ = tokenstore
+
+    monkeypatch.setattr("src.garmin_client._garmin_class", lambda: FakeGarmin)
+
+    adapter = GarminConnectAdapter("user@example.com", "secret")
+    adapter.login()
+
+    assert dumps == []
+
+
+def test_login_with_missing_token_files_falls_back_to_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, str | None]] = []
+    dumps: list[str] = []
+
+    class FakeGarth:
+        def dump(self, tokenstore: str) -> None:
+            dumps.append(tokenstore)
+
+    class FakeGarmin:
+        def __init__(self, email: str, password: str) -> None:
+            self.garth = FakeGarth()
+
+        def login(self, tokenstore: str | None = None) -> None:
+            calls.append(("login", tokenstore))
+
+    monkeypatch.setattr("src.garmin_client._garmin_class", lambda: FakeGarmin)
+
+    adapter = GarminConnectAdapter(
+        "user@example.com",
+        "secret",
+        tokenstore=str(tmp_path / "garmin-tokens"),
+    )
+
+    adapter.login()
+
+    assert calls == [("login", None)]
+    assert dumps == [str(tmp_path / "garmin-tokens")]
 
 
 def test_normalize_daily_metrics_extracts_fell_asleep_timestamp() -> None:

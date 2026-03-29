@@ -72,6 +72,7 @@ def main() -> int:
         db_path=settings.db_path,
         garmin_email=settings.garmin_email,
         garmin_password=settings.garmin_password,
+        garmin_tokenstore=settings.garmin_tokenstore,
         start_date=start_date,
         end_date=end_date,
     )

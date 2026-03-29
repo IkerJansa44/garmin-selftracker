@@ -51,6 +51,7 @@ def run_sync(
     db_path: str,
     garmin_email: str,
     garmin_password: str,
+    garmin_tokenstore: str,
     start_date: date,
     end_date: date,
 ) -> SyncResult:
@@ -63,7 +64,11 @@ def run_sync(
     status = "success"
     error_message = None
 
-    adapter = GarminConnectAdapter(garmin_email, garmin_password)
+    adapter = GarminConnectAdapter(
+        garmin_email,
+        garmin_password,
+        tokenstore=garmin_tokenstore,
+    )
 
     try:
         adapter.login()

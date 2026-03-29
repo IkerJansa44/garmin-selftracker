@@ -747,10 +747,10 @@ def test_import_status_message_surfaces_garmin_rate_limit() -> None:
         ended_at="2026-02-21T06:05:00+00:00",
         days_requested=2,
         days_succeeded=0,
-        error_message="Garmin login rate-limited (HTTP 429). Wait 15 minutes before retrying.",
+        error_message="Garmin login rate-limited (HTTP 429). Wait 24 hours before retrying.",
         now_utc=datetime(2026, 2, 21, 6, 10, tzinfo=timezone.utc),
     )
-    assert message == "Garmin login rate-limited · Retry in ~10 min"
+    assert message == "Garmin login rate-limited · Retry in ~23h 55m"
 
 
 def test_parse_import_request_refresh_uses_default_days() -> None:
@@ -1250,6 +1250,7 @@ def test_import_job_manager_rejects_when_sync_run_already_running(
         port=8000,
         garmin_email="user@example.com",
         garmin_password="secret",
+        garmin_tokenstore="/tmp/garmin-tokens",
         default_sync_days=2,
         dashboard_url="http://dashboard.example.com",
         smtp_host="smtp.example.com",
@@ -1292,7 +1293,7 @@ def test_import_job_manager_rejects_during_garmin_rate_limit_cooldown(
             'failed',
             2,
             0,
-            'Garmin login rate-limited (HTTP 429). Wait 15 minutes before retrying.'
+            'Garmin login rate-limited (HTTP 429). Wait 24 hours before retrying.'
         )
         """
     )
@@ -1306,6 +1307,7 @@ def test_import_job_manager_rejects_during_garmin_rate_limit_cooldown(
         port=8000,
         garmin_email="user@example.com",
         garmin_password="secret",
+        garmin_tokenstore="/tmp/garmin-tokens",
         default_sync_days=2,
         dashboard_url="http://dashboard.example.com",
         smtp_host="smtp.example.com",
@@ -1328,13 +1330,18 @@ def test_import_job_manager_rejects_during_garmin_rate_limit_cooldown(
 
     assert result.accepted is False
     assert result.rejection_reason == "rate_limited"
-    assert result.retry_at == datetime(2026, 2, 21, 6, 20, tzinfo=timezone.utc)
+    assert result.retry_at == datetime(2026, 2, 22, 6, 5, tzinfo=timezone.utc)
 
 
 def test_load_dashboard_payload_includes_failed_import_error_detail(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "garmin.db"
+    monkeypatch.setattr(
+        "src.api._local_timezone",
+        lambda: timezone(timedelta(hours=1), name="CET"),
+    )
     connection = connect_db(str(db_path))
     init_db(connection)
     connection.execute(
@@ -1353,7 +1360,7 @@ def test_load_dashboard_payload_includes_failed_import_error_detail(
             'failed',
             2,
             0,
-            'Garmin login rate-limited (HTTP 429). Wait 15 minutes before retrying.'
+            'Garmin login rate-limited (HTTP 429). Wait 24 hours before retrying.'
         )
         """
     )
@@ -1365,7 +1372,7 @@ def test_load_dashboard_payload_includes_failed_import_error_detail(
     assert payload["importStatus"]["state"] == "failed"
     assert payload["importStatus"]["errorDetail"] == (
         "Garmin is temporarily blocking sign-in attempts. Try again after "
-        "Sat 21 Feb, 06:20 UTC."
+        "Sun 22 Feb, 07:05 CET."
     )
 
 
@@ -1379,6 +1386,7 @@ def test_build_settings_includes_dashboard_url(monkeypatch: pytest.MonkeyPatch) 
         lambda require_garmin_credentials: Settings(
             garmin_email="user@example.com",
             garmin_password="secret",
+            garmin_tokenstore="/data/garmin-tokens",
             db_path="/tmp/garmin.db",
             default_sync_days=2,
             dashboard_url="http://phone.example.com:5180",
@@ -1393,3 +1401,4 @@ def test_build_settings_includes_dashboard_url(monkeypatch: pytest.MonkeyPatch) 
     settings = _build_settings()
 
     assert settings.dashboard_url == "http://phone.example.com:5180"
+    assert settings.garmin_tokenstore == "/data/garmin-tokens"

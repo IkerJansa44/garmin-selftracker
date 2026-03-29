@@ -105,6 +105,7 @@ class ApiSettings:
     port: int
     garmin_email: str
     garmin_password: str
+    garmin_tokenstore: str
     default_sync_days: int
     dashboard_url: str
     smtp_host: str
@@ -335,6 +336,7 @@ class ImportJobManager:
                 db_path=settings.db_path,
                 garmin_email=settings.garmin_email,
                 garmin_password=settings.garmin_password,
+                garmin_tokenstore=settings.garmin_tokenstore,
                 start_date=request.start_date,
                 end_date=request.end_date,
             )
@@ -416,6 +418,10 @@ def _utc_datetime(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _local_timezone() -> Any:
+    return datetime.now().astimezone().tzinfo or timezone.utc
 
 
 def _format_duration_label(seconds: float) -> str:
@@ -555,8 +561,8 @@ def _import_error_detail(
         ended_at_datetime = _utc_datetime(ended_at)
         if ended_at_datetime is not None:
             retry_at = ended_at_datetime + GARMIN_RATE_LIMIT_COOLDOWN
-            retry_label = retry_at.astimezone(timezone.utc).strftime(
-                "%a %d %b, %H:%M UTC"
+            retry_label = retry_at.astimezone(_local_timezone()).strftime(
+                "%a %d %b, %H:%M %Z"
             )
             return (
                 "Garmin is temporarily blocking sign-in attempts. "
@@ -1606,7 +1612,14 @@ class ApiHandler(BaseHTTPRequestHandler):
         if not start_result.accepted:
             if start_result.rejection_reason == "rate_limited":
                 retry_at = (
-                    start_result.retry_at.astimezone(timezone.utc).isoformat()
+                    start_result.retry_at.astimezone(_local_timezone()).isoformat()
+                    if start_result.retry_at is not None
+                    else None
+                )
+                retry_label = (
+                    start_result.retry_at.astimezone(_local_timezone()).strftime(
+                        "%a %d %b, %H:%M %Z"
+                    )
                     if start_result.retry_at is not None
                     else None
                 )
@@ -1616,7 +1629,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                         "error": "Garmin login rate-limited",
                         "details": (
                             "Garmin rejected the last login attempt with HTTP 429. "
-                            f"Retry after {retry_at}."
+                            f"Retry after {retry_label}."
                         ),
                         "retryAt": retry_at,
                     },
@@ -1859,6 +1872,7 @@ def _build_settings() -> ApiSettings:
         port=args.port,
         garmin_email=env_settings.garmin_email,
         garmin_password=env_settings.garmin_password,
+        garmin_tokenstore=env_settings.garmin_tokenstore,
         default_sync_days=env_settings.default_sync_days,
         dashboard_url=env_settings.dashboard_url,
         smtp_host=env_settings.smtp_host,
