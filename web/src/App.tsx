@@ -1543,17 +1543,10 @@ function App() {
       if (!firstDate || !lastDate) {
         return;
       }
-      const parsedFirstDate = parseIsoDate(firstDate);
-      if (!parsedFirstDate) {
-        return;
-      }
       setIsLoadingCheckins(true);
       setCheckinSyncError(null);
       try {
-        const fromDate = formatIsoDateLocal(
-          new Date(parsedFirstDate.getTime() - 86_400_000),
-        );
-        const payload = await fetchCheckIns(fromDate, lastDate, controller.signal);
+        const payload = await fetchCheckIns(firstDate, lastDate, controller.signal);
         setCheckinEntriesByDate(
           Object.fromEntries(payload.entries.map((entry) => [entry.date, entry])),
         );
