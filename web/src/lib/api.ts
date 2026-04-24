@@ -56,6 +56,14 @@ interface ImportApiResponse {
   days: number;
 }
 
+interface ManualImportApiResponse {
+  status: string;
+  mode: "manual";
+  days: number;
+  archives: number;
+  importDir: string;
+}
+
 export type PlotDirection = "higher" | "lower";
 
 export type PlotAggregation = "daily" | "3days" | "weekly";
@@ -284,4 +292,15 @@ export async function startDateRangeImport(
     throw await readApiError(response, `Date range import failed: ${response.status}`);
   }
   return (await response.json()) as ImportApiResponse;
+}
+
+export async function startManualImport(signal?: AbortSignal): Promise<ManualImportApiResponse> {
+  const response = await fetch("/api/manual-import", {
+    method: "POST",
+    signal,
+  });
+  if (!response.ok) {
+    throw await readApiError(response, `Manual import failed: ${response.status}`);
+  }
+  return (await response.json()) as ManualImportApiResponse;
 }

@@ -12,6 +12,7 @@ import {
   AlertCircle,
   CirclePlus,
   CircleHelp,
+  FolderInput,
   GripVertical,
   LoaderCircle,
   X,
@@ -344,6 +345,8 @@ const ENERGY_TARGET_QUESTION_ID = "felt_energized_during_day";
 const IMPORT_POLL_INTERVAL_MS = 5000;
 const DASHBOARD_REFRESH_INTERVAL_MS = 60000;
 const MAX_IMPORT_RANGE_DAYS = 365;
+const GARMIN_ACCOUNT_INFORMATION_URL =
+  "https://connect.garmin.com/app/settings/accountInformation";
 const DEFAULT_CHECKIN_REMINDER_SETTINGS: CheckinReminderSettings = {
   enabled: true,
   notifyAfter: "22:30",
@@ -2728,6 +2731,10 @@ function App() {
     }
   };
 
+  const handleManualImport = async () => {
+    window.open(GARMIN_ACCOUNT_INFORMATION_URL, "_blank", "noopener,noreferrer");
+  };
+
   const handleQuickSave = async () => {
     setIsSavingCheckin(true);
     setCheckinSaveMessage(null);
@@ -3215,6 +3222,16 @@ function App() {
                 >
                   <span className="sm:hidden">Dates</span>
                   <span className="hidden sm:inline">Import dates</span>
+                </button>
+                <button
+                  className="focusable inline-flex min-h-10 items-center gap-2 rounded-capsule bg-panel px-3 text-xs font-semibold shadow-soft transition disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-11 sm:px-4 sm:text-sm"
+                  disabled={isImportSubmitting}
+                  type="button"
+                  onClick={() => void handleManualImport()}
+                >
+                  <FolderInput className="size-4" />
+                  <span className="sm:hidden">Files</span>
+                  <span className="hidden sm:inline">Import files</span>
                 </button>
               </div>
               {importFeedback && <p className="text-sm font-medium text-error">{importFeedback}</p>}
@@ -4607,7 +4624,8 @@ function SortableDashboardPlotItem({
               )}
               <Line
                 dataKey="value"
-                dot={false}
+                dot={{ fill: plot.option.color, r: 2.5, strokeWidth: 0 }}
+                activeDot={{ fill: plot.option.color, r: 4, strokeWidth: 0 }}
                 stroke={plot.option.color}
                 strokeWidth={2}
                 type="monotone"

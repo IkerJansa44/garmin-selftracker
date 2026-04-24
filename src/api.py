@@ -35,6 +35,7 @@ from src.garmin_client import (
     GARMIN_RATE_LIMIT_COOLDOWN,
     is_garmin_rate_limited_error,
 )
+from src.manual_import import run_manual_import_dir
 from src.reminders import (
     CHECKIN_REMINDER_SETTINGS_KEY,
     CheckinReminderService,
@@ -106,6 +107,7 @@ class ApiSettings:
     garmin_email: str
     garmin_password: str
     garmin_tokenstore: str
+    garmin_manual_import_dir: str
     default_sync_days: int
     dashboard_url: str
     smtp_host: str
@@ -1569,6 +1571,10 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler signature
         parsed = urlparse(self.path)
+        if parsed.path == "/api/manual-import":
+            self._handle_manual_import()
+            return
+
         if parsed.path != "/api/import":
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
             return
@@ -1655,6 +1661,53 @@ class ApiHandler(BaseHTTPRequestHandler):
                 "fromDate": request.start_date.isoformat(),
                 "toDate": request.end_date.isoformat(),
                 "days": (request.end_date - request.start_date).days + 1,
+            },
+        )
+
+    def _handle_manual_import(self) -> None:
+        if self.settings is None:
+            self._send_json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                {"error": "API settings are not initialized"},
+            )
+            return
+        latest_run = _latest_sync_run(self.settings.db_path)
+        if latest_run is not None and str(latest_run["status"]) == "running":
+            self._send_json(HTTPStatus.CONFLICT, {"error": "Import already running"})
+            return
+
+        try:
+            result = run_manual_import_dir(
+                db_path=self.settings.db_path,
+                import_dir=self.settings.garmin_manual_import_dir,
+            )
+        except Exception as exc:  # pragma: no cover - runtime guard
+            logger.exception("Failed to run manual import")
+            self._send_json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                {"error": "Failed to run manual import", "details": str(exc)},
+            )
+            return
+
+        if result.status == "failed":
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {
+                    "error": "Manual import failed",
+                    "details": result.error_message
+                    or f"No compatible Garmin zip files found in {result.import_dir}.",
+                },
+            )
+            return
+
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "status": result.status,
+                "mode": "manual",
+                "days": result.days_imported,
+                "archives": result.archives_imported,
+                "importDir": result.import_dir,
             },
         )
 
@@ -1873,6 +1926,7 @@ def _build_settings() -> ApiSettings:
         garmin_email=env_settings.garmin_email,
         garmin_password=env_settings.garmin_password,
         garmin_tokenstore=env_settings.garmin_tokenstore,
+        garmin_manual_import_dir=env_settings.garmin_manual_import_dir,
         default_sync_days=env_settings.default_sync_days,
         dashboard_url=env_settings.dashboard_url,
         smtp_host=env_settings.smtp_host,

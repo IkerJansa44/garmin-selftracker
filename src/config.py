@@ -9,6 +9,7 @@ class Settings:
     garmin_email: str
     garmin_password: str
     garmin_tokenstore: str
+    garmin_manual_import_dir: str
     db_path: str
     default_sync_days: int
     dashboard_url: str
@@ -42,6 +43,9 @@ def load_settings(*, require_garmin_credentials: bool = True) -> Settings:
     garmin_tokenstore = _optional_env(
         "GARMIN_TOKENSTORE", default="/data/garmin-tokens"
     )
+    garmin_manual_import_dir = _optional_env(
+        "GARMIN_MANUAL_IMPORT_DIR", default="/data/manual-imports"
+    )
     db_path = os.getenv("SQLITE_DB_PATH", "/data/garmin.db")
     default_sync_days = int(os.getenv("DEFAULT_SYNC_DAYS", "2"))
     dashboard_url = _optional_env("DASHBOARD_URL", default="http://localhost:5180")
@@ -55,6 +59,7 @@ def load_settings(*, require_garmin_credentials: bool = True) -> Settings:
         garmin_email=garmin_email,
         garmin_password=garmin_password,
         garmin_tokenstore=garmin_tokenstore,
+        garmin_manual_import_dir=garmin_manual_import_dir,
         db_path=db_path,
         default_sync_days=default_sync_days,
         dashboard_url=dashboard_url,

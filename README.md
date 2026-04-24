@@ -66,6 +66,7 @@ If you want reminder emails to open the dashboard on your phone, set `DASHBOARD_
 GARMIN_EMAIL=you@example.com
 GARMIN_PASSWORD=your_password
 GARMIN_TOKENSTORE=/data/garmin-tokens
+GARMIN_MANUAL_IMPORT_DIR=/data/manual-imports
 DASHBOARD_URL=http://<your-computer-ip-or-hostname>:5180
 ALLOWED_HOSTS=<your-computer-ip-or-hostname>,localhost,127.0.0.1
 
@@ -79,6 +80,11 @@ SMTP_PASS=<insert_pass>
 If you only use the dashboard from the same computer, `DASHBOARD_URL=http://localhost:5180` is still fine.
 
 `GARMIN_TOKENSTORE` defaults to `/data/garmin-tokens`. After the first successful Garmin login, the app reuses saved OAuth tokens from that directory to avoid repeated full sign-ins.
+
+For Garmin web exports, place daily wellness `.zip` files in `data/manual-imports/`
+on the host. The dashboard's `Import files` button reads that folder through
+`GARMIN_MANUAL_IMPORT_DIR` and imports compatible `.fit` data without signing in
+to Garmin.
 
 3. Start services:
 

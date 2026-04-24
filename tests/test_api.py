@@ -1251,6 +1251,7 @@ def test_import_job_manager_rejects_when_sync_run_already_running(
         garmin_email="user@example.com",
         garmin_password="secret",
         garmin_tokenstore="/tmp/garmin-tokens",
+        garmin_manual_import_dir="/tmp/manual-imports",
         default_sync_days=2,
         dashboard_url="http://dashboard.example.com",
         smtp_host="smtp.example.com",
@@ -1308,6 +1309,7 @@ def test_import_job_manager_rejects_during_garmin_rate_limit_cooldown(
         garmin_email="user@example.com",
         garmin_password="secret",
         garmin_tokenstore="/tmp/garmin-tokens",
+        garmin_manual_import_dir="/tmp/manual-imports",
         default_sync_days=2,
         dashboard_url="http://dashboard.example.com",
         smtp_host="smtp.example.com",
@@ -1387,6 +1389,7 @@ def test_build_settings_includes_dashboard_url(monkeypatch: pytest.MonkeyPatch) 
             garmin_email="user@example.com",
             garmin_password="secret",
             garmin_tokenstore="/data/garmin-tokens",
+            garmin_manual_import_dir="/data/manual-imports",
             db_path="/tmp/garmin.db",
             default_sync_days=2,
             dashboard_url="http://phone.example.com:5180",
@@ -1402,3 +1405,4 @@ def test_build_settings_includes_dashboard_url(monkeypatch: pytest.MonkeyPatch) 
 
     assert settings.dashboard_url == "http://phone.example.com:5180"
     assert settings.garmin_tokenstore == "/data/garmin-tokens"
+    assert settings.garmin_manual_import_dir == "/data/manual-imports"
