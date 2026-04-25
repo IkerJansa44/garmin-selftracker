@@ -46,6 +46,7 @@ export interface DailyRecord {
     calories: number | null;
     stressAvg: number | null;
     bodyBattery: number | null;
+    runningKilometers?: number | null;
     sleepSeconds: number | null;
     sleepConsistency: number | null;
     isTrainingDay: boolean;

@@ -12,9 +12,11 @@ import {
   AlertCircle,
   CirclePlus,
   CircleHelp,
+  Check,
   FolderInput,
   GripVertical,
   LoaderCircle,
+  Pencil,
   X,
 } from "lucide-react";
 import {
@@ -72,6 +74,7 @@ import {
 } from "./lib/time";
 import { getZone2PlusMinutes } from "./lib/heartRateZones";
 import {
+  aggregateDashboardPlotPoints,
   buildSleepWindowChartStats,
   createDashboardPlotId,
   normalizeDashboardPlotPreferences as normalizeDashboardPlotPreferencesRaw,
@@ -147,6 +150,7 @@ type GarminPlotKey =
   | "calories"
   | "stressAvg"
   | "bodyBattery"
+  | "runningKilometers"
   | "sleepSeconds"
   | "sleepConsistency"
   | "isTrainingDay"
@@ -366,6 +370,7 @@ const GARMIN_PLOT_META: Record<GarminPlotKey, Omit<DashboardPlotVariableOption, 
   calories: { label: "Calories", color: "#8a5a4e", unit: "kcal" },
   stressAvg: { label: "Stress Avg", color: "#806739", unit: "pts" },
   bodyBattery: { label: "Body Battery", color: "#51745e", unit: "%" },
+  runningKilometers: { label: "Running Distance", color: "#b45f3c", unit: "km" },
   sleepSeconds: { label: "Sleep Duration", color: "#3f6686", unit: "h" },
   sleepConsistency: { label: "Sleep Consistency", color: "#4b7394", unit: "min" },
   isTrainingDay: { label: "Training Day", color: "#6f4b83", unit: "0/1" },
@@ -587,14 +592,20 @@ function deriveCoverageState(
   return "partial";
 }
 
-function computeYAxisStats(values: number[]): { domain: [number, number]; ticks: number[] } {
+function computeYAxisStats(
+  values: number[],
+  decimalPlaces = 0,
+): { domain: [number, number]; ticks: number[] } {
   if (!values.length) {
     return { domain: [0, 1], ticks: [0, 0, 0] };
   }
 
-  const minimum = Math.round(Math.min(...values));
-  const maximum = Math.round(Math.max(...values));
-  const average = Math.max(minimum, Math.min(maximum, Math.round(mean(values))));
+  const roundValue = (value: number) => (
+    decimalPlaces > 0 ? Number(value.toFixed(decimalPlaces)) : Math.round(value)
+  );
+  const minimum = roundValue(Math.min(...values));
+  const maximum = roundValue(Math.max(...values));
+  const average = Math.max(minimum, Math.min(maximum, roundValue(mean(values))));
   const domain: [number, number] = minimum === maximum ? [minimum - 1, maximum + 1] : [minimum, maximum];
   const uniqueTicks = Array.from(new Set([minimum, average, maximum]));
   let ticks: number[];
@@ -788,6 +799,9 @@ function formatGarminAnalysisValue(key: GarminPlotKey, value: AnalysisValueRecor
   }
   if (key === "sleepSeconds") {
     return formatSecondsAsHours(value.valueNum);
+  }
+  if (key === "runningKilometers") {
+    return `${value.valueNum.toFixed(1)} km`;
   }
   const meta = GARMIN_PLOT_META[key];
   const formatted = formatTooltipNumber(value.valueNum);
@@ -1274,10 +1288,12 @@ function formatHoursAsHoursMinutes(hours: number): string {
 
 function SparklineTooltip({
   active,
+  option,
   payload,
   plotKey,
 }: {
   active?: boolean;
+  option: DashboardPlotVariableOption;
   payload?: Array<{ value?: number }>;
   plotKey: DashboardPlotVariableKey;
 }) {
@@ -1285,9 +1301,7 @@ function SparklineTooltip({
     return null;
   }
   const value = payload[0]?.value;
-  const formattedValue = plotKey === "garmin:sleepSeconds" && typeof value === "number"
-    ? formatHoursAsHoursMinutes(value)
-    : value ?? "--";
+  const formattedValue = typeof value === "number" ? formatDashboardValue(plotKey, option, value) : "--";
   return (
     <div className="rounded-2xl bg-panel px-3 py-2 text-xs shadow-soft">
       <span className="metric-number font-mono">{formattedValue}</span>
@@ -2121,33 +2135,6 @@ function App() {
   }, [addPlotSearchQuery, dashboardPlotOptions]);
   const dashboardPlots = useMemo<DashboardPlot[]>(
     () => {
-      function aggregatePlotPoints(
-        rawPoints: Array<{ date: string; value: number | null }>,
-        aggregation: PlotAggregation,
-        rolling: boolean,
-        reduceMethod: PlotReduceMethod,
-      ): Array<{ date: string; value: number | null }> {
-        if (aggregation === "daily") {
-          return rawPoints;
-        }
-        const windowSize = aggregation === "3days" ? 3 : 7;
-        const reduce = (nums: number[]) => reduceMethod === "sum" ? nums.reduce((a, b) => a + b, 0) : mean(nums);
-        if (rolling) {
-          return rawPoints.map((point, index) => {
-            const window = rawPoints.slice(Math.max(0, index - windowSize + 1), index + 1);
-            const nums = window.map((p) => p.value).filter((v): v is number => v !== null);
-            return { date: point.date, value: nums.length ? reduce(nums) : null };
-          });
-        }
-        const grouped: Array<{ date: string; value: number | null }> = [];
-        for (let i = 0; i < rawPoints.length; i += windowSize) {
-          const block = rawPoints.slice(i, i + windowSize);
-          const nums = block.map((p) => p.value).filter((v): v is number => v !== null);
-          grouped.push({ date: block[block.length - 1].date, value: nums.length ? reduce(nums) : null });
-        }
-        return grouped;
-      }
-
       return dashboardPlotPreferences
         .map((plotPreference) => {
           const option = dashboardPlotOptions.find((candidate) => candidate.key === plotPreference.key);
@@ -2158,7 +2145,7 @@ function App() {
             date: record.date,
             value: getDashboardPlotValue(plotPreference.key, record, checkinsByDateMap, questionFieldsById),
           }));
-          const points = aggregatePlotPoints(rawPoints, plotPreference.aggregation, plotPreference.rolling, plotPreference.reduceMethod);
+          const points = aggregateDashboardPlotPoints(rawPoints, plotPreference.aggregation, plotPreference.rolling, plotPreference.reduceMethod);
           const values = points
             .map((point) => point.value)
             .filter((value): value is number => value !== null);
@@ -2182,7 +2169,7 @@ function App() {
           const yAxis = sleepWindowStats ? {
             domain: sleepWindowStats.domain,
             ticks: sleepWindowStats.ticks,
-          } : computeYAxisStats(values);
+          } : computeYAxisStats(values, plotPreference.key === "garmin:runningKilometers" ? 1 : 0);
           return {
             id: plotPreference.id,
             key: plotPreference.key,
@@ -2800,6 +2787,18 @@ function App() {
 
   const handleRemoveDashboardPlot = (plotId: string) => {
     setDashboardPlotPreferences((previous) => previous.filter((plot) => plot.id !== plotId));
+  };
+
+  const handleUpdateDashboardPlot = (
+    plotId: string,
+    updates: Pick<
+      DashboardPlotPreference,
+      "direction" | "chartStyle" | "aggregation" | "rolling" | "reduceMethod"
+    >,
+  ) => {
+    setDashboardPlotPreferences((previous) => previous.map((plot) => (
+      plot.id === plotId ? { ...plot, ...updates } : plot
+    )));
   };
 
   const handleDashboardPlotSortEnd = (event: DragEndEvent) => {
@@ -3572,6 +3571,7 @@ function App() {
                           plot={plot}
                           rangePreset={rangePreset}
                           onOpenStatus={() => setActiveView("settings")}
+                          onUpdate={handleUpdateDashboardPlot}
                           onRemove={handleRemoveDashboardPlot}
                         />
                       ))}
@@ -4512,6 +4512,7 @@ function SortableDashboardPlotItem({
   plot,
   rangePreset,
   onOpenStatus,
+  onUpdate,
   onRemove,
 }: {
   dataStatus: "loading" | "ready" | "error";
@@ -4519,15 +4520,54 @@ function SortableDashboardPlotItem({
   plot: DashboardPlot;
   rangePreset: number;
   onOpenStatus: () => void;
+  onUpdate: (
+    plotId: string,
+    updates: Pick<
+      DashboardPlotPreference,
+      "direction" | "chartStyle" | "aggregation" | "rolling" | "reduceMethod"
+    >,
+  ) => void;
   onRemove: (plotId: string) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: plot.id });
+  const [isEditing, setIsEditing] = useState(false);
+  const [draftDirection, setDraftDirection] = useState<PlotDirection>(plot.direction);
+  const [draftChartStyle, setDraftChartStyle] = useState<DashboardPlotChartStyle>(plot.chartStyle);
+  const [draftAggregation, setDraftAggregation] = useState<PlotAggregation>(plot.aggregation);
+  const [draftRolling, setDraftRolling] = useState(plot.rolling);
+  const [draftReduceMethod, setDraftReduceMethod] = useState<PlotReduceMethod>(plot.reduceMethod);
   const coverageMeta = COVERAGE_META[plot.coverage];
   const isMissing = plot.coverage === "missing";
   const isPartial = plot.coverage === "partial";
   const loadingState = importState === "running" && plot.coverage !== "complete";
   const errorState = (importState === "failed" || dataStatus === "error") && isMissing;
   const showSleepWindowBars = plot.chartStyle === "sleepWindowBars" && plot.sleepWindowPoints !== null;
+  const supportsSleepWindowBars = plot.key === "garmin:sleepConsistency";
+
+  const openEditor = () => {
+    setDraftDirection(plot.direction);
+    setDraftChartStyle(plot.chartStyle);
+    setDraftAggregation(plot.aggregation);
+    setDraftRolling(plot.rolling);
+    setDraftReduceMethod(plot.reduceMethod);
+    setIsEditing(true);
+  };
+  const saveEditor = () => {
+    const isSleepWindowBars = draftChartStyle === "sleepWindowBars";
+    const isDaily = draftAggregation === "daily";
+    onUpdate(plot.id, {
+      direction: draftDirection,
+      chartStyle: draftChartStyle,
+      aggregation: isSleepWindowBars ? "daily" : draftAggregation,
+      rolling: isSleepWindowBars || isDaily ? false : draftRolling,
+      reduceMethod: isSleepWindowBars || isDaily ? "mean" : draftReduceMethod,
+    });
+    setIsEditing(false);
+  };
+  const choiceClass = (active: boolean) => clsx(
+    "focusable min-h-9 rounded-xl px-3 text-xs font-semibold transition",
+    active ? "bg-accent text-white" : "bg-subsurface text-ink hover:text-accent",
+  );
 
   const aggregationLabel =
     showSleepWindowBars
@@ -4570,6 +4610,14 @@ function SortableDashboardPlotItem({
             {coverageMeta.label}
           </span>
           <button
+            aria-label={`Edit ${plot.option.label} plot`}
+            className="focusable min-h-9 rounded-capsule bg-subsurface px-3 text-muted transition hover:text-ink"
+            type="button"
+            onClick={openEditor}
+          >
+            <Pencil className="size-4" />
+          </button>
+          <button
             aria-label={`Remove ${plot.option.label} plot`}
             className="focusable min-h-9 rounded-capsule bg-subsurface px-3 text-muted transition hover:text-ink"
             type="button"
@@ -4589,6 +4637,107 @@ function SortableDashboardPlotItem({
         </div>
       </div>
 
+      {isEditing && (
+        <div className="mt-4 rounded-2xl bg-subsurface p-3">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted">Edit plot</p>
+            <div className="flex gap-2">
+              <button
+                aria-label={`Save ${plot.option.label} plot settings`}
+                className="focusable min-h-9 rounded-capsule bg-accent px-3 text-white"
+                type="button"
+                onClick={saveEditor}
+              >
+                <Check className="size-4" />
+              </button>
+              <button
+                aria-label={`Cancel editing ${plot.option.label} plot`}
+                className="focusable min-h-9 rounded-capsule bg-panel px-3 text-muted transition hover:text-ink"
+                type="button"
+                onClick={() => setIsEditing(false)}
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-3 grid gap-3">
+            <div>
+              <p className="mb-2 text-xs text-muted">Comparison</p>
+              <div className="grid grid-cols-2 gap-2">
+                <button className={choiceClass(draftDirection === "higher")} type="button" onClick={() => setDraftDirection("higher")}>
+                  Higher better
+                </button>
+                <button className={choiceClass(draftDirection === "lower")} type="button" onClick={() => setDraftDirection("lower")}>
+                  Lower better
+                </button>
+              </div>
+            </div>
+
+            {supportsSleepWindowBars && (
+              <div>
+                <p className="mb-2 text-xs text-muted">Chart</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <button className={choiceClass(draftChartStyle === "line")} type="button" onClick={() => setDraftChartStyle("line")}>
+                    Line
+                  </button>
+                  <button className={choiceClass(draftChartStyle === "sleepWindowBars")} type="button" onClick={() => setDraftChartStyle("sleepWindowBars")}>
+                    Bed/Wake bars
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {draftChartStyle !== "sleepWindowBars" && (
+              <>
+                <div>
+                  <p className="mb-2 text-xs text-muted">Aggregation</p>
+                  <div className="grid grid-cols-3 gap-2">
+                    <button className={choiceClass(draftAggregation === "daily")} type="button" onClick={() => setDraftAggregation("daily")}>
+                      Daily
+                    </button>
+                    <button className={choiceClass(draftAggregation === "3days")} type="button" onClick={() => setDraftAggregation("3days")}>
+                      3-Days
+                    </button>
+                    <button className={choiceClass(draftAggregation === "weekly")} type="button" onClick={() => setDraftAggregation("weekly")}>
+                      Weekly
+                    </button>
+                  </div>
+                </div>
+
+                {draftAggregation !== "daily" && (
+                  <>
+                    <div>
+                      <p className="mb-2 text-xs text-muted">Period</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button className={choiceClass(draftRolling)} type="button" onClick={() => setDraftRolling(true)}>
+                          Rolling
+                        </button>
+                        <button className={choiceClass(!draftRolling)} type="button" onClick={() => setDraftRolling(false)}>
+                          Fixed periods
+                        </button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <p className="mb-2 text-xs text-muted">Reduce</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button className={choiceClass(draftReduceMethod === "mean")} type="button" onClick={() => setDraftReduceMethod("mean")}>
+                          Average
+                        </button>
+                        <button className={choiceClass(draftReduceMethod === "sum")} type="button" onClick={() => setDraftReduceMethod("sum")}>
+                          Sum
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="mt-4 h-24 sm:h-20 lg:h-16">
         {showSleepWindowBars ? (
           <SleepWindowChart
@@ -4604,10 +4753,15 @@ function SortableDashboardPlotItem({
           <ResponsiveContainer>
             <ComposedChart data={plot.points}>
               <YAxis
-                allowDecimals={false}
+                allowDecimals={plot.key === "garmin:runningKilometers"}
                 axisLine={{ stroke: "rgba(18,18,18,0.28)", strokeWidth: 1 }}
                 domain={plot.domain}
                 interval={0}
+                tickFormatter={(value) => (
+                  plot.key === "garmin:runningKilometers" && typeof value === "number"
+                    ? value.toFixed(1)
+                    : String(value)
+                )}
                 tickLine={false}
                 tick={{ fontSize: 10 }}
                 ticks={plot.ticks}
@@ -4630,7 +4784,7 @@ function SortableDashboardPlotItem({
                 strokeWidth={2}
                 type="monotone"
               />
-              <Tooltip content={<SparklineTooltip plotKey={plot.key} />} />
+              <Tooltip content={<SparklineTooltip option={plot.option} plotKey={plot.key} />} />
             </ComposedChart>
           </ResponsiveContainer>
         )}

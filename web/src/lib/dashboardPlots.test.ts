@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  aggregateDashboardPlotPoints,
   buildSleepWindowChartStats,
   formatOvernightClockLabel,
   normalizeDashboardPlotPreferences,
@@ -59,6 +60,44 @@ describe("normalizeDashboardPlotPreferences", () => {
     expect(normalized).toHaveLength(2);
     expect(normalized[0].id).toBe("plot-1");
     expect(normalized[1].id).toBe("plot-1_2");
+  });
+});
+
+describe("aggregateDashboardPlotPoints", () => {
+  it("groups fixed weekly periods by calendar week", () => {
+    const points = [
+      { date: "2026-04-18", value: 7.5 },
+      { date: "2026-04-19", value: 0 },
+      { date: "2026-04-20", value: 10.84 },
+      { date: "2026-04-21", value: 0 },
+      { date: "2026-04-22", value: 0 },
+      { date: "2026-04-23", value: 0 },
+      { date: "2026-04-24", value: 0 },
+    ];
+
+    const aggregated = aggregateDashboardPlotPoints(points, "weekly", false, "sum");
+
+    expect(aggregated).toHaveLength(2);
+    expect(aggregated[0]).toEqual({ date: "2026-04-19", value: 7.5 });
+    expect(aggregated[1].date).toBe("2026-04-24");
+    expect(aggregated[1].value).toBeCloseTo(10.84);
+  });
+
+  it("keeps rolling weekly periods as trailing seven-day windows", () => {
+    const points = [
+      { date: "2026-04-18", value: 7.5 },
+      { date: "2026-04-19", value: 0 },
+      { date: "2026-04-20", value: 10.84 },
+      { date: "2026-04-21", value: 0 },
+      { date: "2026-04-22", value: 0 },
+      { date: "2026-04-23", value: 0 },
+      { date: "2026-04-24", value: 0 },
+    ];
+
+    const aggregated = aggregateDashboardPlotPoints(points, "weekly", true, "sum");
+
+    expect(aggregated).toHaveLength(7);
+    expect(aggregated[6]).toEqual({ date: "2026-04-24", value: 18.34 });
   });
 });
 

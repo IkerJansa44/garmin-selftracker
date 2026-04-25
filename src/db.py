@@ -770,6 +770,25 @@ def rebuild_analysis_values(connection: sqlite3.Connection) -> None:
             1 if row["activity_count"] and int(row["activity_count"]) > 0 else 0
         )
 
+    running_kilometers_by_date: dict[str, float] = {}
+    for row in connection.execute(
+        """
+        SELECT
+            substr(start_time_local, 1, 10) AS activity_date,
+            SUM(COALESCE(distance_meters, 0)) AS running_meters
+        FROM activities
+        WHERE start_time_local IS NOT NULL
+          AND lower(COALESCE(activity_type, activity_name, '')) LIKE '%running%'
+        GROUP BY activity_date
+        """
+    ).fetchall():
+        activity_date = row["activity_date"]
+        if activity_date is None:
+            continue
+        running_kilometers_by_date[str(activity_date)] = (
+            float(row["running_meters"] or 0) / 1000
+        )
+
     daily_metric_rows = connection.execute(
         """
         SELECT
@@ -873,6 +892,19 @@ def rebuild_analysis_values(connection: sqlite3.Connection) -> None:
                 source_date=source_date,
                 lag_days=-1,
                 alignment_rule="training_previous_day",
+                refreshed_at=refreshed_at,
+            )
+            _append_analysis_row(
+                rows_to_insert,
+                analysis_date=predictor_analysis_date,
+                role="predictor",
+                feature_key="garmin:runningKilometers",
+                value_num=running_kilometers_by_date.get(source_date, 0.0),
+                value_text=None,
+                value_bool=None,
+                source_date=source_date,
+                lag_days=-1,
+                alignment_rule="running_distance_previous_day",
                 refreshed_at=refreshed_at,
             )
 

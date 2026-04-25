@@ -93,6 +93,7 @@ DERIVED_PREDICTOR_SOURCE_GARMIN_KEYS = {
     "calories",
     "stressAvg",
     "bodyBattery",
+    "runningKilometers",
     "sleepSeconds",
     "sleepConsistency",
     *TIME_TO_SLEEP_GAP_DASHBOARD_KEYS,
@@ -1300,6 +1301,24 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
         and row["activity_count"]
         and int(row["activity_count"]) > 0
     }
+    running_rows = connection.execute(
+        """
+        SELECT
+            substr(start_time_local, 1, 10) AS activity_date,
+            SUM(COALESCE(distance_meters, 0)) AS running_meters
+        FROM activities
+        WHERE start_time_local IS NOT NULL
+          AND substr(start_time_local, 1, 10) BETWEEN ? AND ?
+          AND lower(COALESCE(activity_type, activity_name, '')) LIKE '%running%'
+        GROUP BY activity_date
+        """,
+        (start_date.isoformat(), end_date.isoformat()),
+    ).fetchall()
+    running_kilometers_by_date = {
+        str(row["activity_date"]): float(row["running_meters"] or 0) / 1000
+        for row in running_rows
+        if row["activity_date"]
+    }
 
     latest_run = connection.execute(
         """
@@ -1364,6 +1383,9 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
             "calories": _as_int(row["calories"]) if row else None,
             "stressAvg": _as_float(row["stress_avg"]) if row else None,
             "bodyBattery": _as_int(row["body_battery"]) if row else None,
+            "runningKilometers": (
+                running_kilometers_by_date.get(date_key, 0.0) if row else None
+            ),
             "sleepSeconds": _as_int(row["sleep_seconds"]) if row else None,
             "sleepConsistency": sleep_consistency_by_source_date.get(date_key),
             "isTrainingDay": date_key in training_days,

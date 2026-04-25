@@ -1022,6 +1022,60 @@ def test_load_dashboard_payload_includes_fell_asleep_iso_field(tmp_path: Path) -
     assert "sleepConsistency" in record["predictors"]
 
 
+def test_load_dashboard_payload_includes_running_kilometers(tmp_path: Path) -> None:
+    db_path = tmp_path / "garmin.db"
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+
+    connection = connect_db(str(db_path))
+    init_db(connection)
+    for metric_date in (yesterday, today):
+        connection.execute(
+            """
+            INSERT INTO daily_metrics (metric_date, updated_at)
+            VALUES (?, ?)
+            """,
+            (metric_date.isoformat(), "2026-02-21T06:00:00+00:00"),
+        )
+    for activity_id, activity_type, activity_name, distance_meters in (
+        (1, "running", "Morning Running", 5200),
+        (2, "trail_running", "Trail Running", 1800),
+        (3, "walking", "Walking", 3000),
+    ):
+        connection.execute(
+            """
+            INSERT INTO activities (
+                garmin_activity_id,
+                activity_name,
+                activity_type,
+                start_time_local,
+                distance_meters,
+                raw_json,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, '{}', ?)
+            """,
+            (
+                activity_id,
+                activity_name,
+                activity_type,
+                f"{today.isoformat()} 08:00:00",
+                distance_meters,
+                "2026-02-21T06:00:00+00:00",
+            ),
+        )
+    connection.commit()
+    connection.close()
+
+    payload = _load_dashboard_payload(str(db_path), 2)
+    records_by_date = {record["date"]: record for record in payload["records"]}
+
+    assert records_by_date[today.isoformat()]["predictors"]["runningKilometers"] == 7
+    assert (
+        records_by_date[yesterday.isoformat()]["predictors"]["runningKilometers"] == 0
+    )
+
+
 def test_load_dashboard_payload_includes_caffeine_sleep_gap_predictor(
     tmp_path: Path,
 ) -> None:

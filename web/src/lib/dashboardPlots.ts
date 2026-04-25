@@ -41,10 +41,16 @@ export interface SleepWindowChartStats {
   ticks: number[];
 }
 
+export interface DashboardPlotPoint {
+  date: string;
+  value: number | null;
+}
+
 const CLOCK_STEP_MINUTES = 15;
 const OVERNIGHT_SPLIT_MINUTES = 12 * 60;
 const OVERNIGHT_DAY_MINUTES = 24 * 60;
 const DEFAULT_SLEEP_WINDOW_DOMAIN: [number, number] = [18 * 60, 32 * 60];
+const DAY_MS = 86_400_000;
 
 function average(values: number[]): number | null {
   if (!values.length) {
@@ -207,6 +213,97 @@ function formatWeekday(date: string): string {
     return date;
   }
   return parsed.toLocaleDateString(undefined, { weekday: "short" });
+}
+
+function formatDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function calendarWeekStartKey(date: string): string {
+  const parsed = new Date(`${date}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) {
+    return date;
+  }
+  const mondayOffset = (parsed.getDay() + 6) % 7;
+  return formatDateKey(new Date(parsed.getTime() - mondayOffset * DAY_MS));
+}
+
+function reducePlotValues(values: number[], reduceMethod: PlotReduceMethod): number | null {
+  if (!values.length) {
+    return null;
+  }
+  return reduceMethod === "sum" ? values.reduce((total, value) => total + value, 0) : average(values);
+}
+
+function aggregateByCalendarWeek(
+  rawPoints: DashboardPlotPoint[],
+  reduceMethod: PlotReduceMethod,
+): DashboardPlotPoint[] {
+  const grouped: DashboardPlotPoint[] = [];
+  let currentWeek: string | null = null;
+  let currentBlock: DashboardPlotPoint[] = [];
+
+  const flushBlock = () => {
+    if (!currentBlock.length) {
+      return;
+    }
+    const values = currentBlock.map((point) => point.value).filter((value): value is number => value !== null);
+    grouped.push({
+      date: currentBlock[currentBlock.length - 1].date,
+      value: reducePlotValues(values, reduceMethod),
+    });
+  };
+
+  for (const point of rawPoints) {
+    const week = calendarWeekStartKey(point.date);
+    if (currentWeek !== null && week !== currentWeek) {
+      flushBlock();
+      currentBlock = [];
+    }
+    currentWeek = week;
+    currentBlock.push(point);
+  }
+  flushBlock();
+
+  return grouped;
+}
+
+export function aggregateDashboardPlotPoints(
+  rawPoints: DashboardPlotPoint[],
+  aggregation: PlotAggregation,
+  rolling: boolean,
+  reduceMethod: PlotReduceMethod,
+): DashboardPlotPoint[] {
+  if (aggregation === "daily") {
+    return rawPoints;
+  }
+
+  const windowSize = aggregation === "3days" ? 3 : 7;
+  if (rolling) {
+    return rawPoints.map((point, index) => {
+      const window = rawPoints.slice(Math.max(0, index - windowSize + 1), index + 1);
+      const values = window.map((p) => p.value).filter((value): value is number => value !== null);
+      return { date: point.date, value: reducePlotValues(values, reduceMethod) };
+    });
+  }
+
+  if (aggregation === "weekly") {
+    return aggregateByCalendarWeek(rawPoints, reduceMethod);
+  }
+
+  const grouped: DashboardPlotPoint[] = [];
+  for (let i = 0; i < rawPoints.length; i += windowSize) {
+    const block = rawPoints.slice(i, i + windowSize);
+    const values = block.map((point) => point.value).filter((value): value is number => value !== null);
+    grouped.push({
+      date: block[block.length - 1].date,
+      value: reducePlotValues(values, reduceMethod),
+    });
+  }
+  return grouped;
 }
 
 export function formatOvernightClockLabel(minutes: number): string {
