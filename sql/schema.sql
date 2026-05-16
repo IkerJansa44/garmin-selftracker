@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS daily_metrics (
     lowest_respiration_value REAL,
     fell_asleep_at TEXT,
     woke_up_at TEXT,
+    avg_hr_1h_before_sleep REAL,
     vo2max REAL,
     updated_at TEXT NOT NULL
 );

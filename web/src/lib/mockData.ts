@@ -255,6 +255,9 @@ export function generateMockRecords(totalDays = TOTAL_DAYS): DailyRecord[] {
           Math.round((25200 + (weekday === 0 || weekday === 6 ? 1800 : 0) - (previousFactors?.alcoholUnits ?? 0)) + (noise(dayIndex + 1) - 0.5) * 5400),
           14400, 36000,
         ),
+        avgHr1hBeforeSleep: importGap ? null : Math.round(
+          clamp(58 + (currentFactors.lateMeal ? 6 : 0) + noise(dayIndex + 19) * 8, 45, 95),
+        ),
         sleepConsistency: importGap ? null : 15 + Math.round(noise(dayIndex + 101) * 70),
         isTrainingDay: currentFactors.trainingIntensity >= 6,
         zone0Minutes: null,

@@ -152,6 +152,7 @@ type GarminPlotKey =
   | "bodyBattery"
   | "runningKilometers"
   | "sleepSeconds"
+  | "avgHr1hBeforeSleep"
   | "sleepConsistency"
   | "isTrainingDay"
   | "zone0Minutes"
@@ -372,6 +373,7 @@ const GARMIN_PLOT_META: Record<GarminPlotKey, Omit<DashboardPlotVariableOption, 
   bodyBattery: { label: "Body Battery", color: "#51745e", unit: "%" },
   runningKilometers: { label: "Running Distance", color: "#b45f3c", unit: "km" },
   sleepSeconds: { label: "Sleep Duration", color: "#3f6686", unit: "h" },
+  avgHr1hBeforeSleep: { label: "Avg HR 1h Before Sleep", color: "#9a4f5f", unit: "bpm" },
   sleepConsistency: { label: "Sleep Consistency", color: "#4b7394", unit: "min" },
   isTrainingDay: { label: "Training Day", color: "#6f4b83", unit: "0/1" },
   zone0Minutes: { label: "Zone 0 Time", color: "#7a9e9f", unit: "min" },
@@ -384,6 +386,7 @@ const GARMIN_PLOT_META: Record<GarminPlotKey, Omit<DashboardPlotVariableOption, 
   ...DERIVED_GAP_PLOT_META,
 };
 const GARMIN_PLOT_DIRECTIONS: Partial<Record<GarminPlotKey, PlotDirection>> = {
+  avgHr1hBeforeSleep: "lower",
   sleepConsistency: "lower",
 };
 
@@ -2020,6 +2023,7 @@ function App() {
         stressAvg: null,
         bodyBattery: null,
         sleepSeconds: null,
+        avgHr1hBeforeSleep: null,
         sleepConsistency: null,
         isTrainingDay: false,
         zone0Minutes: null,

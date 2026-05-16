@@ -63,6 +63,7 @@ METRIC_PLOT_DIRECTIONS = {
     "restingHr": "lower",
 }
 GARMIN_PLOT_DIRECTIONS = {
+    "avgHr1hBeforeSleep": "lower",
     "sleepConsistency": "lower",
 }
 DEFAULT_DASHBOARD_PLOTS = [
@@ -95,6 +96,7 @@ DERIVED_PREDICTOR_SOURCE_GARMIN_KEYS = {
     "bodyBattery",
     "runningKilometers",
     "sleepSeconds",
+    "avgHr1hBeforeSleep",
     "sleepConsistency",
     *TIME_TO_SLEEP_GAP_DASHBOARD_KEYS,
 }
@@ -1252,7 +1254,8 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
             zone2_minutes,
             zone3_minutes,
             zone4_minutes,
-            zone5_minutes
+            zone5_minutes,
+            avg_hr_1h_before_sleep
         FROM daily_metrics
         WHERE metric_date BETWEEN ? AND ?
         ORDER BY metric_date
@@ -1387,6 +1390,9 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
                 running_kilometers_by_date.get(date_key, 0.0) if row else None
             ),
             "sleepSeconds": _as_int(row["sleep_seconds"]) if row else None,
+            "avgHr1hBeforeSleep": (
+                _as_float(row["avg_hr_1h_before_sleep"]) if row else None
+            ),
             "sleepConsistency": sleep_consistency_by_source_date.get(date_key),
             "isTrainingDay": date_key in training_days,
             "zone0Minutes": _as_int(row["zone0_minutes"]) if row else None,

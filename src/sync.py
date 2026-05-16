@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 from src.db import (
+    avg_hr_1h_before_sleep_from_raw_payloads,
+    backfill_avg_hr_1h_before_sleep,
     backfill_zone_minutes,
     connect_db,
     create_sync_run,
@@ -112,6 +114,12 @@ def run_sync(
                             break
 
             metrics = normalize_daily_metrics(day_payload)
+            metrics["avg_hr_1h_before_sleep"] = (
+                avg_hr_1h_before_sleep_from_raw_payloads(
+                    connection,
+                    metrics.get("fell_asleep_at"),
+                )
+            )
             if zone_bounds is not None:
                 metrics.update(
                     compute_zone_minutes(
@@ -130,6 +138,10 @@ def run_sync(
             )
             connection.commit()
             logger.info("Synced %s", day.isoformat())
+
+        filled_avg_hr = backfill_avg_hr_1h_before_sleep(connection)
+        connection.commit()
+        logger.info("Backfilled avg HR before sleep for %d days", filled_avg_hr)
     except GarminRateLimitError as exc:
         connection.rollback()
         status = "failed"

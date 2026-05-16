@@ -25,6 +25,7 @@ type GarminPredictorKey =
   | "bodyBattery"
   | "runningKilometers"
   | "sleepSeconds"
+  | "avgHr1hBeforeSleep"
   | DerivedGapMetricKey
   | "sleepConsistency"
   | "isTrainingDay";
@@ -86,6 +87,7 @@ const GARMIN_PREDICTOR_LABELS: Record<GarminPredictorKey, string> = {
   bodyBattery: "Body Battery",
   runningKilometers: "Running Distance (km)",
   sleepSeconds: "Sleep Duration (h)",
+  avgHr1hBeforeSleep: "Avg HR 1h Before Sleep",
   ...GAP_PREDICTOR_LABELS,
   sleepConsistency: "Sleep Consistency (min)",
   isTrainingDay: "Training Day (1/0)",

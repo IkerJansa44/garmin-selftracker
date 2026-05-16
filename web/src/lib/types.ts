@@ -48,6 +48,7 @@ export interface DailyRecord {
     bodyBattery: number | null;
     runningKilometers?: number | null;
     sleepSeconds: number | null;
+    avgHr1hBeforeSleep: number | null;
     sleepConsistency: number | null;
     isTrainingDay: boolean;
     zone0Minutes: number | null;

@@ -25,6 +25,7 @@ REQUIRED_DAILY_METRICS_COLUMNS = {
     "lowest_respiration_value": "REAL",
     "fell_asleep_at": "TEXT",
     "woke_up_at": "TEXT",
+    "avg_hr_1h_before_sleep": "REAL",
     "zone0_minutes": "INTEGER",
     "zone1_minutes": "INTEGER",
     "zone2_minutes": "INTEGER",
@@ -160,6 +161,7 @@ def upsert_daily_metrics(
             lowest_respiration_value,
             fell_asleep_at,
             woke_up_at,
+            avg_hr_1h_before_sleep,
             vo2max,
             zone0_minutes,
             zone1_minutes,
@@ -169,7 +171,7 @@ def upsert_daily_metrics(
             zone5_minutes,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(metric_date) DO UPDATE SET
             steps = excluded.steps,
             calories = excluded.calories,
@@ -187,6 +189,7 @@ def upsert_daily_metrics(
             lowest_respiration_value = excluded.lowest_respiration_value,
             fell_asleep_at = excluded.fell_asleep_at,
             woke_up_at = excluded.woke_up_at,
+            avg_hr_1h_before_sleep = excluded.avg_hr_1h_before_sleep,
             vo2max = excluded.vo2max,
             zone0_minutes = excluded.zone0_minutes,
             zone1_minutes = excluded.zone1_minutes,
@@ -214,6 +217,7 @@ def upsert_daily_metrics(
             metrics.get("lowest_respiration_value"),
             metrics.get("fell_asleep_at"),
             metrics.get("woke_up_at"),
+            metrics.get("avg_hr_1h_before_sleep"),
             metrics.get("vo2max"),
             metrics.get("zone0_minutes"),
             metrics.get("zone1_minutes"),
@@ -534,6 +538,127 @@ def _time_to_sleep_gap_minutes(event_minutes: int, sleep_minutes: int) -> int:
     return 24 * 60 - event_minutes + sleep_minutes
 
 
+def _datetime_from_any(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        if stripped.isdigit():
+            return _datetime_from_any(int(stripped))
+        try:
+            parsed = datetime.fromisoformat(stripped.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return (
+            parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+        )
+    if not isinstance(value, (int, float)):
+        return None
+    seconds = float(value)
+    if seconds > 10_000_000_000:
+        seconds = seconds / 1000
+    try:
+        return datetime.fromtimestamp(seconds, tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+def _average_hr_before_sleep_from_payloads(
+    heart_rate_payloads: list[Any],
+    fell_asleep_at: Any,
+) -> float | None:
+    sleep_at = _datetime_from_any(fell_asleep_at)
+    if sleep_at is None:
+        return None
+    window_start = sleep_at - timedelta(hours=1)
+
+    values: list[float] = []
+    for payload in heart_rate_payloads:
+        if not isinstance(payload, dict):
+            continue
+        samples = payload.get("heartRateValues")
+        if not isinstance(samples, list):
+            continue
+        for sample in samples:
+            if not isinstance(sample, (list, tuple)) or len(sample) < 2:
+                continue
+            timestamp = _datetime_from_any(sample[0])
+            bpm = _as_float(sample[1])
+            if timestamp is None or bpm is None:
+                continue
+            if window_start <= timestamp <= sleep_at:
+                values.append(bpm)
+
+    if not values:
+        return None
+    return round(sum(values) / len(values), 2)
+
+
+def avg_hr_1h_before_sleep_from_raw_payloads(
+    connection: sqlite3.Connection,
+    fell_asleep_at: Any,
+) -> float | None:
+    sleep_at = _datetime_from_any(fell_asleep_at)
+    if sleep_at is None:
+        return None
+
+    payload_dates = {
+        sleep_at.date().isoformat(),
+        (sleep_at.date() - timedelta(days=1)).isoformat(),
+    }
+    rows = connection.execute(
+        f"""
+        SELECT data_json
+        FROM raw_garmin_payloads
+        WHERE endpoint = 'heart_rates'
+          AND payload_date IN ({",".join("?" for _ in payload_dates)})
+        """,
+        tuple(sorted(payload_dates)),
+    ).fetchall()
+
+    payloads: list[Any] = []
+    for row in rows:
+        try:
+            payloads.append(json.loads(str(row["data_json"])))
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return _average_hr_before_sleep_from_payloads(payloads, fell_asleep_at)
+
+
+def backfill_avg_hr_1h_before_sleep(connection: sqlite3.Connection) -> int:
+    rows = connection.execute(
+        """
+        SELECT metric_date, fell_asleep_at
+        FROM daily_metrics
+        WHERE avg_hr_1h_before_sleep IS NULL
+          AND fell_asleep_at IS NOT NULL
+        ORDER BY metric_date
+        """
+    ).fetchall()
+
+    updated = 0
+    for row in rows:
+        value = avg_hr_1h_before_sleep_from_raw_payloads(
+            connection,
+            row["fell_asleep_at"],
+        )
+        if value is None:
+            continue
+        connection.execute(
+            """
+            UPDATE daily_metrics
+            SET avg_hr_1h_before_sleep = ?,
+                updated_at = ?
+            WHERE metric_date = ?
+            """,
+            (value, utc_now(), str(row["metric_date"])),
+        )
+        updated += 1
+    return updated
+
+
 def build_sleep_consistency_by_source_date(
     daily_metric_rows: list[sqlite3.Row],
 ) -> dict[str, float]:
@@ -803,7 +928,8 @@ def rebuild_analysis_values(connection: sqlite3.Connection) -> None:
             rem_or_deep_sleep_percentage,
             resting_heart_rate,
             fell_asleep_at,
-            woke_up_at
+            woke_up_at,
+            avg_hr_1h_before_sleep
         FROM daily_metrics
         ORDER BY metric_date
         """
@@ -854,6 +980,21 @@ def rebuild_analysis_values(connection: sqlite3.Connection) -> None:
                     role="predictor",
                     feature_key="garmin:sleepSeconds",
                     value_num=sleep_seconds,
+                    value_text=None,
+                    value_bool=None,
+                    source_date=sleep_source_date,
+                    lag_days=-1,
+                    alignment_rule="garmin_sleep_previous_night",
+                    refreshed_at=refreshed_at,
+                )
+            avg_hr_1h_before_sleep = _as_float(row["avg_hr_1h_before_sleep"])
+            if avg_hr_1h_before_sleep is not None and sleep_source_date is not None:
+                _append_analysis_row(
+                    rows_to_insert,
+                    analysis_date=source_date,
+                    role="predictor",
+                    feature_key="garmin:avgHr1hBeforeSleep",
+                    value_num=avg_hr_1h_before_sleep,
                     value_text=None,
                     value_bool=None,
                     source_date=sleep_source_date,

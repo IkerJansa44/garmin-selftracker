@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from src.db import (
+    avg_hr_1h_before_sleep_from_raw_payloads,
     connect_db,
     create_sync_run,
     finalize_sync_run,
@@ -181,6 +182,38 @@ def test_setting_json_roundtrip(tmp_path: Path) -> None:
     stored = get_setting_json(conn, "checkin_questions")
     assert stored == [{"id": "q2", "prompt": "Question 2"}]
 
+    conn.close()
+
+
+def test_avg_hr_1h_before_sleep_uses_raw_samples_in_window(tmp_path: Path) -> None:
+    db_path = tmp_path / "garmin.db"
+    conn = connect_db(str(db_path))
+    init_db(conn)
+
+    run_id = create_sync_run(conn, days_requested=1)
+    upsert_raw_payload(
+        conn,
+        payload_date="2026-02-20",
+        endpoint="heart_rates",
+        payload={
+            "heartRateValues": [
+                [1_771_625_940_000, 50],
+                [1_771_626_000_000, 60],
+                [1_771_627_500_000, 70],
+                [1_771_629_600_000, 80],
+                [1_771_629_660_000, 90],
+            ]
+        },
+        sync_run_id=run_id,
+    )
+    conn.commit()
+
+    value = avg_hr_1h_before_sleep_from_raw_payloads(
+        conn,
+        "2026-02-20T23:20:00+00:00",
+    )
+
+    assert value == 70
     conn.close()
 
 

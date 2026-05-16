@@ -23,6 +23,9 @@ services:
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-}
     depends_on:
       - api
+    volumes:
+      - ./web/src:/app/src
+      - ./web/index.html:/app/index.html
     ports:
       - "5180:5180"
     restart: unless-stopped
