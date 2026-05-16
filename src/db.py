@@ -1002,6 +1002,21 @@ def rebuild_analysis_values(connection: sqlite3.Connection) -> None:
                     alignment_rule="garmin_sleep_previous_night",
                     refreshed_at=refreshed_at,
                 )
+                presleep_analysis_date = _shift_iso_date(sleep_source_date, 1)
+                if presleep_analysis_date is not None:
+                    _append_analysis_row(
+                        rows_to_insert,
+                        analysis_date=presleep_analysis_date,
+                        role="target",
+                        feature_key="metric:avgHr1hBeforeSleep",
+                        value_num=avg_hr_1h_before_sleep,
+                        value_text=None,
+                        value_bool=None,
+                        source_date=sleep_source_date,
+                        lag_days=-1,
+                        alignment_rule="garmin_presleep_hr_same_predictor_day",
+                        refreshed_at=refreshed_at,
+                    )
             sleep_consistency = (
                 sleep_consistency_by_source_date.get(sleep_source_date)
                 if sleep_source_date is not None

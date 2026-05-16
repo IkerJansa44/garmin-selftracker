@@ -348,6 +348,7 @@ describe("correlation helpers", () => {
     expect(outcomes.some((option) => option.key === "metric:deepSleepPercentage")).toBe(true);
     expect(outcomes.some((option) => option.key === "metric:remSleepPercentage")).toBe(true);
     expect(outcomes.some((option) => option.key === "metric:remOrDeepSleepPercentage")).toBe(true);
+    expect(outcomes.some((option) => option.key === "metric:avgHr1hBeforeSleep")).toBe(true);
     expect(outcomes.some((option) => option.key === "question:notes")).toBe(false);
   });
 
@@ -621,6 +622,83 @@ describe("correlation helpers", () => {
         date: "2026-02-22",
         predictorSourceDate: "2026-02-21",
         outcomeSourceDate: "2026-02-22",
+      },
+    ]);
+  });
+
+  it("aligns day-D predictors with day-D pre-sleep HR outcomes", () => {
+    const records = buildRecords(4);
+    const analysisValues: AnalysisValueRecord[] = [
+      {
+        analysisDate: "2026-01-02",
+        role: "predictor",
+        featureKey: "question:caffeine_count",
+        valueNum: 1,
+        valueText: null,
+        valueBool: null,
+        sourceDate: "2026-01-01",
+        lagDays: -1,
+        alignmentRule: "checkin_previous_day",
+      },
+      {
+        analysisDate: "2026-01-02",
+        role: "target",
+        featureKey: "metric:avgHr1hBeforeSleep",
+        valueNum: 61,
+        valueText: null,
+        valueBool: null,
+        sourceDate: "2026-01-01",
+        lagDays: -1,
+        alignmentRule: "garmin_presleep_hr_same_predictor_day",
+      },
+      {
+        analysisDate: "2026-01-03",
+        role: "predictor",
+        featureKey: "question:caffeine_count",
+        valueNum: 3,
+        valueText: null,
+        valueBool: null,
+        sourceDate: "2026-01-02",
+        lagDays: -1,
+        alignmentRule: "checkin_previous_day",
+      },
+      {
+        analysisDate: "2026-01-03",
+        role: "target",
+        featureKey: "metric:avgHr1hBeforeSleep",
+        valueNum: 67,
+        valueText: null,
+        valueBool: null,
+        sourceDate: "2026-01-02",
+        lagDays: -1,
+        alignmentRule: "garmin_presleep_hr_same_predictor_day",
+      },
+    ];
+
+    const result = buildCorrelationResult({
+      records,
+      analysisValues,
+      questions: QUESTIONS,
+      predictor: "question:caffeine_count",
+      outcome: "metric:avgHr1hBeforeSleep",
+      weekdayOnly: false,
+      trainingOnly: false,
+    });
+
+    expect(result.points).toEqual([
+      {
+        x: 1,
+        y: 61,
+        date: "2026-01-02",
+        predictorSourceDate: "2026-01-01",
+        outcomeSourceDate: "2026-01-01",
+      },
+      {
+        x: 3,
+        y: 67,
+        date: "2026-01-03",
+        predictorSourceDate: "2026-01-02",
+        outcomeSourceDate: "2026-01-02",
       },
     ]);
   });

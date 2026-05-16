@@ -853,9 +853,10 @@ def test_load_correlation_values_payload_uses_materialized_analysis_values(
             rem_sleep_percentage,
             rem_or_deep_sleep_percentage,
             fell_asleep_at,
+            avg_hr_1h_before_sleep,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             "2026-02-20",
@@ -869,6 +870,7 @@ def test_load_correlation_values_payload_uses_materialized_analysis_values(
             18.0,
             40.0,
             "2026-02-19T22:40:00+00:00",
+            62.0,
             "2026-02-21T06:00:00+00:00",
         ),
     )
@@ -886,9 +888,10 @@ def test_load_correlation_values_payload_uses_materialized_analysis_values(
             rem_sleep_percentage,
             rem_or_deep_sleep_percentage,
             fell_asleep_at,
+            avg_hr_1h_before_sleep,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             "2026-02-21",
@@ -902,6 +905,7 @@ def test_load_correlation_values_payload_uses_materialized_analysis_values(
             19.0,
             43.0,
             "2026-02-20T22:45:00+00:00",
+            63.0,
             "2026-02-22T06:00:00+00:00",
         ),
     )
@@ -937,6 +941,10 @@ def test_load_correlation_values_payload_uses_materialized_analysis_values(
     assert predictor_sleep["sourceDate"] == "2026-02-20"
     assert predictor_sleep["alignmentRule"] == "garmin_sleep_previous_night"
 
+    predictor_presleep_hr = values_by_key[("predictor", "garmin:avgHr1hBeforeSleep")]
+    assert predictor_presleep_hr["valueNum"] == 63.0
+    assert predictor_presleep_hr["sourceDate"] == "2026-02-20"
+
     predictor_question = values_by_key[("predictor", "question:caffeine_count")]
     assert predictor_question["valueNum"] == 2
     assert predictor_question["alignmentRule"] == "checkin_previous_day"
@@ -958,6 +966,13 @@ def test_load_correlation_values_payload_uses_materialized_analysis_values(
     target_recovery_index = values_by_key[("target", "metric:recoveryIndex")]
     assert target_recovery_index["valueNum"] == 37
     assert target_recovery_index["sourceDate"] == "2026-02-21"
+
+    target_presleep_hr = values_by_key[("target", "metric:avgHr1hBeforeSleep")]
+    assert target_presleep_hr["valueNum"] == 63.0
+    assert target_presleep_hr["sourceDate"] == "2026-02-20"
+    assert (
+        target_presleep_hr["alignmentRule"] == "garmin_presleep_hr_same_predictor_day"
+    )
 
     target_deep_pct = values_by_key[("target", "metric:deepSleepPercentage")]
     assert target_deep_pct["valueNum"] == 24.0
@@ -1184,6 +1199,57 @@ def test_load_correlation_values_payload_includes_sleep_consistency_predictor(
     assert predictor["alignmentRule"] == "garmin_previous_day"
     assert predictor["valueNum"] is not None
     assert predictor["valueNum"] < 10
+
+
+def test_presleep_hr_target_handles_two_sleep_starts_on_same_calendar_day(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "garmin.db"
+    connection = connect_db(str(db_path))
+    init_db(connection)
+    for metric_date, fell_asleep_at, avg_hr in (
+        ("2026-02-15", "2026-02-15T00:53:00+00:00", 55.03),
+        ("2026-02-16", "2026-02-15T23:10:00+00:00", 56.52),
+    ):
+        connection.execute(
+            """
+            INSERT INTO daily_metrics (
+                metric_date,
+                fell_asleep_at,
+                avg_hr_1h_before_sleep,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                metric_date,
+                fell_asleep_at,
+                avg_hr,
+                "2026-02-22T06:00:00+00:00",
+            ),
+        )
+    connection.commit()
+    connection.close()
+
+    values = _load_correlation_values_payload(
+        str(db_path),
+        from_date=date(2026, 2, 15),
+        to_date=date(2026, 2, 16),
+    )
+    targets = [
+        value
+        for value in values
+        if value["role"] == "target"
+        and value["featureKey"] == "metric:avgHr1hBeforeSleep"
+    ]
+
+    assert [
+        (target["analysisDate"], target["sourceDate"], target["valueNum"])
+        for target in targets
+    ] == [
+        ("2026-02-15", "2026-02-14", 55.03),
+        ("2026-02-16", "2026-02-15", 56.52),
+    ]
 
 
 def test_load_correlation_values_payload_omits_sleep_consistency_when_window_incomplete(

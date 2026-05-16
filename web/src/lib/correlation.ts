@@ -16,7 +16,8 @@ import {
 export type BasePredictorKey = `garmin:${GarminPredictorKey}` | `question:${string}`;
 export type DerivedPredictorKey = `derived:${string}`;
 export type PredictorKey = BasePredictorKey | DerivedPredictorKey;
-export type OutcomeKey = `metric:${MetricKey}` | `question:${string}`;
+type GarminOutcomeMetricKey = MetricKey | "avgHr1hBeforeSleep";
+export type OutcomeKey = `metric:${GarminOutcomeMetricKey}` | `question:${string}`;
 
 type GarminPredictorKey =
   | "steps"
@@ -93,7 +94,7 @@ const GARMIN_PREDICTOR_LABELS: Record<GarminPredictorKey, string> = {
   isTrainingDay: "Training Day (1/0)",
 };
 
-const OUTCOME_LABELS: Record<MetricKey, string> = {
+const OUTCOME_LABELS: Record<GarminOutcomeMetricKey, string> = {
   recoveryIndex: "Recovery Index",
   restingHr: "Resting HR",
   stress: "Stress",
@@ -102,6 +103,7 @@ const OUTCOME_LABELS: Record<MetricKey, string> = {
   deepSleepPercentage: "Deep Sleep (%)",
   remSleepPercentage: "REM Sleep (%)",
   remOrDeepSleepPercentage: "REM + Deep Sleep (%)",
+  avgHr1hBeforeSleep: "Avg HR 1h Before Sleep",
 };
 
 function clamp(value: number, minimum: number, maximum: number): number {
@@ -457,7 +459,7 @@ function parsePredictorValue(
   }
 
   return parseBasePredictorValue(
-    predictor,
+    predictor as BasePredictorKey,
     analysisValueIndex,
     questionsById,
     outcomeDate,
@@ -680,6 +682,10 @@ function buildPairKey(predictor: PredictorKey, outcome: OutcomeKey): string {
   return `${predictor}__${outcome}`;
 }
 
+function isSameSignalPair(predictor: PredictorKey, outcome: OutcomeKey): boolean {
+  return predictor === "garmin:avgHr1hBeforeSleep" && outcome === "metric:avgHr1hBeforeSleep";
+}
+
 export function buildDerivedPredictorSourceOptions(questions: CheckInQuestion[]): CorrelationOption[] {
   const fields = flattenQuestionFields(questions);
   const garminOptions = (Object.keys(GARMIN_PREDICTOR_LABELS) as GarminPredictorKey[])
@@ -727,7 +733,7 @@ export function buildPredictorOptions(
 
 export function buildOutcomeOptions(questions: CheckInQuestion[]): CorrelationOption[] {
   const fields = flattenQuestionFields(questions);
-  const metricOptions = (Object.keys(OUTCOME_LABELS) as MetricKey[]).map((key) => ({
+  const metricOptions = (Object.keys(OUTCOME_LABELS) as GarminOutcomeMetricKey[]).map((key) => ({
     key: `metric:${key}`,
     label: OUTCOME_LABELS[key],
   }));
@@ -841,6 +847,9 @@ export function buildCorrelationCatalog({
     const predictor = predictorOption.key as PredictorKey;
     for (const outcomeOption of outcomeOptions) {
       const outcome = outcomeOption.key as OutcomeKey;
+      if (isSameSignalPair(predictor, outcome)) {
+        continue;
+      }
       const points: CorrelationPoint[] = [];
 
       for (const record of records) {
@@ -951,6 +960,14 @@ export function buildCorrelationResult({
   const questionsById = new Map(questionFields.map((question) => [question.id, question]));
   const derivedById = new Map(derivedPredictors.map((definition) => [definition.id, definition]));
   const points: CorrelationPoint[] = [];
+  if (isSameSignalPair(predictor, outcome)) {
+    return {
+      points,
+      correlation: 0,
+      sampleCount: 0,
+      regression: { slope: 0, intercept: 0 },
+    };
+  }
 
   for (const record of records) {
     if (weekdayOnly && (record.weekday === 0 || record.weekday === 6)) {
