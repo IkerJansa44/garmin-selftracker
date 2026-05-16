@@ -44,6 +44,14 @@ function resolveSleepBarColor(baseColor: string): string {
   return baseColor;
 }
 
+function formatTooltipDate(date: string): string {
+  return new Date(`${date}T00:00:00`).toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
+
 function buildAverageLabelPosition(
   value: number,
   domain: [number, number],
@@ -72,6 +80,7 @@ function SleepWindowTooltip({
   }
   return (
     <div className="rounded-2xl bg-panel px-3 py-2 text-xs shadow-soft">
+      <p className="mb-1 text-muted">{formatTooltipDate(point.date)}</p>
       <p className="metric-number font-mono">
         Bed {point.bedtimeValue === null ? "--" : formatOvernightClockLabel(point.bedtimeValue)}
       </p>

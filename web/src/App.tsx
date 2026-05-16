@@ -78,6 +78,7 @@ import {
   buildSleepWindowChartStats,
   createDashboardPlotId,
   normalizeDashboardPlotPreferences as normalizeDashboardPlotPreferencesRaw,
+  type DashboardPlotPoint,
   type SleepWindowChartPoint,
   type DashboardPlotChartStyle,
 } from "./lib/dashboardPlots";
@@ -1297,16 +1298,18 @@ function SparklineTooltip({
 }: {
   active?: boolean;
   option: DashboardPlotVariableOption;
-  payload?: Array<{ value?: number }>;
+  payload?: Array<{ value?: number; payload?: DashboardPlotPoint }>;
   plotKey: DashboardPlotVariableKey;
 }) {
   if (!active || !payload?.length) {
     return null;
   }
   const value = payload[0]?.value;
+  const date = payload[0]?.payload?.date;
   const formattedValue = typeof value === "number" ? formatDashboardValue(plotKey, option, value) : "--";
   return (
     <div className="rounded-2xl bg-panel px-3 py-2 text-xs shadow-soft">
+      {date && <p className="mb-1 text-muted">{formatReadableDate(date)}</p>}
       <span className="metric-number font-mono">{formattedValue}</span>
     </div>
   );
