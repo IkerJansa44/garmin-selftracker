@@ -26,6 +26,7 @@ type GarminPredictorKey =
   | "bodyBattery"
   | "runningKilometers"
   | "sleepSeconds"
+  | "vo2Max"
   | "avgHr1hBeforeSleep"
   | DerivedGapMetricKey
   | "sleepConsistency"
@@ -88,6 +89,7 @@ const GARMIN_PREDICTOR_LABELS: Record<GarminPredictorKey, string> = {
   bodyBattery: "Body Battery",
   runningKilometers: "Running Distance (km)",
   sleepSeconds: "Sleep Duration (h)",
+  vo2Max: "VO2 Max",
   avgHr1hBeforeSleep: "Avg HR 1h Before Sleep",
   ...GAP_PREDICTOR_LABELS,
   sleepConsistency: "Sleep Consistency (min)",
@@ -103,6 +105,8 @@ const OUTCOME_LABELS: Record<GarminOutcomeMetricKey, string> = {
   deepSleepPercentage: "Deep Sleep (%)",
   remSleepPercentage: "REM Sleep (%)",
   remOrDeepSleepPercentage: "REM + Deep Sleep (%)",
+  avgOvernightHrv: "Overnight HRV",
+  sleepScore: "Sleep Score",
   avgHr1hBeforeSleep: "Avg HR 1h Before Sleep",
 };
 

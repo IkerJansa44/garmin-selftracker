@@ -80,6 +80,22 @@ export const METRICS: MetricDefinition[] = [
     decimals: 1,
     baselineHint: "Combines the restorative share of REM and deep sleep.",
   },
+  {
+    key: "avgOvernightHrv",
+    label: "Overnight HRV",
+    unit: "ms",
+    color: "#586f9e",
+    decimals: 0,
+    baselineHint: "Tracks Garmin overnight HRV average.",
+  },
+  {
+    key: "sleepScore",
+    label: "Sleep Score",
+    unit: "pts",
+    color: "#7a5b8f",
+    decimals: 0,
+    baselineHint: "Garmin's overall sleep score from the previous night.",
+  },
 ];
 
 export const DEFAULT_SELECTED_METRICS: MetricKey[] = [

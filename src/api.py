@@ -59,12 +59,15 @@ METRIC_PLOT_DIRECTIONS = {
     "recoveryIndex": "higher",
     "bodyBattery": "higher",
     "trainingReadiness": "higher",
+    "avgOvernightHrv": "higher",
+    "sleepScore": "higher",
     "stress": "lower",
     "restingHr": "lower",
 }
 GARMIN_PLOT_DIRECTIONS = {
     "avgHr1hBeforeSleep": "lower",
     "sleepConsistency": "lower",
+    "vo2Max": "higher",
 }
 DEFAULT_DASHBOARD_PLOTS = [
     {"key": "metric:recoveryIndex", "direction": "higher"},
@@ -72,6 +75,7 @@ DEFAULT_DASHBOARD_PLOTS = [
     {"key": "metric:stress", "direction": "lower"},
     {"key": "metric:bodyBattery", "direction": "higher"},
     {"key": "metric:trainingReadiness", "direction": "higher"},
+    {"key": "garmin:vo2Max", "direction": "higher"},
 ]
 QUESTION_CHILD_CONDITION_OPERATORS = {
     "equals",
@@ -96,6 +100,7 @@ DERIVED_PREDICTOR_SOURCE_GARMIN_KEYS = {
     "bodyBattery",
     "runningKilometers",
     "sleepSeconds",
+    "vo2Max",
     "avgHr1hBeforeSleep",
     "sleepConsistency",
     *TIME_TO_SLEEP_GAP_DASHBOARD_KEYS,
@@ -592,6 +597,8 @@ def _metric_payload(
             "deepSleepPercentage": None,
             "remSleepPercentage": None,
             "remOrDeepSleepPercentage": None,
+            "avgOvernightHrv": None,
+            "sleepScore": None,
         }
         coverage = {key: "missing" for key in metrics}
         return metrics, coverage
@@ -614,6 +621,8 @@ def _metric_payload(
         "deepSleepPercentage": _as_float(row["deep_sleep_percentage"]),
         "remSleepPercentage": _as_float(row["rem_sleep_percentage"]),
         "remOrDeepSleepPercentage": _as_float(row["rem_or_deep_sleep_percentage"]),
+        "avgOvernightHrv": _as_float(row["avg_overnight_hrv"]),
+        "sleepScore": _as_int(row["sleep_score"]),
     }
     coverage = {key: _coverage(True, value) for key, value in metrics.items()}
     return metrics, coverage
@@ -1247,6 +1256,8 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
             deep_sleep_percentage,
             rem_sleep_percentage,
             rem_or_deep_sleep_percentage,
+            avg_overnight_hrv,
+            sleep_score,
             fell_asleep_at,
             woke_up_at,
             zone0_minutes,
@@ -1255,7 +1266,8 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
             zone3_minutes,
             zone4_minutes,
             zone5_minutes,
-            avg_hr_1h_before_sleep
+            avg_hr_1h_before_sleep,
+            vo2max
         FROM daily_metrics
         WHERE metric_date BETWEEN ? AND ?
         ORDER BY metric_date
@@ -1390,6 +1402,7 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
                 running_kilometers_by_date.get(date_key, 0.0) if row else None
             ),
             "sleepSeconds": _as_int(row["sleep_seconds"]) if row else None,
+            "vo2Max": _as_float(row["vo2max"]) if row else None,
             "avgHr1hBeforeSleep": (
                 _as_float(row["avg_hr_1h_before_sleep"]) if row else None
             ),

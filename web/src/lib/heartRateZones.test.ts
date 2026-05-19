@@ -12,6 +12,7 @@ function buildPredictors(
     stressAvg: null,
     bodyBattery: null,
     sleepSeconds: null,
+    vo2Max: null,
     avgHr1hBeforeSleep: null,
     sleepConsistency: null,
     isTrainingDay: false,

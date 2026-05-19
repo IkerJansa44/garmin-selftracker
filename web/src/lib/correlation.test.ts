@@ -69,7 +69,6 @@ function buildRecords(days: number): DailyRecord[] {
   return Array.from({ length: days }, (_, index) => {
     const previousCaffeine = index === 0 ? 2 : (index - 1) % 5;
     const recoveryIndex = 87 - previousCaffeine * 5;
-    const energy = Math.max(0, Math.min(10, Math.round((recoveryIndex - 60) / 4)));
     return {
       date: buildDate(index),
       dayIndex: index,
@@ -84,6 +83,7 @@ function buildRecords(days: number): DailyRecord[] {
         stressAvg: 25 + (index % 5),
         bodyBattery: 70 - (index % 3),
         sleepSeconds: 25000 + (index % 4) * 900,
+        vo2Max: 50 + (index % 4),
         avgHr1hBeforeSleep: 58 + (index % 5),
         sleepConsistency: 20 + (index % 6) * 3,
         isTrainingDay: index % 2 === 0,
@@ -105,6 +105,8 @@ function buildRecords(days: number): DailyRecord[] {
         deepSleepPercentage: 18 + (index % 4) * 2,
         remSleepPercentage: 20 + (index % 3) * 2,
         remOrDeepSleepPercentage: 38 + (index % 5) * 2,
+        avgOvernightHrv: 45 + (index % 6),
+        sleepScore: 75 + (index % 8),
       },
       coverage: {
         recoveryIndex: "complete",
@@ -115,6 +117,8 @@ function buildRecords(days: number): DailyRecord[] {
         deepSleepPercentage: "complete",
         remSleepPercentage: "complete",
         remOrDeepSleepPercentage: "complete",
+        avgOvernightHrv: "complete",
+        sleepScore: "complete",
       },
     };
   });
@@ -275,6 +279,7 @@ function buildModerateAnovaRecords(days: number): DailyRecord[] {
         stressAvg: 25 + (index % 5),
         bodyBattery: 70 - (index % 3),
         sleepSeconds: 25000 + (index % 4) * 900,
+        vo2Max: 50 + (index % 4),
         avgHr1hBeforeSleep: 58 + (index % 5),
         sleepConsistency: 20 + (index % 6) * 3,
         isTrainingDay: index % 2 === 0,
@@ -296,6 +301,8 @@ function buildModerateAnovaRecords(days: number): DailyRecord[] {
         deepSleepPercentage: 18 + (index % 4) * 2,
         remSleepPercentage: 20 + (index % 3) * 2,
         remOrDeepSleepPercentage: 38 + (index % 5) * 2,
+        avgOvernightHrv: 45 + (index % 6),
+        sleepScore: 75 + (index % 8),
       },
       coverage: {
         recoveryIndex: "complete",
@@ -306,6 +313,8 @@ function buildModerateAnovaRecords(days: number): DailyRecord[] {
         deepSleepPercentage: "complete",
         remSleepPercentage: "complete",
         remOrDeepSleepPercentage: "complete",
+        avgOvernightHrv: "complete",
+        sleepScore: "complete",
       },
     };
   });
@@ -469,6 +478,7 @@ describe("correlation helpers", () => {
           stressAvg: 20,
           bodyBattery: 70,
           sleepSeconds: 28000,
+          vo2Max: 51,
           avgHr1hBeforeSleep: 59,
           sleepConsistency: 20,
           isTrainingDay: false,
@@ -490,6 +500,8 @@ describe("correlation helpers", () => {
           deepSleepPercentage: 20,
           remSleepPercentage: 22,
           remOrDeepSleepPercentage: 42,
+          avgOvernightHrv: 46,
+          sleepScore: 78,
         },
         coverage: {
           recoveryIndex: "complete",
@@ -500,6 +512,8 @@ describe("correlation helpers", () => {
           deepSleepPercentage: "complete",
           remSleepPercentage: "complete",
           remOrDeepSleepPercentage: "complete",
+          avgOvernightHrv: "complete",
+          sleepScore: "complete",
         },
       },
       {
@@ -516,6 +530,7 @@ describe("correlation helpers", () => {
           stressAvg: 25,
           bodyBattery: 68,
           sleepSeconds: 27000,
+          vo2Max: 52,
           avgHr1hBeforeSleep: 60,
           sleepConsistency: 22,
           isTrainingDay: false,
@@ -537,6 +552,8 @@ describe("correlation helpers", () => {
           deepSleepPercentage: 21,
           remSleepPercentage: 23,
           remOrDeepSleepPercentage: 44,
+          avgOvernightHrv: 47,
+          sleepScore: 80,
         },
         coverage: {
           recoveryIndex: "complete",
@@ -547,6 +564,8 @@ describe("correlation helpers", () => {
           deepSleepPercentage: "complete",
           remSleepPercentage: "complete",
           remOrDeepSleepPercentage: "complete",
+          avgOvernightHrv: "complete",
+          sleepScore: "complete",
         },
       },
       {
@@ -563,6 +582,7 @@ describe("correlation helpers", () => {
           stressAvg: 30,
           bodyBattery: 67,
           sleepSeconds: 26000,
+          vo2Max: 53,
           avgHr1hBeforeSleep: 61,
           sleepConsistency: 24,
           isTrainingDay: false,
@@ -584,6 +604,8 @@ describe("correlation helpers", () => {
           deepSleepPercentage: 19,
           remSleepPercentage: 24,
           remOrDeepSleepPercentage: 43,
+          avgOvernightHrv: 48,
+          sleepScore: 81,
         },
         coverage: {
           recoveryIndex: "complete",
@@ -594,6 +616,8 @@ describe("correlation helpers", () => {
           deepSleepPercentage: "complete",
           remSleepPercentage: "complete",
           remOrDeepSleepPercentage: "complete",
+          avgOvernightHrv: "complete",
+          sleepScore: "complete",
         },
       },
     ];

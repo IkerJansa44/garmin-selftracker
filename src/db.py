@@ -23,6 +23,8 @@ REQUIRED_DAILY_METRICS_COLUMNS = {
     "rem_or_deep_sleep_percentage": "REAL",
     "average_respiration_value": "REAL",
     "lowest_respiration_value": "REAL",
+    "avg_overnight_hrv": "REAL",
+    "sleep_score": "INTEGER",
     "fell_asleep_at": "TEXT",
     "woke_up_at": "TEXT",
     "avg_hr_1h_before_sleep": "REAL",
@@ -159,6 +161,8 @@ def upsert_daily_metrics(
             rem_or_deep_sleep_percentage,
             average_respiration_value,
             lowest_respiration_value,
+            avg_overnight_hrv,
+            sleep_score,
             fell_asleep_at,
             woke_up_at,
             avg_hr_1h_before_sleep,
@@ -171,7 +175,7 @@ def upsert_daily_metrics(
             zone5_minutes,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(metric_date) DO UPDATE SET
             steps = excluded.steps,
             calories = excluded.calories,
@@ -187,6 +191,8 @@ def upsert_daily_metrics(
             rem_or_deep_sleep_percentage = excluded.rem_or_deep_sleep_percentage,
             average_respiration_value = excluded.average_respiration_value,
             lowest_respiration_value = excluded.lowest_respiration_value,
+            avg_overnight_hrv = excluded.avg_overnight_hrv,
+            sleep_score = excluded.sleep_score,
             fell_asleep_at = excluded.fell_asleep_at,
             woke_up_at = excluded.woke_up_at,
             avg_hr_1h_before_sleep = excluded.avg_hr_1h_before_sleep,
@@ -215,6 +221,8 @@ def upsert_daily_metrics(
             metrics.get("rem_or_deep_sleep_percentage"),
             metrics.get("average_respiration_value"),
             metrics.get("lowest_respiration_value"),
+            metrics.get("avg_overnight_hrv"),
+            metrics.get("sleep_score"),
             metrics.get("fell_asleep_at"),
             metrics.get("woke_up_at"),
             metrics.get("avg_hr_1h_before_sleep"),
@@ -449,6 +457,8 @@ def _metric_features_from_daily_metrics_row(
         "metric:remOrDeepSleepPercentage": _as_float(
             row["rem_or_deep_sleep_percentage"]
         ),
+        "metric:avgOvernightHrv": _as_float(row["avg_overnight_hrv"]),
+        "metric:sleepScore": _as_int(row["sleep_score"]),
     }
 
 
@@ -923,9 +933,12 @@ def rebuild_analysis_values(connection: sqlite3.Connection) -> None:
             stress_avg,
             body_battery,
             sleep_seconds,
+            vo2max,
             deep_sleep_percentage,
             rem_sleep_percentage,
             rem_or_deep_sleep_percentage,
+            avg_overnight_hrv,
+            sleep_score,
             resting_heart_rate,
             fell_asleep_at,
             woke_up_at,
@@ -953,6 +966,7 @@ def rebuild_analysis_values(connection: sqlite3.Connection) -> None:
                 ("garmin:calories", "calories"),
                 ("garmin:stressAvg", "stress_avg"),
                 ("garmin:bodyBattery", "body_battery"),
+                ("garmin:vo2Max", "vo2max"),
             ):
                 value_num = _as_float(row[column_name])
                 if value_num is None:

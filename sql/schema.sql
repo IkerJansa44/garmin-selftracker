@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS daily_metrics (
     rem_or_deep_sleep_percentage REAL,
     average_respiration_value REAL,
     lowest_respiration_value REAL,
+    avg_overnight_hrv REAL,
+    sleep_score INTEGER,
     fell_asleep_at TEXT,
     woke_up_at TEXT,
     avg_hr_1h_before_sleep REAL,

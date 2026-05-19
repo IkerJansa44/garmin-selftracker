@@ -19,6 +19,8 @@ const METRIC_RANGES: Record<MetricKey, { min: number; max: number }> = {
   deepSleepPercentage: { min: 5, max: 40 },
   remSleepPercentage: { min: 8, max: 35 },
   remOrDeepSleepPercentage: { min: 20, max: 60 },
+  avgOvernightHrv: { min: 25, max: 85 },
+  sleepScore: { min: 45, max: 95 },
 };
 
 function clamp(value: number, min: number, max: number): number {
@@ -209,6 +211,8 @@ export function generateMockRecords(totalDays = TOTAL_DAYS): DailyRecord[] {
       deepSleepPercentage: null,
       remSleepPercentage: null,
       remOrDeepSleepPercentage: null,
+      avgOvernightHrv: null,
+      sleepScore: null,
     };
 
     const coverage: DailyRecord["coverage"] = {
@@ -220,6 +224,8 @@ export function generateMockRecords(totalDays = TOTAL_DAYS): DailyRecord[] {
       deepSleepPercentage: "missing",
       remSleepPercentage: "missing",
       remOrDeepSleepPercentage: "missing",
+      avgOvernightHrv: "missing",
+      sleepScore: "missing",
     };
 
     (Object.keys(metrics) as MetricKey[]).forEach((metric) => {
@@ -255,6 +261,7 @@ export function generateMockRecords(totalDays = TOTAL_DAYS): DailyRecord[] {
           Math.round((25200 + (weekday === 0 || weekday === 6 ? 1800 : 0) - (previousFactors?.alcoholUnits ?? 0)) + (noise(dayIndex + 1) - 0.5) * 5400),
           14400, 36000,
         ),
+        vo2Max: importGap ? null : Number((48 + noise(dayIndex + 87) * 8).toFixed(1)),
         avgHr1hBeforeSleep: importGap ? null : Math.round(
           clamp(58 + (currentFactors.lateMeal ? 6 : 0) + noise(dayIndex + 19) * 8, 45, 95),
         ),
@@ -281,13 +288,14 @@ export function generateMockRecords(totalDays = TOTAL_DAYS): DailyRecord[] {
 export function generateHistoryFromRecords(records: DailyRecord[]): CheckInEntry[] {
   return records
     .slice(-42)
-    .filter((record, index) => index % 3 !== 0)
+    .filter((record, index) => index % 3 !== 0 && record.checkInFactors)
     .map((record, index) => {
-      const alcoholUnits = record.checkInFactors.alcoholUnits;
+      const factors = record.checkInFactors as CheckInFactors;
+      const alcoholUnits = factors.alcoholUnits;
       const alcoholLabel = alcoholUnits >= 3 ? "3plus" : String(alcoholUnits);
-      const caffeineCount = record.checkInFactors.caffeineCount;
-      const mealFinishTime = record.checkInFactors.lateMeal ? "21:15" : "19:30";
-      const sleepTime = record.checkInFactors.lateMeal ? "23:30" : "22:45";
+      const caffeineCount = factors.caffeineCount;
+      const mealFinishTime = factors.lateMeal ? "21:15" : "19:30";
+      const sleepTime = factors.lateMeal ? "23:30" : "22:45";
 
       return {
         date: record.date,
@@ -299,10 +307,10 @@ export function generateHistoryFromRecords(records: DailyRecord[]): CheckInEntry
           ...(alcoholUnits > 0 ? { alcohol_last_time: "20:45" } : {}),
           late_meal: mealFinishTime,
           sleep_time: sleepTime,
-          screen_minutes: record.checkInFactors.lateScreenMinutes,
-          thermal: record.checkInFactors.thermalRecovery.toLowerCase(),
-          mood: record.checkInFactors.mood,
-          notes: record.checkInFactors.notes,
+          screen_minutes: factors.lateScreenMinutes,
+          thermal: factors.thermalRecovery.toLowerCase(),
+          mood: factors.mood,
+          notes: factors.notes,
         },
       };
     });

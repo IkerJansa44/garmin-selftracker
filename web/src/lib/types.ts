@@ -6,7 +6,9 @@ export type MetricKey =
   | "trainingReadiness"
   | "deepSleepPercentage"
   | "remSleepPercentage"
-  | "remOrDeepSleepPercentage";
+  | "remOrDeepSleepPercentage"
+  | "avgOvernightHrv"
+  | "sleepScore";
 
 export type CoverageState = "complete" | "partial" | "missing";
 export type ImportState = "ok" | "running" | "failed";
@@ -48,6 +50,7 @@ export interface DailyRecord {
     bodyBattery: number | null;
     runningKilometers?: number | null;
     sleepSeconds: number | null;
+    vo2Max: number | null;
     avgHr1hBeforeSleep: number | null;
     sleepConsistency: number | null;
     isTrainingDay: boolean;

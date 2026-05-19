@@ -77,10 +77,12 @@ def test_normalize_daily_metrics_extracts_fell_asleep_timestamp() -> None:
                     "remSleepSeconds": 1 * 3600,
                     "averageRespirationValue": 12.0,
                     "lowestRespirationValue": 9.0,
+                    "sleepScores": {"overall": {"value": 83}},
                     "sleepStartTimestampLocal": start_timestamp_local_ms,
                     "sleepEndTimestampLocal": end_timestamp_local_ms,
                 }
             },
+            "activities": [{"activityId": 123, "vO2MaxValue": 54.0}],
         },
     )
 
@@ -96,6 +98,8 @@ def test_normalize_daily_metrics_extracts_fell_asleep_timestamp() -> None:
     assert metrics["rem_or_deep_sleep_percentage"] == pytest.approx(42.86)
     assert metrics["average_respiration_value"] == 12.0
     assert metrics["lowest_respiration_value"] == 9.0
+    assert metrics["sleep_score"] == 83
+    assert metrics["vo2max"] == 54.0
     assert (
         metrics["fell_asleep_at"]
         == datetime.fromtimestamp(
@@ -133,3 +137,21 @@ def test_normalize_daily_metrics_handles_missing_fell_asleep_timestamp() -> None
     assert metrics["rem_or_deep_sleep_percentage"] is None
     assert metrics["average_respiration_value"] is None
     assert metrics["lowest_respiration_value"] is None
+
+
+def test_normalize_daily_metrics_extracts_overnight_hrv() -> None:
+    payload = DayPayload(
+        payload_date=date(2026, 5, 17),
+        endpoints={
+            "stats": {},
+            "user_summary": {},
+            "sleep": {
+                "avgOvernightHrv": 49.0,
+                "dailySleepDTO": {"sleepTimeSeconds": 24960},
+            },
+        },
+    )
+
+    metrics = normalize_daily_metrics(payload)
+
+    assert metrics["avg_overnight_hrv"] == 49.0

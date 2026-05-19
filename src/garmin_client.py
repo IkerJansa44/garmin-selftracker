@@ -181,6 +181,34 @@ def _extract_daily_sleep_float(sleep_payload: Any, key: str) -> float | None:
     return float(value) if value is not None else None
 
 
+def _extract_sleep_score(sleep_payload: Any) -> int | None:
+    if not isinstance(sleep_payload, dict):
+        return None
+    daily = sleep_payload.get("dailySleepDTO")
+    if not isinstance(daily, dict):
+        return None
+    sleep_scores = daily.get("sleepScores")
+    if not isinstance(sleep_scores, dict):
+        return None
+    overall = sleep_scores.get("overall")
+    if not isinstance(overall, dict):
+        return None
+    value = overall.get("value")
+    return int(value) if value is not None else None
+
+
+def _extract_activity_vo2max(activities_payload: Any) -> float | None:
+    if not isinstance(activities_payload, list):
+        return None
+    for activity in activities_payload:
+        if not isinstance(activity, dict):
+            continue
+        value = _pick_value([activity], ["vO2MaxValue", "vo2MaxValue", "vo2max"])
+        if value is not None:
+            return float(value)
+    return None
+
+
 def _sleep_stage_percentage(
     stage_seconds: int | None, sleep_seconds: int | None
 ) -> float | None:
@@ -265,6 +293,7 @@ def normalize_daily_metrics(day_payload: DayPayload) -> dict[str, Any]:
     stats = day_payload.endpoints.get("stats")
     summary = day_payload.endpoints.get("user_summary")
     sleep = day_payload.endpoints.get("sleep")
+    activities = day_payload.endpoints.get("activities")
 
     sources = [
         stats if isinstance(stats, dict) else None,
@@ -311,9 +340,14 @@ def normalize_daily_metrics(day_payload: DayPayload) -> dict[str, Any]:
         "lowest_respiration_value": _extract_daily_sleep_float(
             sleep, "lowestRespirationValue"
         ),
+        "avg_overnight_hrv": _pick_value(
+            [sleep if isinstance(sleep, dict) else None], ["avgOvernightHrv"]
+        ),
+        "sleep_score": _extract_sleep_score(sleep),
         "fell_asleep_at": _extract_fell_asleep_at(sleep),
         "woke_up_at": _extract_woke_up_at(sleep),
-        "vo2max": _pick_value(sources, ["vo2MaxValue", "vo2max", "vO2MaxValue"]),
+        "vo2max": _pick_value(sources, ["vo2MaxValue", "vo2max", "vO2MaxValue"])
+        or _extract_activity_vo2max(activities),
     }
 
 

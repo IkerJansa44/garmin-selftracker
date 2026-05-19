@@ -1004,10 +1004,13 @@ def test_load_dashboard_payload_includes_fell_asleep_iso_field(tmp_path: Path) -
             deep_sleep_percentage,
             rem_sleep_percentage,
             rem_or_deep_sleep_percentage,
+            avg_overnight_hrv,
+            sleep_score,
+            vo2max,
             fell_asleep_at,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             metric_date,
@@ -1015,6 +1018,9 @@ def test_load_dashboard_payload_includes_fell_asleep_iso_field(tmp_path: Path) -
             23.5,
             19.1,
             42.6,
+            49.0,
+            83,
+            54.0,
             fell_asleep_at,
             "2026-02-21T06:00:00+00:00",
         ),
@@ -1034,6 +1040,9 @@ def test_load_dashboard_payload_includes_fell_asleep_iso_field(tmp_path: Path) -
     assert record["metrics"]["deepSleepPercentage"] == 23.5
     assert record["metrics"]["remSleepPercentage"] == 19.1
     assert record["metrics"]["remOrDeepSleepPercentage"] == 42.6
+    assert record["metrics"]["avgOvernightHrv"] == 49.0
+    assert record["metrics"]["sleepScore"] == 83
+    assert record["predictors"]["vo2Max"] == 54.0
     assert "sleepConsistency" in record["predictors"]
 
 

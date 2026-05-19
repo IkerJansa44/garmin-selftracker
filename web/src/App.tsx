@@ -144,7 +144,6 @@ gsap.registerPlugin(ScrollTrigger);
 
 type ViewKey = "dashboard" | "lab" | "checkin" | "settings";
 type MetricDirection = "higher" | "lower";
-type TopCorrelationOutcomeFilter = "all" | OutcomeKey;
 const DEFAULT_TOP_CORRELATION_OUTCOME: OutcomeKey = "metric:restingHr";
 type GarminPlotKey =
   | "steps"
@@ -153,6 +152,7 @@ type GarminPlotKey =
   | "bodyBattery"
   | "runningKilometers"
   | "sleepSeconds"
+  | "vo2Max"
   | "avgHr1hBeforeSleep"
   | "sleepConsistency"
   | "isTrainingDay"
@@ -300,6 +300,15 @@ const DEFAULT_DASHBOARD_PLOT_PREFERENCES: DashboardPlotPreference[] = [
     reduceMethod: "mean",
     chartStyle: "line",
   },
+  {
+    id: "plot_6_garmin_vo2Max",
+    key: "garmin:vo2Max",
+    direction: "higher",
+    aggregation: "daily",
+    rolling: false,
+    reduceMethod: "mean",
+    chartStyle: "line",
+  },
 ];
 const METRIC_DIRECTIONS: Record<MetricKey, MetricDirection> = {
   recoveryIndex: "higher",
@@ -308,6 +317,8 @@ const METRIC_DIRECTIONS: Record<MetricKey, MetricDirection> = {
   deepSleepPercentage: "higher",
   remSleepPercentage: "higher",
   remOrDeepSleepPercentage: "higher",
+  avgOvernightHrv: "higher",
+  sleepScore: "higher",
   stress: "lower",
   restingHr: "lower",
 };
@@ -321,6 +332,8 @@ const EMPTY_METRICS: Record<MetricKey, number | null> = {
   deepSleepPercentage: null,
   remSleepPercentage: null,
   remOrDeepSleepPercentage: null,
+  avgOvernightHrv: null,
+  sleepScore: null,
 };
 
 const EMPTY_COVERAGE: Record<MetricKey, CoverageState> = {
@@ -332,6 +345,8 @@ const EMPTY_COVERAGE: Record<MetricKey, CoverageState> = {
   deepSleepPercentage: "missing",
   remSleepPercentage: "missing",
   remOrDeepSleepPercentage: "missing",
+  avgOvernightHrv: "missing",
+  sleepScore: "missing",
 };
 
 const GARMIN_ONLY_QUESTION_IDS = new Set(["training_intensity", "training_type"]);
@@ -374,6 +389,7 @@ const GARMIN_PLOT_META: Record<GarminPlotKey, Omit<DashboardPlotVariableOption, 
   bodyBattery: { label: "Body Battery", color: "#51745e", unit: "%" },
   runningKilometers: { label: "Running Distance", color: "#b45f3c", unit: "km" },
   sleepSeconds: { label: "Sleep Duration", color: "#3f6686", unit: "h" },
+  vo2Max: { label: "VO2 Max", color: "#586f9e", unit: "ml/kg/min" },
   avgHr1hBeforeSleep: { label: "Avg HR 1h Before Sleep", color: "#9a4f5f", unit: "bpm" },
   sleepConsistency: { label: "Sleep Consistency", color: "#4b7394", unit: "min" },
   isTrainingDay: { label: "Training Day", color: "#6f4b83", unit: "0/1" },
@@ -738,31 +754,6 @@ function formatPlotValue(option: DashboardPlotVariableOption, value: number): st
     return value.toFixed(1);
   }
   return `${value.toFixed(1)} ${option.unit}`;
-}
-
-function describeTodayVsAverage(
-  metric: MetricKey,
-  delta: number | null,
-  rangePreset: number,
-): { text: string; tone: string } {
-  if (delta === null || Number.isNaN(delta)) {
-    return {
-      text: `Not enough data to compare against the ${rangePreset}-day average.`,
-      tone: "text-muted",
-    };
-  }
-  if (delta === 0) {
-    return { text: `Today is exactly at the ${rangePreset}-day average.`, tone: "text-muted" };
-  }
-
-  const aboveOrBelow = delta > 0 ? "above" : "below";
-  const higherIsBetter = METRIC_DIRECTIONS[metric] === "higher";
-  const better = (delta > 0 && higherIsBetter) || (delta < 0 && !higherIsBetter);
-
-  return {
-    text: `Today is ${aboveOrBelow} the ${rangePreset}-day average by ${formatMetricDelta(metric, delta)} (${better ? "better" : "worse"}).`,
-    tone: better ? "text-success" : "text-error",
-  };
 }
 
 function formatMinutesAsClock(minutes: number): string {
@@ -1405,11 +1396,8 @@ function App() {
   const [dataStatus, setDataStatus] = useState<"loading" | "ready" | "error">("loading");
   const [dataError, setDataError] = useState<string | null>(null);
   const [predictorKey, setPredictorKey] = useState<PredictorKey>("garmin:steps");
-  const [outcomeKey, setOutcomeKey] = useState<OutcomeKey>("metric:recoveryIndex");
+  const [outcomeKey, setOutcomeKey] = useState<OutcomeKey>(DEFAULT_TOP_CORRELATION_OUTCOME);
   const [activeCorrelationTooltip, setActiveCorrelationTooltip] = useState<ActiveCorrelationTooltip | null>(null);
-  const [topCorrelationOutcomeFilter, setTopCorrelationOutcomeFilter] = useState<TopCorrelationOutcomeFilter>(
-    DEFAULT_TOP_CORRELATION_OUTCOME,
-  );
   const [showNewVariablePanel, setShowNewVariablePanel] = useState(false);
   const [derivedPredictors, setDerivedPredictors] = useState<DerivedPredictorDefinition[]>([]);
   const [derivedLoadState, setDerivedLoadState] = useState<"loading" | "ready" | "error">("loading");
@@ -1981,25 +1969,11 @@ function App() {
     if (!outcomeOptions.length || outcomeOptions.some((option) => option.key === outcomeKey)) {
       return;
     }
-    setOutcomeKey(outcomeOptions[0].key as OutcomeKey);
+    const fallback = outcomeOptions.some((option) => option.key === DEFAULT_TOP_CORRELATION_OUTCOME)
+      ? DEFAULT_TOP_CORRELATION_OUTCOME
+      : outcomeOptions[0].key as OutcomeKey;
+    setOutcomeKey(fallback);
   }, [outcomeKey, outcomeOptions]);
-
-  useEffect(() => {
-    if (
-      topCorrelationOutcomeOptions.some((option) => option.key === topCorrelationOutcomeFilter)
-      || (
-        topCorrelationOutcomeFilter === "all"
-        && !topCorrelationOutcomeOptions.some((option) => option.key === DEFAULT_TOP_CORRELATION_OUTCOME)
-      )
-    ) {
-      return;
-    }
-    if (topCorrelationOutcomeOptions.some((option) => option.key === DEFAULT_TOP_CORRELATION_OUTCOME)) {
-      setTopCorrelationOutcomeFilter(DEFAULT_TOP_CORRELATION_OUTCOME);
-      return;
-    }
-    setTopCorrelationOutcomeFilter("all");
-  }, [topCorrelationOutcomeFilter, topCorrelationOutcomeOptions]);
 
   useEffect(() => {
     if (!derivedSourceOptions.length) {
@@ -2026,6 +2000,7 @@ function App() {
         stressAvg: null,
         bodyBattery: null,
         sleepSeconds: null,
+        vo2Max: null,
         avgHr1hBeforeSleep: null,
         sleepConsistency: null,
         isTrainingDay: false,
@@ -2255,20 +2230,12 @@ function App() {
     [topCorrelationCatalog],
   );
   const filteredMeaningfulCorrelations = useMemo(
-    () => (
-      topCorrelationOutcomeFilter === "all"
-        ? meaningfulCorrelations
-        : meaningfulCorrelations.filter((pair) => pair.outcome === topCorrelationOutcomeFilter)
-    ),
-    [meaningfulCorrelations, topCorrelationOutcomeFilter],
+    () => meaningfulCorrelations.filter((pair) => pair.outcome === outcomeKey),
+    [meaningfulCorrelations, outcomeKey],
   );
   const filteredExploratoryCorrelations = useMemo(
-    () => (
-      topCorrelationOutcomeFilter === "all"
-        ? exploratoryCorrelations
-        : exploratoryCorrelations.filter((pair) => pair.outcome === topCorrelationOutcomeFilter)
-    ),
-    [exploratoryCorrelations, topCorrelationOutcomeFilter],
+    () => exploratoryCorrelations.filter((pair) => pair.outcome === outcomeKey),
+    [exploratoryCorrelations, outcomeKey],
   );
   const selectedCorrelationPair = useMemo(
     () => findCorrelationPair(correlationCatalog, predictorKey, outcomeKey),
@@ -3332,7 +3299,7 @@ function App() {
                         onChange={(event) => setAddPlotSearchQuery(event.target.value)}
                       />
                       {addableDashboardPlotOptions.length ? (
-                        <div className="space-y-1">
+                        <div className="scrollbar-thin max-h-72 space-y-1 overflow-y-auto overscroll-contain pr-1">
                           {addableDashboardPlotOptions.map((option) => (
                             <button
                               key={option.key}
@@ -3763,8 +3730,8 @@ function App() {
                           <YAxis axisLine={false} dataKey="density" hide tickLine={false} type="number" />
                           <Tooltip
                             cursor={{ strokeDasharray: "3 4" }}
-                            formatter={(value: number, key) => [
-                              key === "density" ? value.toFixed(4) : value.toFixed(2),
+                            formatter={(value, key) => [
+                              key === "density" ? Number(value).toFixed(4) : Number(value).toFixed(2),
                               key,
                             ]}
                             labelFormatter={(label) => `x=${Number(label).toFixed(2)}`}
@@ -3853,10 +3820,9 @@ function App() {
                   <span className="block text-xs uppercase tracking-[0.16em] text-muted">Target variable</span>
                   <select
                     className="focusable min-h-11 rounded-2xl bg-subsurface px-3"
-                    value={topCorrelationOutcomeFilter}
-                    onChange={(event) => setTopCorrelationOutcomeFilter(event.target.value as TopCorrelationOutcomeFilter)}
+                    value={outcomeKey}
+                    onChange={(event) => setOutcomeKey(event.target.value as OutcomeKey)}
                   >
-                    <option value="all">All targets</option>
                     {topCorrelationOutcomeOptions.map((option) => (
                       <option key={option.key} value={option.key}>{option.label}</option>
                     ))}
@@ -3870,14 +3836,22 @@ function App() {
               )}
               {!displayedCorrelationCards.length ? (
                 <p className="rounded-2xl bg-subsurface px-4 py-3 text-sm text-muted">
-                  {topCorrelationOutcomeFilter === "all"
-                    ? "Insufficient data for correlation cards. Keep tracking to unlock meaningful and exploratory results."
-                    : "Insufficient data for the selected target. Keep tracking to unlock meaningful and exploratory results."}
+                  Insufficient data for the selected target. Keep tracking to unlock meaningful and exploratory results.
                 </p>
               ) : (
                 <div className="grid gap-3 md:grid-cols-2">
                   {displayedCorrelationCards.map((pair) => (
-                    <article key={pair.key} className="rounded-[22px] bg-subsurface p-4">
+                    <button
+                      key={pair.key}
+                      type="button"
+                      className={clsx(
+                        "focusable rounded-[22px] bg-subsurface p-4 text-left transition",
+                        pair.predictor === predictorKey
+                          ? "ring-2 ring-accent"
+                          : "hover:bg-[color-mix(in_srgb,var(--surface)_72%,white)]",
+                      )}
+                      onClick={() => setPredictorKey(pair.predictor)}
+                    >
                       <div className="mb-2 flex items-center justify-between gap-2">
                         <h4 className="text-sm font-semibold tracking-tight">{pair.predictorLabel} vs {pair.outcomeLabel}</h4>
                         <span
@@ -3897,7 +3871,7 @@ function App() {
                           ? `r=${(pair.correlation ?? 0).toFixed(2)} · slope=${pair.regression?.slope.toFixed(3) ?? "--"} · p=${pair.pValue?.toExponential(2) ?? "--"} · q=${pair.qValue?.toExponential(2) ?? "--"} · N=${pair.sampleCount}`
                           : `eta²=${(pair.etaSquared ?? 0).toFixed(3)} · F=${pair.fStatistic?.toFixed(2) ?? "--"} · p=${pair.pValue?.toExponential(2) ?? "--"} · q=${pair.qValue?.toExponential(2) ?? "--"} · N=${pair.sampleCount}`}
                       </p>
-                    </article>
+                    </button>
                   ))}
                 </div>
               )}
@@ -5407,7 +5381,7 @@ function QuestionEditor({
                                 ? "number"
                                 : "text"
                             }
-                            value={child.condition.value ?? ""}
+                            value={String(child.condition.value ?? "")}
                             onChange={(event) => {
                               const nextValue =
                                 child.condition.operator === "greater_than"
