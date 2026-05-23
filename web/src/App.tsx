@@ -3110,18 +3110,18 @@ function App() {
           isScrolled && "backdrop-blur-md",
         )}
       >
-        <div className="flex flex-col gap-3 sm:overflow-visible">
-          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-            <div className="panel gsap-fade flex min-h-16 min-w-0 flex-col gap-4 px-4 py-3 sm:flex-none sm:flex-row sm:flex-wrap sm:items-center sm:gap-5 sm:py-2">
+        <div className="flex flex-col gap-2 sm:overflow-visible">
+          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+            <div className="panel gsap-fade flex min-h-16 min-w-0 flex-col gap-4 px-4 py-3 sm:flex-none sm:flex-row sm:flex-wrap sm:items-center sm:gap-3 sm:px-3 sm:py-2">
               <div className="shrink-0">
-                <p className="text-sm text-muted">Garmin Selftracker</p>
-                <p className="text-lg font-semibold tracking-tight">{todayDateLabel}</p>
+                <p className="text-xs text-muted sm:text-sm">Garmin Selftracker</p>
+                <p className="text-base font-semibold tracking-tight sm:text-lg">{todayDateLabel}</p>
               </div>
               <div
                 aria-hidden="true"
                 className="hidden h-10 w-px shrink-0 bg-[rgba(18,18,18,0.14)] sm:block"
               />
-              <div className="max-w-none whitespace-normal sm:max-w-[360px] sm:shrink-0">
+              <div className="max-w-none whitespace-normal sm:max-w-[320px] sm:shrink-0">
                 <p className="text-xs uppercase tracking-[0.14em] text-muted">Import</p>
                 {importSummary.state === "running" && runningImportProgress && runningImportRange ? (
                   <>
@@ -3150,7 +3150,7 @@ function App() {
                 <div className="group relative">
                   <div
                     className={clsx(
-                      "rounded-capsule px-3 py-2 text-sm font-semibold",
+                      "rounded-capsule px-3 py-2 text-xs font-semibold sm:px-2.5 sm:py-1.5",
                       importSummary.state === "ok" && "bg-[color-mix(in_srgb,var(--success)_14%,white)] text-success",
                       importSummary.state === "running" && "bg-[color-mix(in_srgb,var(--warning)_16%,white)] text-warning",
                       importSummary.state === "failed"
@@ -3167,7 +3167,7 @@ function App() {
                   ) : null}
                 </div>
                 <button
-                  className="focusable min-h-10 rounded-capsule bg-panel px-3 text-xs font-semibold shadow-soft transition disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-11 sm:px-4 sm:text-sm"
+                  className="focusable min-h-10 rounded-capsule bg-panel px-3 text-xs font-semibold shadow-soft transition disabled:cursor-not-allowed disabled:opacity-60 sm:px-3"
                   disabled={isImportSubmitting}
                   type="button"
                   onClick={() => void handleRefreshImport()}
@@ -3186,7 +3186,7 @@ function App() {
                   )}
                 </button>
                 <button
-                  className="focusable min-h-10 rounded-capsule bg-panel px-3 text-xs font-semibold shadow-soft transition disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-11 sm:px-4 sm:text-sm"
+                  className="focusable min-h-10 rounded-capsule bg-panel px-3 text-xs font-semibold shadow-soft transition disabled:cursor-not-allowed disabled:opacity-60 sm:px-3"
                   disabled={isImportSubmitting}
                   type="button"
                   onClick={() => setShowImportModal(true)}
@@ -3195,7 +3195,7 @@ function App() {
                   <span className="hidden sm:inline">Import dates</span>
                 </button>
                 <button
-                  className="focusable inline-flex min-h-10 items-center gap-2 rounded-capsule bg-panel px-3 text-xs font-semibold shadow-soft transition disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-11 sm:px-4 sm:text-sm"
+                  className="focusable inline-flex min-h-10 items-center gap-1.5 rounded-capsule bg-panel px-3 text-xs font-semibold shadow-soft transition disabled:cursor-not-allowed disabled:opacity-60 sm:px-3"
                   disabled={isImportSubmitting}
                   type="button"
                   onClick={() => void handleManualImport()}
@@ -3212,13 +3212,13 @@ function App() {
               className="hidden h-10 w-px shrink-0 bg-[rgba(18,18,18,0.14)] sm:block"
             />
 
-            <div className="panel gsap-fade flex min-h-16 min-w-0 px-4 py-2 sm:shrink-0 sm:items-center">
+            <div className="panel gsap-fade flex min-h-16 min-w-0 px-4 py-2 sm:shrink-0 sm:items-center sm:px-3">
               <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
                 {topViewButtons.map((button) => (
                   <button
                     key={button.key}
                     className={clsx(
-                      "focusable min-h-11 rounded-capsule px-4 text-sm font-semibold shadow-soft transition",
+                      "focusable min-h-10 rounded-capsule px-3 text-xs font-semibold shadow-soft transition sm:px-3",
                       activeView === button.key ? "bg-accent text-white" : "bg-panel text-ink",
                     )}
                     type="button"
