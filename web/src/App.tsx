@@ -3112,7 +3112,7 @@ function App() {
       >
         <div className="flex flex-col gap-3 sm:overflow-visible">
           <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-            <div className="panel gsap-fade flex min-h-16 min-w-0 flex-col gap-4 px-4 py-3 sm:flex-1 sm:flex-row sm:flex-wrap sm:items-center sm:gap-5 sm:py-2">
+            <div className="panel gsap-fade flex min-h-16 min-w-0 flex-col gap-4 px-4 py-3 sm:flex-none sm:flex-row sm:flex-wrap sm:items-center sm:gap-5 sm:py-2">
               <div className="shrink-0">
                 <p className="text-sm text-muted">Garmin Selftracker</p>
                 <p className="text-lg font-semibold tracking-tight">{todayDateLabel}</p>
@@ -3136,8 +3136,6 @@ function App() {
                       />
                     </div>
                   </>
-                ) : importSummary.state !== "failed" ? (
-                  <p className="text-sm font-semibold">{importSummary.message}</p>
                 ) : null}
                 <p
                   className={clsx(
