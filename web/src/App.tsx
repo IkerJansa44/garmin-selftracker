@@ -3111,8 +3111,8 @@ function App() {
         )}
       >
         <div className="flex flex-col gap-3 sm:overflow-visible">
-          <div className="flex flex-col gap-3 sm:min-w-max sm:flex-row sm:items-center sm:whitespace-nowrap">
-            <div className="panel gsap-fade flex min-h-16 flex-col gap-4 px-4 py-3 sm:shrink-0 sm:flex-row sm:items-center sm:gap-5 sm:py-2 sm:whitespace-nowrap">
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+            <div className="panel gsap-fade flex min-h-16 min-w-0 flex-col gap-4 px-4 py-3 sm:flex-1 sm:flex-row sm:flex-wrap sm:items-center sm:gap-5 sm:py-2">
               <div className="shrink-0">
                 <p className="text-sm text-muted">Garmin Selftracker</p>
                 <p className="text-lg font-semibold tracking-tight">{todayDateLabel}</p>
@@ -3148,7 +3148,7 @@ function App() {
                   Last import {lastImportLabel}
                 </p>
               </div>
-              <div className="flex flex-nowrap items-center gap-2 sm:shrink-0">
+              <div className="flex flex-wrap items-center gap-2 sm:shrink-0">
                 <div className="group relative">
                   <div
                     className={clsx(
@@ -3214,8 +3214,8 @@ function App() {
               className="hidden h-10 w-px shrink-0 bg-[rgba(18,18,18,0.14)] sm:block"
             />
 
-            <div className="panel gsap-fade flex min-h-16 px-4 py-2 sm:shrink-0 sm:items-center sm:whitespace-nowrap">
-              <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:flex-nowrap sm:items-center">
+            <div className="panel gsap-fade flex min-h-16 min-w-0 px-4 py-2 sm:shrink-0 sm:items-center">
+              <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
                 {topViewButtons.map((button) => (
                   <button
                     key={button.key}
