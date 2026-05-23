@@ -219,6 +219,7 @@ web/dist/
 
 # Data
 *.json
+!web/package-lock.json
 *.csv
 *.xlsx
 *.xls
