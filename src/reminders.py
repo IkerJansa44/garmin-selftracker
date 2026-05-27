@@ -8,6 +8,7 @@ import threading
 from dataclasses import dataclass
 from datetime import date, datetime
 from email.message import EmailMessage
+from pathlib import Path
 from typing import Any, Callable
 
 from src.db import connect_db, get_setting_json, init_db, upsert_setting_json
@@ -22,6 +23,9 @@ DEFAULT_CHECKIN_REMINDER_SETTINGS = {
     "notifyAfter": DEFAULT_NOTIFY_AFTER,
 }
 NOTIFY_AFTER_PATTERN = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+CHECKIN_REMINDER_EMAIL_TEMPLATE_PATH = (
+    Path(__file__).resolve().parent / "templates" / "checkin_reminder_email.txt"
+)
 
 
 def normalize_checkin_reminder_settings(payload: Any) -> dict[str, Any] | None:
@@ -39,7 +43,13 @@ def normalize_checkin_reminder_settings(payload: Any) -> dict[str, Any] | None:
     if _parse_notify_after(stripped_notify_after) is None:
         return None
 
-    return {"enabled": enabled, "notifyAfter": stripped_notify_after}
+    normalized = {"enabled": enabled, "notifyAfter": stripped_notify_after}
+    email_body = payload.get("emailBody")
+    if email_body is None:
+        return normalized
+    if not isinstance(email_body, str) or not email_body.strip():
+        return None
+    return {**normalized, "emailBody": email_body}
 
 
 def default_checkin_reminder_settings() -> dict[str, Any]:
@@ -98,13 +108,10 @@ class ReminderServiceSettings:
 
 def build_checkin_reminder_email_body(current_hour: str, dashboard_url: str) -> str:
     dashboard_line = f"\n\nDashboard: {dashboard_url}" if dashboard_url else ""
-    return (
-        "Hola petit,\n"
-        f"Ja són les {current_hour} i encara no has introduit les dades del teu dia d'avui. "
-        "Fes el favor i que no t'ho hagi de repetir."
-        f"{dashboard_line}\n\n"
-        "Espavila,\n"
-        "Iker"
+    template = CHECKIN_REMINDER_EMAIL_TEMPLATE_PATH.read_text(encoding="utf-8")
+    return template.format(
+        current_hour=current_hour,
+        dashboard_line=dashboard_line,
     )
 
 
@@ -181,7 +188,12 @@ class CheckinReminderService:
                 return
 
             try:
-                self._send_email(now_local.strftime("%H:%M"))
+                self._send_email(
+                    now_local.strftime("%H:%M"),
+                    str(reminder_settings["emailBody"])
+                    if "emailBody" in reminder_settings
+                    else None,
+                )
             except Exception:
                 logger.exception(
                     "Failed to send check-in reminder email for %s", current_date
@@ -222,7 +234,7 @@ class CheckinReminderService:
             self._smtp_missing_warning_emitted = True
         return False
 
-    def _send_email(self, current_hour: str) -> None:
+    def _send_email(self, current_hour: str, email_body: str | None = None) -> None:
         if self._send_email_fn is not None:
             self._send_email_fn(current_hour)
             return
@@ -241,7 +253,8 @@ class CheckinReminderService:
         message["From"] = self._settings.smtp_user
         message["To"] = self._settings.recipient_email
         message.set_content(
-            build_checkin_reminder_email_body(
+            email_body
+            or build_checkin_reminder_email_body(
                 current_hour,
                 self._settings.dashboard_url,
             )

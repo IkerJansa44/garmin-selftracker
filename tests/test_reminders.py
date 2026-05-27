@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Callable
+
+import pytest
 
 from src.db import (
     connect_db,
@@ -218,6 +221,60 @@ def test_missing_smtp_config_skips_send_without_log_spam(
         assert last_sent is None
     finally:
         connection.close()
+
+
+def test_custom_email_body_is_sent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "garmin.db"
+    connection = connect_db(str(db_path))
+    try:
+        init_db(connection)
+        upsert_setting_json(
+            connection,
+            CHECKIN_REMINDER_SETTINGS_KEY,
+            {
+                "enabled": True,
+                "notifyAfter": "22:30",
+                "emailBody": "Custom reminder body",
+            },
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    sent_messages: list[EmailMessage] = []
+
+    class FakeSmtp:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def __enter__(self) -> "FakeSmtp":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            pass
+
+        def starttls(self) -> None:
+            pass
+
+        def login(self, _: str, __: str) -> None:
+            pass
+
+        def send_message(self, message: EmailMessage) -> None:
+            sent_messages.append(message)
+
+    monkeypatch.setattr("src.reminders.smtplib.SMTP", FakeSmtp)
+    service = _build_service(
+        db_path,
+        now_fn=lambda: datetime(2026, 2, 21, 22, 45),
+        send_email_fn=None,
+    )
+
+    service.run_once()
+
+    assert len(sent_messages) == 1
+    assert sent_messages[0].get_content() == "Custom reminder body\n"
 
 
 def test_build_checkin_reminder_email_body_includes_dashboard_url() -> None:

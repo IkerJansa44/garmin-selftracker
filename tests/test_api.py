@@ -32,6 +32,7 @@ from src.api import (
     _save_dashboard_plots_payload,
 )
 from src.config import Settings
+from src.sync import SyncResult
 from src.db import connect_db, init_db
 
 
@@ -477,7 +478,11 @@ def test_normalize_dashboard_plots_payload_allows_duplicate_keys_with_unique_ids
 
 
 def test_normalize_checkin_reminder_settings_payload_accepts_valid_payload() -> None:
-    payload = {"enabled": True, "notifyAfter": "22:30"}
+    payload = {
+        "enabled": True,
+        "notifyAfter": "22:30",
+        "emailBody": "Reminder body",
+    }
 
     normalized = _normalize_checkin_reminder_settings_payload(payload)
     assert normalized == payload
@@ -492,6 +497,7 @@ def test_normalize_checkin_reminder_settings_payload_accepts_valid_payload() -> 
         {"enabled": True, "notifyAfter": "24:00"},
         {"enabled": True, "notifyAfter": "22:75"},
         {"enabled": True, "notifyAfter": "bad"},
+        {"enabled": True, "notifyAfter": "22:30", "emailBody": ""},
     ],
 )
 def test_normalize_checkin_reminder_settings_payload_rejects_invalid_payload(
@@ -503,19 +509,30 @@ def test_normalize_checkin_reminder_settings_payload_rejects_invalid_payload(
 def test_checkin_reminder_settings_load_defaults_when_missing(tmp_path: Path) -> None:
     db_path = tmp_path / "garmin.db"
 
-    loaded = _load_checkin_reminder_settings_payload(str(db_path))
-    assert loaded == {"enabled": True, "notifyAfter": "22:30"}
+    loaded = _load_checkin_reminder_settings_payload(str(db_path), "http://dashboard")
+    assert loaded["enabled"] is True
+    assert loaded["notifyAfter"] == "22:30"
+    assert "22:30" in loaded["emailBody"]
+    assert "http://dashboard" in loaded["emailBody"]
 
 
 def test_checkin_reminder_settings_save_and_load_roundtrip(tmp_path: Path) -> None:
     db_path = tmp_path / "garmin.db"
-    payload = {"enabled": False, "notifyAfter": "21:15"}
+    payload = {
+        "enabled": False,
+        "notifyAfter": "21:15",
+        "emailBody": "Custom reminder body",
+    }
 
     saved = _save_checkin_reminder_settings_payload(str(db_path), payload)
-    assert saved == payload
+    assert saved["enabled"] is False
+    assert saved["notifyAfter"] == "21:15"
+    assert saved["emailBody"] == "Custom reminder body"
 
     loaded = _load_checkin_reminder_settings_payload(str(db_path))
-    assert loaded == payload
+    assert loaded["enabled"] is False
+    assert loaded["notifyAfter"] == "21:15"
+    assert loaded["emailBody"] == "Custom reminder body"
 
 
 def test_dashboard_plot_settings_save_and_load_roundtrip(tmp_path: Path) -> None:
@@ -831,6 +848,63 @@ def test_checkins_save_and_load_roundtrip(tmp_path: Path) -> None:
     assert len(loaded) == 1
     assert loaded[0]["date"] == "2026-02-20"
     assert loaded[0]["answers"]["late_meal"] == "21:15"
+
+
+def test_import_job_manager_notifies_after_successful_import(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "garmin.db"
+    manager = ImportJobManager()
+    calls: list[tuple[str, set[str] | None]] = []
+
+    def fake_run_sync(**kwargs: object) -> SyncResult:
+        return SyncResult(
+            run_id=1,
+            days_requested=1,
+            days_succeeded=1,
+            status="success",
+        )
+
+    def fake_current_keys(settings: ApiSettings) -> set[str]:
+        return {"existing"}
+
+    def fake_notify(settings: ApiSettings, *, previous_keys: set[str] | None) -> None:
+        calls.append((settings.db_path, previous_keys))
+
+    monkeypatch.setattr("src.api.run_sync", fake_run_sync)
+    monkeypatch.setattr(
+        "src.api._current_meaningful_correlation_keys", fake_current_keys
+    )
+    monkeypatch.setattr("src.api._notify_new_meaningful_correlations", fake_notify)
+
+    settings = ApiSettings(
+        db_path=str(db_path),
+        host="127.0.0.1",
+        port=8000,
+        garmin_email="user@example.com",
+        garmin_password="password",
+        garmin_tokenstore=str(tmp_path / "tokens"),
+        garmin_manual_import_dir=str(tmp_path / "manual"),
+        default_sync_days=1,
+        dashboard_url="http://dashboard",
+        smtp_host="smtp.example.com",
+        smtp_port=587,
+        smtp_user="smtp-user",
+        smtp_pass="smtp-pass",
+        timezone=None,
+    )
+
+    manager._run_job(  # noqa: SLF001 - direct call keeps the worker test deterministic
+        settings,
+        ImportRequest(
+            mode="refresh",
+            start_date=date(2026, 2, 21),
+            end_date=date(2026, 2, 21),
+        ),
+    )
+
+    assert calls == [(str(db_path), {"existing"})]
 
 
 def test_load_correlation_values_payload_uses_materialized_analysis_values(

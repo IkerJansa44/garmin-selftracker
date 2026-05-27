@@ -36,7 +36,11 @@ def _optional_env(name: str, *, default: str = "") -> str:
 
 
 def load_settings(*, require_garmin_credentials: bool = True) -> Settings:
-    garmin_email = _required_env("GARMIN_EMAIL") if require_garmin_credentials else ""
+    garmin_email = (
+        _required_env("GARMIN_EMAIL")
+        if require_garmin_credentials
+        else _optional_env("GARMIN_EMAIL")
+    )
     garmin_password = (
         _required_env("GARMIN_PASSWORD") if require_garmin_credentials else ""
     )

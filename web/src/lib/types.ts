@@ -154,4 +154,5 @@ export interface DerivedPredictorPayload {
 export interface CheckinReminderSettings {
   enabled: boolean;
   notifyAfter: string;
+  emailBody?: string;
 }

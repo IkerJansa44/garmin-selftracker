@@ -15,3 +15,6 @@ dependencies = [
 
 [tool.setuptools]
 packages = ["src"]
+
+[tool.setuptools.package-data]
+src = ["templates/*.txt"]

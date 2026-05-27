@@ -14,6 +14,11 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from src.config import SettingsError, load_settings
+from src.correlation_notifications import (
+    CorrelationEmailSettings,
+    current_meaningful_correlation_keys,
+    notify_new_meaningful_correlations,
+)
 from src.db import (
     build_time_to_sleep_gap_by_metric_date,
     build_sleep_consistency_by_source_date,
@@ -40,6 +45,7 @@ from src.reminders import (
     CHECKIN_REMINDER_SETTINGS_KEY,
     CheckinReminderService,
     ReminderServiceSettings,
+    build_checkin_reminder_email_body,
     default_checkin_reminder_settings,
     normalize_checkin_reminder_settings,
 )
@@ -341,6 +347,7 @@ class ImportJobManager:
         return ImportStartResult(accepted=True)
 
     def _run_job(self, settings: ApiSettings, request: ImportRequest) -> None:
+        previous_correlation_keys = _current_meaningful_correlation_keys(settings)
         try:
             result = run_sync(
                 db_path=settings.db_path,
@@ -357,6 +364,11 @@ class ImportJobManager:
                 result.days_succeeded,
                 result.days_requested,
             )
+            if result.status != "failed" and result.days_succeeded > 0:
+                _notify_new_meaningful_correlations(
+                    settings,
+                    previous_keys=previous_correlation_keys,
+                )
         except Exception:
             logger.exception(
                 "Import failed mode=%s from=%s to=%s",
@@ -367,6 +379,40 @@ class ImportJobManager:
         finally:
             with self._lock:
                 self._running = False
+
+
+def _correlation_email_settings(settings: ApiSettings) -> CorrelationEmailSettings:
+    return CorrelationEmailSettings(
+        db_path=settings.db_path,
+        smtp_host=settings.smtp_host,
+        smtp_port=settings.smtp_port,
+        smtp_user=settings.smtp_user,
+        smtp_pass=settings.smtp_pass,
+        recipient_email=settings.garmin_email,
+        dashboard_url=settings.dashboard_url,
+    )
+
+
+def _current_meaningful_correlation_keys(settings: ApiSettings) -> set[str] | None:
+    try:
+        return current_meaningful_correlation_keys(settings.db_path)
+    except Exception:  # pragma: no cover - runtime guard
+        logger.exception("Failed to scan meaningful correlations before import")
+        return None
+
+
+def _notify_new_meaningful_correlations(
+    settings: ApiSettings,
+    *,
+    previous_keys: set[str] | None,
+) -> None:
+    try:
+        notify_new_meaningful_correlations(
+            _correlation_email_settings(settings),
+            previous_keys=previous_keys,
+        )
+    except Exception:  # pragma: no cover - runtime guard
+        logger.exception("Failed to send meaningful correlation notification")
 
 
 def _coverage(row_exists: bool, value: Any) -> str:
@@ -1136,7 +1182,23 @@ def _normalize_checkin_reminder_settings_payload(
     return normalize_checkin_reminder_settings(payload)
 
 
-def _load_checkin_reminder_settings_payload(db_path: str) -> dict[str, Any]:
+def _with_checkin_reminder_email_body(
+    settings: dict[str, Any], dashboard_url: str
+) -> dict[str, Any]:
+    if isinstance(settings.get("emailBody"), str):
+        return dict(settings)
+    return {
+        **settings,
+        "emailBody": build_checkin_reminder_email_body(
+            str(settings["notifyAfter"]),
+            dashboard_url,
+        ),
+    }
+
+
+def _load_checkin_reminder_settings_payload(
+    db_path: str, dashboard_url: str = ""
+) -> dict[str, Any]:
     connection = connect_db(db_path)
     try:
         init_db(connection)
@@ -1145,12 +1207,14 @@ def _load_checkin_reminder_settings_payload(db_path: str) -> dict[str, Any]:
         connection.close()
     normalized = _normalize_checkin_reminder_settings_payload(raw_payload)
     if normalized is not None:
-        return normalized
-    return default_checkin_reminder_settings()
+        return _with_checkin_reminder_email_body(normalized, dashboard_url)
+    return _with_checkin_reminder_email_body(
+        default_checkin_reminder_settings(), dashboard_url
+    )
 
 
 def _save_checkin_reminder_settings_payload(
-    db_path: str, payload: Any
+    db_path: str, payload: Any, dashboard_url: str = ""
 ) -> dict[str, Any]:
     normalized = _normalize_checkin_reminder_settings_payload(payload)
     if normalized is None:
@@ -1162,7 +1226,7 @@ def _save_checkin_reminder_settings_payload(
         connection.commit()
     finally:
         connection.close()
-    return normalized
+    return _with_checkin_reminder_email_body(normalized, dashboard_url)
 
 
 def _normalize_answers_payload(payload: Any) -> dict[str, Any] | None:
@@ -1594,7 +1658,11 @@ class ApiHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/checkin-reminder-settings":
             try:
-                settings = _load_checkin_reminder_settings_payload(self.db_path)
+                dashboard_url = self.settings.dashboard_url if self.settings else ""
+                settings = _load_checkin_reminder_settings_payload(
+                    self.db_path,
+                    dashboard_url,
+                )
             except Exception as exc:  # pragma: no cover - runtime guard
                 logger.exception("Failed to load check-in reminder settings")
                 self._send_json(
@@ -1716,6 +1784,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         if latest_run is not None and str(latest_run["status"]) == "running":
             self._send_json(HTTPStatus.CONFLICT, {"error": "Import already running"})
             return
+        previous_correlation_keys = _current_meaningful_correlation_keys(self.settings)
 
         try:
             result = run_manual_import_dir(
@@ -1740,6 +1809,12 @@ class ApiHandler(BaseHTTPRequestHandler):
                 },
             )
             return
+
+        if result.days_imported > 0:
+            _notify_new_meaningful_correlations(
+                self.settings,
+                previous_keys=previous_correlation_keys,
+            )
 
         self._send_json(
             HTTPStatus.OK,
@@ -1873,7 +1948,9 @@ class ApiHandler(BaseHTTPRequestHandler):
             )
             try:
                 normalized = _save_checkin_reminder_settings_payload(
-                    self.db_path, settings_payload
+                    self.db_path,
+                    settings_payload,
+                    self.settings.dashboard_url if self.settings else "",
                 )
             except ValueError as exc:
                 self._send_json(

@@ -1,0 +1,5 @@
+Hola petit,
+Ja són les {current_hour} i encara no has introduit les dades del teu dia d'avui. Fes el favor i que no t'ho hagi de repetir.{dashboard_line}
+
+Espavila,
+Iker

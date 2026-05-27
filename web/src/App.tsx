@@ -450,6 +450,7 @@ function normalizeCheckinReminderSettings(raw: unknown): CheckinReminderSettings
   return {
     enabled: payload.enabled,
     notifyAfter: payload.notifyAfter,
+    ...(typeof payload.emailBody === "string" ? { emailBody: payload.emailBody } : {}),
   };
 }
 
@@ -4259,25 +4260,51 @@ function App() {
                       }
                     />
                   </label>
-                  <label className="space-y-2 rounded-2xl bg-panel p-4 text-sm">
+                  <label className="min-w-0 space-y-2 overflow-hidden rounded-2xl bg-panel p-4 text-sm">
                     <span className="block text-xs uppercase tracking-[0.14em] text-muted">
                       Notify after
                     </span>
                     <input
-                      className="focusable min-h-11 w-full rounded-2xl bg-subsurface px-3 disabled:cursor-not-allowed disabled:opacity-60"
+                      className="focusable block min-h-11 w-full min-w-0 max-w-full appearance-none rounded-2xl bg-subsurface px-3 text-center disabled:cursor-not-allowed disabled:opacity-60"
                       disabled={!checkinReminderSettings.enabled}
                       step={60}
                       type="time"
                       value={checkinReminderSettings.notifyAfter}
-                      onChange={(event) =>
+                      onChange={(event) => {
+                        const nextNotifyAfter = event.target.value;
                         setCheckinReminderSettings((previous) => ({
                           ...previous,
-                          notifyAfter: event.target.value,
-                        }))
-                      }
+                          notifyAfter: nextNotifyAfter,
+                          ...(previous.emailBody
+                            ? {
+                                emailBody: previous.emailBody.replaceAll(
+                                  previous.notifyAfter,
+                                  nextNotifyAfter,
+                                ),
+                              }
+                            : {}),
+                        }));
+                      }}
                     />
                   </label>
                 </div>
+                {checkinReminderSettings.enabled && checkinReminderSettings.emailBody && (
+                  <div className="mt-4 rounded-2xl bg-panel p-4">
+                    <p className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-muted">
+                      Email text
+                    </p>
+                    <textarea
+                      className="focusable min-h-80 w-full resize-y rounded-2xl bg-subsurface p-4 text-sm leading-6 text-foreground"
+                      value={checkinReminderSettings.emailBody}
+                      onChange={(event) =>
+                        setCheckinReminderSettings((previous) => ({
+                          ...previous,
+                          emailBody: event.target.value,
+                        }))
+                      }
+                    />
+                  </div>
+                )}
               </article>
 
               <article className="rounded-[24px] bg-subsurface p-5">

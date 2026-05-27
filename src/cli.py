@@ -4,7 +4,12 @@ import argparse
 import logging
 from datetime import date, timedelta
 
-from src.config import SettingsError, load_settings
+from src.config import Settings, SettingsError, load_settings
+from src.correlation_notifications import (
+    CorrelationEmailSettings,
+    current_meaningful_correlation_keys,
+    notify_new_meaningful_correlations,
+)
 from src.db import connect_db, init_db
 from src.manual_import import run_manual_import_dir
 from src.sync import run_sync
@@ -43,6 +48,40 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _correlation_email_settings(settings: Settings) -> CorrelationEmailSettings:
+    return CorrelationEmailSettings(
+        db_path=settings.db_path,
+        smtp_host=settings.smtp_host,
+        smtp_port=settings.smtp_port,
+        smtp_user=settings.smtp_user,
+        smtp_pass=settings.smtp_pass,
+        recipient_email=settings.garmin_email,
+        dashboard_url=settings.dashboard_url,
+    )
+
+
+def _current_meaningful_correlation_keys(db_path: str) -> set[str] | None:
+    try:
+        return current_meaningful_correlation_keys(db_path)
+    except Exception:
+        logging.exception("Failed to scan meaningful correlations before import")
+        return None
+
+
+def _notify_new_meaningful_correlations(
+    settings: Settings,
+    *,
+    previous_keys: set[str] | None,
+) -> None:
+    try:
+        notify_new_meaningful_correlations(
+            _correlation_email_settings(settings),
+            previous_keys=previous_keys,
+        )
+    except Exception:
+        logging.exception("Failed to send meaningful correlation notification")
+
+
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
@@ -60,10 +99,18 @@ def main() -> int:
 
     if args.command == "import-manual":
         settings = load_settings(require_garmin_credentials=False)
+        previous_correlation_keys = _current_meaningful_correlation_keys(
+            settings.db_path
+        )
         result = run_manual_import_dir(
             db_path=settings.db_path,
             import_dir=args.path or settings.garmin_manual_import_dir,
         )
+        if result.status != "failed" and result.days_imported > 0:
+            _notify_new_meaningful_correlations(
+                settings,
+                previous_keys=previous_correlation_keys,
+            )
         logging.info(
             "Manual import run %s finished with status=%s (%s/%s archives)",
             result.run_id,
@@ -93,6 +140,7 @@ def main() -> int:
         logging.error("Unknown command")
         return 1
 
+    previous_correlation_keys = _current_meaningful_correlation_keys(settings.db_path)
     result = run_sync(
         db_path=settings.db_path,
         garmin_email=settings.garmin_email,
@@ -101,6 +149,11 @@ def main() -> int:
         start_date=start_date,
         end_date=end_date,
     )
+    if result.status != "failed" and result.days_succeeded > 0:
+        _notify_new_meaningful_correlations(
+            settings,
+            previous_keys=previous_correlation_keys,
+        )
     logging.info(
         "Sync run %s finished with status=%s (%s/%s days)",
         result.run_id,
