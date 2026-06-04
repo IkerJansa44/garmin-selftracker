@@ -7,6 +7,8 @@ from typing import Any
 
 from src.correlation_notifications import (
     CorrelationEmailSettings,
+    MeaningfulCorrelation,
+    _build_email_body,
     current_meaningful_correlation_keys,
     notify_new_meaningful_correlations,
 )
@@ -104,7 +106,14 @@ def test_notify_new_meaningful_correlations_sends_only_new_keys(
     assert len(FakeSmtp.sent_messages) == 1
     message = FakeSmtp.sent_messages[0]
     assert message["Subject"] == "New meaningful Garmin correlation"
-    assert "Steps -> Resting HR" in message.get_content()
+    assert (
+        "When Steps is higher, Resting HR tends to be higher too."
+        in message.get_content()
+    )
+    assert (
+        "View scatterplot: "
+        "http://dashboard?view=lab&predictor=garmin%3Asteps&outcome=metric%3ArestingHr"
+    ) in message.get_content()
     assert "http://dashboard" in message.get_content()
 
     connection = connect_db(str(db_path))
@@ -143,3 +152,34 @@ def test_notify_new_meaningful_correlations_baselines_first_scan(
     finally:
         connection.close()
     assert "garmin:steps__metric:restingHr" in notified
+
+
+def test_build_email_body_describes_negative_correlations_with_scatterplot_link() -> (
+    None
+):
+    body = _build_email_body(
+        [
+            MeaningfulCorrelation(
+                key="question:caffeine__metric:sleepScore",
+                predictor="question:caffeine",
+                outcome="metric:sleepScore",
+                predictor_label="Caffeine",
+                outcome_label="Sleep Score",
+                sample_count=42,
+                correlation=-0.41,
+                p_value=0.001,
+                q_value=0.004,
+            )
+        ],
+        "http://dashboard.local/app?range=365",
+    )
+
+    assert (
+        "When Caffeine is higher, Sleep Score tends to be lower. "
+        "(r=-0.41, q=0.004, N=42)"
+    ) in body
+    assert (
+        "View scatterplot: "
+        "http://dashboard.local/app?range=365&view=lab&"
+        "predictor=question%3Acaffeine&outcome=metric%3AsleepScore"
+    ) in body

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from email.message import EmailMessage
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from src.db import (
     connect_db,
@@ -413,13 +414,51 @@ def _build_email_body(
     for correlation in sorted(
         correlations, key=lambda item: abs(item.correlation), reverse=True
     ):
-        direction = "positive" if correlation.correlation > 0 else "negative"
         lines.append(
-            "- "
-            f"{correlation.predictor_label} -> {correlation.outcome_label}: "
-            f"r={correlation.correlation:.2f}, q={correlation.q_value:.3g}, "
-            f"N={correlation.sample_count}, {direction}"
+            f"- {_describe_correlation(correlation)} "
+            f"(r={correlation.correlation:.2f}, q={correlation.q_value:.3g}, "
+            f"N={correlation.sample_count})"
         )
+        if link := _build_correlation_link(dashboard_url, correlation):
+            lines.append(f"  View scatterplot: {link}")
     if dashboard_url:
         lines.extend(["", f"Dashboard: {dashboard_url}"])
     return "\n".join(lines)
+
+
+def _describe_correlation(correlation: MeaningfulCorrelation) -> str:
+    if correlation.correlation > 0:
+        return (
+            f"When {correlation.predictor_label} is higher, "
+            f"{correlation.outcome_label} tends to be higher too."
+        )
+    return (
+        f"When {correlation.predictor_label} is higher, "
+        f"{correlation.outcome_label} tends to be lower."
+    )
+
+
+def _build_correlation_link(
+    dashboard_url: str,
+    correlation: MeaningfulCorrelation,
+) -> str | None:
+    if not dashboard_url:
+        return None
+    parts = urlsplit(dashboard_url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query.update(
+        {
+            "view": "lab",
+            "predictor": correlation.predictor,
+            "outcome": correlation.outcome,
+        }
+    )
+    return urlunsplit(
+        (
+            parts.scheme,
+            parts.netloc,
+            parts.path,
+            urlencode(query),
+            parts.fragment,
+        )
+    )

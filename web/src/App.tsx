@@ -145,6 +145,7 @@ gsap.registerPlugin(ScrollTrigger);
 type ViewKey = "dashboard" | "lab" | "checkin" | "settings";
 type MetricDirection = "higher" | "lower";
 const DEFAULT_TOP_CORRELATION_OUTCOME: OutcomeKey = "metric:restingHr";
+const VIEW_KEYS = new Set<ViewKey>(["dashboard", "lab", "checkin", "settings"]);
 type GarminPlotKey =
   | "steps"
   | "calories"
@@ -228,6 +229,50 @@ interface ActiveCorrelationTooltip {
     x: number;
     y: number;
   };
+}
+
+function readUrlParams(): URLSearchParams {
+  return typeof window === "undefined"
+    ? new URLSearchParams()
+    : new URLSearchParams(window.location.search);
+}
+
+function readUrlView(): ViewKey {
+  const view = readUrlParams().get("view");
+  return VIEW_KEYS.has(view as ViewKey) ? view as ViewKey : "dashboard";
+}
+
+function readUrlPredictorKey(): PredictorKey {
+  return (readUrlParams().get("predictor") || "garmin:steps") as PredictorKey;
+}
+
+function readUrlOutcomeKey(): OutcomeKey {
+  return (readUrlParams().get("outcome") || DEFAULT_TOP_CORRELATION_OUTCOME) as OutcomeKey;
+}
+
+function replaceAppUrl(activeView: ViewKey, predictorKey: PredictorKey, outcomeKey: OutcomeKey): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const params = new URLSearchParams(window.location.search);
+  if (activeView === "dashboard") {
+    params.delete("view");
+  } else {
+    params.set("view", activeView);
+  }
+  if (activeView === "lab") {
+    params.set("predictor", predictorKey);
+    params.set("outcome", outcomeKey);
+  } else {
+    params.delete("predictor");
+    params.delete("outcome");
+  }
+  const query = params.toString();
+  const nextUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
+  const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (nextUrl !== currentUrl) {
+    window.history.replaceState(null, "", nextUrl);
+  }
 }
 
 const IMPORT_STATUS_LABELS: Record<ImportState, string> = {
@@ -1321,7 +1366,7 @@ function App() {
   const appRef = useRef<HTMLDivElement | null>(null);
   const heroRef = useRef<HTMLDivElement | null>(null);
 
-  const [activeView, setActiveView] = useState<ViewKey>("dashboard");
+  const [activeView, setActiveView] = useState<ViewKey>(readUrlView);
   const [rangePreset, setRangePreset] = usePersistentState<number>(
     "ui.rangePreset",
     DEFAULT_RANGE_PRESET,
@@ -1396,8 +1441,8 @@ function App() {
   });
   const [dataStatus, setDataStatus] = useState<"loading" | "ready" | "error">("loading");
   const [dataError, setDataError] = useState<string | null>(null);
-  const [predictorKey, setPredictorKey] = useState<PredictorKey>("garmin:steps");
-  const [outcomeKey, setOutcomeKey] = useState<OutcomeKey>(DEFAULT_TOP_CORRELATION_OUTCOME);
+  const [predictorKey, setPredictorKey] = useState<PredictorKey>(readUrlPredictorKey);
+  const [outcomeKey, setOutcomeKey] = useState<OutcomeKey>(readUrlOutcomeKey);
   const [activeCorrelationTooltip, setActiveCorrelationTooltip] = useState<ActiveCorrelationTooltip | null>(null);
   const [showNewVariablePanel, setShowNewVariablePanel] = useState(false);
   const [derivedPredictors, setDerivedPredictors] = useState<DerivedPredictorDefinition[]>([]);
@@ -1483,6 +1528,20 @@ function App() {
     if (correlationTooltipHideTimeoutRef.current !== null) {
       window.clearTimeout(correlationTooltipHideTimeoutRef.current);
     }
+  }, []);
+
+  useEffect(() => {
+    replaceAppUrl(activeView, predictorKey, outcomeKey);
+  }, [activeView, outcomeKey, predictorKey]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setActiveView(readUrlView());
+      setPredictorKey(readUrlPredictorKey());
+      setOutcomeKey(readUrlOutcomeKey());
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
   }, []);
 
   const loadDashboardData = useCallback(
@@ -1963,18 +2022,27 @@ function App() {
     if (!predictorOptions.length || predictorOptions.some((option) => option.key === predictorKey)) {
       return;
     }
+    if (
+      (predictorKey.startsWith("question:") && questionLoadState === "loading")
+      || (predictorKey.startsWith("derived:") && derivedLoadState === "loading")
+    ) {
+      return;
+    }
     setPredictorKey(predictorOptions[0].key as PredictorKey);
-  }, [predictorKey, predictorOptions]);
+  }, [derivedLoadState, predictorKey, predictorOptions, questionLoadState]);
 
   useEffect(() => {
     if (!outcomeOptions.length || outcomeOptions.some((option) => option.key === outcomeKey)) {
+      return;
+    }
+    if (outcomeKey.startsWith("question:") && questionLoadState === "loading") {
       return;
     }
     const fallback = outcomeOptions.some((option) => option.key === DEFAULT_TOP_CORRELATION_OUTCOME)
       ? DEFAULT_TOP_CORRELATION_OUTCOME
       : outcomeOptions[0].key as OutcomeKey;
     setOutcomeKey(fallback);
-  }, [outcomeKey, outcomeOptions]);
+  }, [outcomeKey, outcomeOptions, questionLoadState]);
 
   useEffect(() => {
     if (!derivedSourceOptions.length) {
