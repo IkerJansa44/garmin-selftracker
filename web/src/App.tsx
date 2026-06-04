@@ -706,6 +706,43 @@ function computeNumericDomain(values: number[]): [number, number] | undefined {
   return [minimum, maximum];
 }
 
+function computeNiceNumericAxis(
+  values: number[],
+): { domain: [number, number]; ticks: number[] } | undefined {
+  const finiteValues = values.filter(Number.isFinite);
+  if (!finiteValues.length) {
+    return undefined;
+  }
+  const minimum = Math.min(...finiteValues);
+  const maximum = Math.max(...finiteValues);
+  const span = maximum - minimum;
+  if (span === 0) {
+    const padding = minimum === 0 ? 1 : Math.max(Math.abs(minimum) * 0.05, 1);
+    return { domain: [minimum - padding, maximum + padding], ticks: [minimum] };
+  }
+
+  const step = niceAxisStep(span / 4);
+  const domain: [number, number] = [
+    Math.floor(minimum / step) * step,
+    Math.ceil(maximum / step) * step,
+  ];
+  const ticks: number[] = [];
+  for (let value = domain[0], guard = 0; value <= domain[1] && guard < 100; value += step, guard += 1) {
+    ticks.push(Number(value.toFixed(10)));
+  }
+  return { domain, ticks };
+}
+
+function niceAxisStep(rawStep: number): number {
+  if (!Number.isFinite(rawStep) || rawStep <= 0) {
+    return 1;
+  }
+  const magnitude = 10 ** Math.floor(Math.log10(rawStep));
+  const normalized = rawStep / magnitude;
+  const multiplier = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+  return multiplier * magnitude;
+}
+
 function parseQuestionPlotValue(
   question: QuestionFieldDefinition,
   value: unknown,
@@ -2316,12 +2353,6 @@ function App() {
     }
     return computeNumericDomain(selectedCorrelationPair.points.map((point) => point.x));
   }, [selectedCorrelationPair]);
-  const correlationExplorerYDomain = useMemo<[number, number] | undefined>(() => {
-    if (!selectedCorrelationPair) {
-      return undefined;
-    }
-    return computeNumericDomain(selectedCorrelationPair.points.map((point) => point.y));
-  }, [selectedCorrelationPair]);
   const trendLineData = useMemo(() => {
     if (
       !selectedCorrelationPair
@@ -2349,6 +2380,15 @@ function App() {
       },
     ];
   }, [selectedCorrelationPair]);
+  const correlationExplorerYAxis = useMemo(() => {
+    if (!selectedCorrelationPair) {
+      return undefined;
+    }
+    return computeNiceNumericAxis([
+      ...selectedCorrelationPair.points.map((point) => point.y),
+      ...trendLineData.map((point) => point.y),
+    ]);
+  }, [selectedCorrelationPair, trendLineData]);
   const categoricalScatterData = useMemo(() => {
     if (!selectedCorrelationPair || selectedCorrelationPair.testType !== "categorical") {
       return [];
@@ -4016,7 +4056,7 @@ function App() {
                         <YAxis
                           axisLine={false}
                           dataKey="y"
-                          domain={correlationExplorerYDomain}
+                          domain={correlationExplorerYAxis?.domain}
                           label={{
                             value: getOptionLabel(outcomeOptions, outcomeKey, outcomeKey),
                             angle: -90,
@@ -4025,7 +4065,9 @@ function App() {
                           }}
                           name={getOptionLabel(outcomeOptions, outcomeKey, outcomeKey)}
                           tick={{ fontSize: 12 }}
+                          tickFormatter={(value: number) => formatTooltipNumber(value)}
                           tickLine={false}
+                          ticks={correlationExplorerYAxis?.ticks}
                           type="number"
                         />
                         <Scatter
