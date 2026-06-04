@@ -6,7 +6,8 @@ import smtplib
 from dataclasses import dataclass
 from datetime import date, timedelta
 from email.message import EmailMessage
-from typing import Any
+from html import escape
+from typing import Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from src.db import (
@@ -25,6 +26,7 @@ MIN_SAMPLE_COUNT = 20
 MIN_STRENGTH = 0.2
 MAX_Q_VALUE = 0.05
 SCAN_DAYS = 365
+FeatureDisplayKind = Literal["numeric", "binary", "time"]
 
 FEATURE_LABELS = {
     "garmin:steps": "Steps",
@@ -75,6 +77,10 @@ class MeaningfulCorrelation:
     correlation: float
     p_value: float
     q_value: float
+    predictor_kind: FeatureDisplayKind = "numeric"
+    outcome_kind: FeatureDisplayKind = "numeric"
+    predictor_positive_label: str | None = None
+    outcome_positive_label: str | None = None
 
 
 def current_meaningful_correlation_keys(db_path: str) -> set[str]:
@@ -197,6 +203,12 @@ def _build_correlation_pairs(
                     correlation=correlation,
                     p_value=p_value,
                     q_value=1.0,
+                    predictor_kind=_feature_display_kind(predictor, questions),
+                    outcome_kind=_feature_display_kind(outcome, questions),
+                    predictor_positive_label=_feature_positive_label(
+                        predictor, questions
+                    ),
+                    outcome_positive_label=_feature_positive_label(outcome, questions),
                 )
             )
     return pairs
@@ -305,7 +317,64 @@ def _apply_benjamini_hochberg(pairs: list[MeaningfulCorrelation]) -> None:
             correlation=pair.correlation,
             p_value=pair.p_value,
             q_value=adjusted[index],
+            predictor_kind=pair.predictor_kind,
+            outcome_kind=pair.outcome_kind,
+            predictor_positive_label=pair.predictor_positive_label,
+            outcome_positive_label=pair.outcome_positive_label,
         )
+
+
+def _feature_display_kind(
+    feature_key: str,
+    questions: dict[str, dict[str, Any]],
+) -> FeatureDisplayKind:
+    if feature_key == "garmin:isTrainingDay":
+        return "binary"
+    if not feature_key.startswith("question:"):
+        return "numeric"
+    question = questions.get(feature_key.removeprefix("question:"))
+    input_type = question.get("inputType") if question else None
+    if input_type == "boolean":
+        return "binary"
+    if input_type == "time":
+        return "time"
+    if input_type == "multi-choice" and _choice_positive_label(question):
+        return "binary"
+    return "numeric"
+
+
+def _feature_positive_label(
+    feature_key: str,
+    questions: dict[str, dict[str, Any]],
+) -> str | None:
+    if feature_key == "garmin:isTrainingDay":
+        return "Yes"
+    if not feature_key.startswith("question:"):
+        return None
+    question = questions.get(feature_key.removeprefix("question:"))
+    if not question:
+        return None
+    if question.get("inputType") == "boolean":
+        return "Yes"
+    if question.get("inputType") == "multi-choice":
+        return _choice_positive_label(question)
+    return None
+
+
+def _choice_positive_label(question: dict[str, Any]) -> str | None:
+    options = question.get("options")
+    if not isinstance(options, list) or len(options) != 2:
+        return None
+    scored_options = [
+        option
+        for option in options
+        if isinstance(option, dict) and isinstance(option.get("score"), (int, float))
+    ]
+    if len(scored_options) != 2:
+        return None
+    positive = max(scored_options, key=lambda option: float(option["score"]))
+    label = positive.get("label") or positive.get("id")
+    return str(label).strip() if label else "Yes"
 
 
 def _load_questions(db_path: str) -> dict[str, dict[str, Any]]:
@@ -395,6 +464,10 @@ def _send_correlation_email(
     message["From"] = settings.smtp_user
     message["To"] = settings.recipient_email
     message.set_content(_build_email_body(correlations, settings.dashboard_url))
+    message.add_alternative(
+        _build_email_html(correlations, settings.dashboard_url),
+        subtype="html",
+    )
 
     with smtplib.SMTP(
         host=settings.smtp_host,
@@ -427,14 +500,68 @@ def _build_email_body(
 
 
 def _describe_correlation(correlation: MeaningfulCorrelation) -> str:
-    if correlation.correlation > 0:
-        return (
-            f"When {correlation.predictor_label} is higher, "
-            f"{correlation.outcome_label} tends to be higher too."
-        )
+    outcome_direction = _outcome_direction(correlation)
     return (
-        f"When {correlation.predictor_label} is higher, "
-        f"{correlation.outcome_label} tends to be lower."
+        f"When {correlation.predictor_label} {_predictor_condition(correlation)}, "
+        f"{correlation.outcome_label} tends to be {outcome_direction}."
+    )
+
+
+def _predictor_condition(correlation: MeaningfulCorrelation) -> str:
+    if correlation.predictor_kind == "binary":
+        return f"is {correlation.predictor_positive_label or 'Yes'}"
+    if correlation.predictor_kind == "time":
+        return "is later"
+    return "is higher"
+
+
+def _outcome_direction(correlation: MeaningfulCorrelation) -> str:
+    is_positive = correlation.correlation > 0
+    if correlation.outcome_kind == "binary":
+        label = correlation.outcome_positive_label or "Yes"
+        return f"{label} more often" if is_positive else f"{label} less often"
+    if correlation.outcome_kind == "time":
+        return "later" if is_positive else "earlier"
+    return "higher too" if is_positive else "lower"
+
+
+def _build_email_html(
+    correlations: list[MeaningfulCorrelation],
+    dashboard_url: str,
+) -> str:
+    items = []
+    for correlation in sorted(
+        correlations, key=lambda item: abs(item.correlation), reverse=True
+    ):
+        stats = (
+            f"r={correlation.correlation:.2f}, "
+            f"q={correlation.q_value:.3g}, N={correlation.sample_count}"
+        )
+        link = _build_correlation_link(dashboard_url, correlation)
+        link_html = (
+            f'<p><a href="{escape(link, quote=True)}">View scatterplot</a></p>'
+            if link
+            else ""
+        )
+        items.append(
+            "<li>"
+            f"<p>{escape(_describe_correlation(correlation))} "
+            f"<span>({escape(stats)})</span></p>"
+            f"{link_html}"
+            "</li>"
+        )
+    dashboard_html = (
+        f'<p><a href="{escape(dashboard_url, quote=True)}">Open dashboard</a></p>'
+        if dashboard_url
+        else ""
+    )
+    return (
+        "<!doctype html>"
+        '<html><body style="font-family:Arial,sans-serif;line-height:1.5;color:#202124">'
+        "<p>New meaningful correlations were found after the latest import:</p>"
+        f"<ul>{''.join(items)}</ul>"
+        f"{dashboard_html}"
+        "</body></html>"
     )
 
 
