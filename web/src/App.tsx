@@ -10,6 +10,8 @@ import { ScrollTrigger } from "gsap/ScrollTrigger";
 import clsx from "clsx";
 import {
   AlertCircle,
+  ChevronDown,
+  ChevronUp,
   CirclePlus,
   CircleHelp,
   Check,
@@ -297,8 +299,9 @@ const COVERAGE_META: Record<CoverageState, { label: string; tone: string }> = {
 };
 
 const DEFAULT_RANGE_PRESET = 7;
+const DAY_MINUTES = 24 * 60;
 const TIME_STEP_MINUTES = 15;
-const TIME_SLIDER_MINUTES = { min: 0, max: 23 * 60 + 45 };
+const TIME_SLIDER_MINUTES = { min: 0, max: DAY_MINUTES - TIME_STEP_MINUTES };
 const DEFAULT_DASHBOARD_PLOT_PREFERENCES: DashboardPlotPreference[] = [
   {
     id: "plot_1_metric_recoveryIndex",
@@ -844,6 +847,11 @@ function formatMinutesAsClock(minutes: number): string {
   const hours = Math.floor(bounded / 60);
   const remainingMinutes = bounded % 60;
   return `${String(hours).padStart(2, "0")}:${String(remainingMinutes).padStart(2, "0")}`;
+}
+
+function stepClockMinutes(minutes: number | null, direction: -1 | 1): number {
+  const current = minutes ?? TIME_SLIDER_MINUTES.min;
+  return (current + direction * TIME_STEP_MINUTES + DAY_MINUTES) % DAY_MINUTES;
 }
 
 function formatMinutesAsHours(minutes: number | null): string {
@@ -3182,6 +3190,9 @@ function App() {
         typeof value === "string" ? parseClockTimeToMinutes(value) : null;
       const sliderMinutes = parsedMinutes ?? TIME_SLIDER_MINUTES.min;
       const clockValue = parsedMinutes === null ? "--:--" : formatMinutesAsClock(parsedMinutes);
+      const stepTime = (direction: -1 | 1) => {
+        updateDraftAnswer(question.id, formatMinutesAsClock(stepClockMinutes(parsedMinutes, direction)));
+      };
       return (
         <div className="space-y-2">
           <input
@@ -3196,7 +3207,27 @@ function App() {
               updateDraftAnswer(question.id, formatMinutesAsClock(minutes));
             }}
           />
-          <div className="metric-number text-sm text-muted">{clockValue}</div>
+          <div className="flex items-center justify-between gap-3">
+            <div className="metric-number text-sm text-muted">{clockValue}</div>
+            <div className="flex gap-2">
+              <button
+                aria-label={`Move ${question.prompt} down ${TIME_STEP_MINUTES} minutes`}
+                className="focusable flex size-9 items-center justify-center rounded-2xl bg-subsurface text-muted transition hover:bg-surface-hover hover:text-ink"
+                type="button"
+                onClick={() => stepTime(-1)}
+              >
+                <ChevronDown className="size-4" aria-hidden="true" />
+              </button>
+              <button
+                aria-label={`Move ${question.prompt} up ${TIME_STEP_MINUTES} minutes`}
+                className="focusable flex size-9 items-center justify-center rounded-2xl bg-subsurface text-muted transition hover:bg-surface-hover hover:text-ink"
+                type="button"
+                onClick={() => stepTime(1)}
+              >
+                <ChevronUp className="size-4" aria-hidden="true" />
+              </button>
+            </div>
+          </div>
         </div>
       );
     }
