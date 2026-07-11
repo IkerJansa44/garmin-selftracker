@@ -133,6 +133,7 @@ import {
   type CheckInEntry,
   type CheckinReminderSettings,
   type AnalysisValueRecord,
+  type ChildCondition,
   type CoverageState,
   type ChildConditionOperator,
   type DailyRecord,
@@ -1170,7 +1171,6 @@ function migrateQuestionLibrary(questions: CheckInQuestion[]): CheckInQuestion[]
       if (nextQuestion.id === CAFFEINE_QUESTION_ID) {
         nextQuestion.prompt =
           nextQuestion.prompt === "Caffeine (count)" ? "Caffeine" : nextQuestion.prompt;
-        nextQuestion.inputLabel = nextQuestion.inputLabel ?? "Count";
         if (!nextQuestion.children?.length) {
           nextQuestion.children = [
             {
@@ -1190,7 +1190,6 @@ function migrateQuestionLibrary(questions: CheckInQuestion[]): CheckInQuestion[]
       if (nextQuestion.id === ALCOHOL_QUESTION_ID) {
         nextQuestion.prompt =
           nextQuestion.prompt === "Alcohol (count)" ? "Alcohol" : nextQuestion.prompt;
-        nextQuestion.inputLabel = nextQuestion.inputLabel ?? "Count";
         const migratedOptions = (nextQuestion.options ?? []).map((option) => {
           if (typeof option.score === "number") {
             return option;
@@ -1244,6 +1243,7 @@ function migrateQuestionLibrary(questions: CheckInQuestion[]): CheckInQuestion[]
         ];
       }
 
+      delete nextQuestion.inputLabel;
       return nextQuestion;
     });
 
@@ -1414,6 +1414,7 @@ function App() {
   const [isScrolled, setIsScrolled] = useState(false);
   const [questionLibrary, setQuestionLibrary] = useState<CheckInQuestion[]>(DEFAULT_QUESTIONS);
   const [selectedQuestionId, setSelectedQuestionId] = useState("");
+  const [customSectionOptions, setCustomSectionOptions] = useState<string[]>([]);
   const [questionLoadState, setQuestionLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [questionSyncError, setQuestionSyncError] = useState<string | null>(null);
   const [isSavingQuestions, setIsSavingQuestions] = useState(false);
@@ -2605,7 +2606,24 @@ function App() {
     [includedQuestions],
   );
   const editableSectionOptions = useMemo(
-    () => buildSectionList(questionLibrary),
+    () => {
+      const sections = buildSectionList(questionLibrary);
+      for (const section of customSectionOptions) {
+        if (!sections.includes(section)) {
+          sections.push(section);
+        }
+      }
+      return sections;
+    },
+    [customSectionOptions, questionLibrary],
+  );
+  const sectionUsageCounts = useMemo(
+    () =>
+      questionLibrary.reduce<Record<string, number>>((counts, question) => {
+        const section = normalizeSectionName(question.section);
+        counts[section] = (counts[section] ?? 0) + 1;
+        return counts;
+      }, {}),
     [questionLibrary],
   );
   const serializedQuestionLibrary = useMemo(
@@ -3008,6 +3026,9 @@ function App() {
     if (sourceSection === targetSection) {
       return;
     }
+    setCustomSectionOptions((previous) =>
+      previous.map((section) => (section === sourceSection ? targetSection : section)),
+    );
     setQuestionLibrary((previous) =>
       previous.map((question) =>
         normalizeSectionName(question.section) === sourceSection
@@ -3015,6 +3036,23 @@ function App() {
           : question,
       ),
     );
+  };
+
+  const addQuestionSection = (section: string) => {
+    const nextSection = normalizeSectionName(section);
+    setCustomSectionOptions((previous) =>
+      previous.includes(nextSection) || editableSectionOptions.includes(nextSection)
+        ? previous
+        : [...previous, nextSection],
+    );
+  };
+
+  const removeQuestionSectionOption = (section: string) => {
+    const nextSection = normalizeSectionName(section);
+    if ((sectionUsageCounts[nextSection] ?? 0) > 0) {
+      return;
+    }
+    setCustomSectionOptions((previous) => previous.filter((candidate) => candidate !== nextSection));
   };
 
   const removeQuestion = (questionId: string) => {
@@ -4252,11 +4290,6 @@ function App() {
                         {questions.map((question) => (
                           <div key={question.id} className="rounded-2xl bg-panel p-4 shadow-soft">
                             <p className="mb-1 text-sm font-medium">{question.prompt}</p>
-                            {question.inputLabel && (
-                              <p className="mb-3 text-xs uppercase tracking-[0.16em] text-muted">
-                                {question.inputLabel}
-                              </p>
-                            )}
                             {renderQuestionInput(question)}
                             {getVisibleChildren(question, draftAnswers).map((child) => (
                               <div key={child.id} className="mt-4 border-t border-[rgba(18,18,18,0.08)] pt-4">
@@ -4529,6 +4562,9 @@ function App() {
                                     || questionLoadState !== "ready"
                                   }
                                   isSaving={isSavingQuestions}
+                                  sectionUsageCounts={sectionUsageCounts}
+                                  onAddSection={addQuestionSection}
+                                  onRemoveSection={removeQuestionSectionOption}
                                   onRenameSection={renameQuestionSection}
                                   onSave={() => void handleSaveQuestions()}
                                   question={question}
@@ -4978,6 +5014,9 @@ function QuestionEditor({
   availableSections,
   isSaveDisabled,
   isSaving,
+  sectionUsageCounts,
+  onAddSection,
+  onRemoveSection,
   onRenameSection,
   onSave,
   question,
@@ -4987,6 +5026,9 @@ function QuestionEditor({
   availableSections: string[];
   isSaveDisabled: boolean;
   isSaving: boolean;
+  sectionUsageCounts: Record<string, number>;
+  onAddSection: (section: string) => void;
+  onRemoveSection: (section: string) => void;
   onRenameSection: (source: string, target: string) => void;
   onSave: () => void;
   question: CheckInQuestion;
@@ -4996,7 +5038,9 @@ function QuestionEditor({
   const children = question.children ?? [];
   const canAddChild = children.length < 3;
   const [showAnalysisHelp, setShowAnalysisHelp] = useState(false);
-  const [sectionEditorMode, setSectionEditorMode] = useState<"idle" | "add" | "rename">("idle");
+  const [activeConditionHelpChildId, setActiveConditionHelpChildId] = useState<string | null>(null);
+  const [isSectionEditorOpen, setIsSectionEditorOpen] = useState(false);
+  const [sectionEditorMode, setSectionEditorMode] = useState<"add" | "rename">("add");
   const [sectionEditorValue, setSectionEditorValue] = useState("");
   const inputTagClass = "text-[10px] uppercase tracking-[0.12em] text-muted";
   const normalizedSection = normalizeSectionName(question.section);
@@ -5005,16 +5049,18 @@ function QuestionEditor({
     : [...availableSections, normalizedSection];
 
   const closeSectionEditor = () => {
-    setSectionEditorMode("idle");
+    setIsSectionEditorOpen(false);
     setSectionEditorValue("");
   };
 
   const openAddSectionEditor = () => {
+    setIsSectionEditorOpen(true);
     setSectionEditorMode("add");
     setSectionEditorValue("");
   };
 
   const openRenameSectionEditor = () => {
+    setIsSectionEditorOpen(true);
     setSectionEditorMode("rename");
     setSectionEditorValue(normalizedSection);
   };
@@ -5022,11 +5068,20 @@ function QuestionEditor({
   const submitSectionEditor = () => {
     const nextSection = normalizeSectionName(sectionEditorValue);
     if (sectionEditorMode === "add") {
+      onAddSection(nextSection);
       onPatch({ section: nextSection });
     }
     if (sectionEditorMode === "rename") {
       onRenameSection(normalizedSection, nextSection);
     }
+    closeSectionEditor();
+  };
+
+  const removeCurrentSection = () => {
+    if ((sectionUsageCounts[normalizedSection] ?? 0) > 0) {
+      return;
+    }
+    onRemoveSection(normalizedSection);
     closeSectionEditor();
   };
 
@@ -5077,18 +5132,29 @@ function QuestionEditor({
     });
   };
 
+  const buildDefaultChildCondition = (): ChildCondition => {
+    if (question.inputType === "slider") {
+      return { operator: "greater_than", value: question.min ?? 0 };
+    }
+    if (question.inputType === "boolean") {
+      return { operator: "equals", value: true };
+    }
+    if (question.inputType === "multi-choice") {
+      return { operator: "equals", value: question.options?.[0]?.id ?? "" };
+    }
+    return { operator: "non_empty" };
+  };
+
   const addChild = () => {
     if (!canAddChild) {
       return;
     }
     const nextChild: CheckInQuestionChild = {
       id: `${question.id}_child_${Date.now()}`,
-      prompt: "Conditional follow-up",
+      prompt: "Follow-up question",
       inputType: "text",
       analysisMode: question.analysisMode,
-      condition: {
-        operator: "non_empty",
-      },
+      condition: buildDefaultChildCondition(),
     };
     onPatch({ children: [...children, nextChild] });
   };
@@ -5159,7 +5225,7 @@ function QuestionEditor({
       return (
         <div className="space-y-2">
           {options.map((option, index) => (
-            <div key={`${field.id}_${index}`} className="grid gap-2 sm:grid-cols-[1fr_1fr_120px_auto]">
+            <div key={`${field.id}_${index}`} className="grid gap-2 sm:grid-cols-[1fr_120px_auto]">
               <div className="space-y-1">
                 <p className={inputTagClass}>Option label</p>
                 <input
@@ -5171,23 +5237,6 @@ function QuestionEditor({
                       options: options.map((candidate, candidateIndex) =>
                         candidateIndex === index
                           ? { ...candidate, label: event.target.value }
-                          : candidate,
-                      ),
-                    })
-                  }
-                />
-              </div>
-              <div className="space-y-1">
-                <p className={inputTagClass}>Option value id</p>
-                <input
-                  className="focusable min-h-11 rounded-2xl bg-panel px-3"
-                  placeholder="Value id"
-                  value={option.id}
-                  onChange={(event) =>
-                    onFieldPatch({
-                      options: options.map((candidate, candidateIndex) =>
-                        candidateIndex === index
-                          ? { ...candidate, id: event.target.value }
                           : candidate,
                       ),
                     })
@@ -5267,31 +5316,36 @@ function QuestionEditor({
             onChange={(event) => onPatch({ prompt: event.target.value })}
           />
         </div>
-        <div className="space-y-1">
-          <p className={inputTagClass}>Input helper label (optional)</p>
-          <input
-            className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
-            placeholder="Input label (optional, e.g. Count)"
-            value={question.inputLabel ?? ""}
-            onChange={(event) =>
-              onPatch({ inputLabel: event.target.value.trim() ? event.target.value : undefined })
-            }
-          />
-        </div>
         <div className="grid gap-2 sm:grid-cols-2">
-          <div className="space-y-1">
+          <div className="relative space-y-1">
             <p className={inputTagClass}>Section</p>
-            <select
-              className="focusable min-h-11 w-full rounded-2xl bg-panel px-3 sm:w-56"
-              value={normalizedSection}
-              onChange={(event) => onPatch({ section: event.target.value })}
-            >
-              {sectionOptions.map((section) => (
-                <option key={section} value={section}>
-                  {section}
-                </option>
-              ))}
-            </select>
+            <div className="flex w-full gap-2 sm:w-72">
+              <select
+                className="focusable min-h-11 min-w-0 flex-1 rounded-2xl bg-panel px-3"
+                value={normalizedSection}
+                onChange={(event) => onPatch({ section: event.target.value })}
+              >
+                {sectionOptions.map((section) => (
+                  <option key={section} value={section}>
+                    {section}
+                  </option>
+                ))}
+              </select>
+              <button
+                aria-label="Edit section options"
+                className="focusable grid min-h-11 w-11 place-items-center rounded-2xl bg-panel text-muted transition hover:text-ink"
+                type="button"
+                onClick={() => {
+                  if (isSectionEditorOpen) {
+                    closeSectionEditor();
+                    return;
+                  }
+                  openAddSectionEditor();
+                }}
+              >
+                <Pencil className="size-4" />
+              </button>
+            </div>
           </div>
           <div className="space-y-1">
             <p className={inputTagClass}>Input type</p>
@@ -5315,24 +5369,38 @@ function QuestionEditor({
             </select>
           </div>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <button
-            className="focusable min-h-11 w-full rounded-capsule bg-panel px-3 text-xs sm:w-56"
-            type="button"
-            onClick={openAddSectionEditor}
-          >
-            Add section option
-          </button>
-          <button
-            className="focusable min-h-11 w-full rounded-capsule bg-panel px-3 text-xs sm:w-56"
-            type="button"
-            onClick={openRenameSectionEditor}
-          >
-            Rename section option
-          </button>
-        </div>
-        {sectionEditorMode !== "idle" && (
+        {isSectionEditorOpen && (
           <div className="rounded-2xl bg-panel p-3">
+            <div className="mb-3 flex flex-wrap gap-2">
+              <button
+                className={clsx(
+                  "focusable min-h-10 rounded-capsule px-3 text-xs",
+                  sectionEditorMode === "add" ? "bg-accent text-white" : "bg-subsurface",
+                )}
+                type="button"
+                onClick={openAddSectionEditor}
+              >
+                Add
+              </button>
+              <button
+                className={clsx(
+                  "focusable min-h-10 rounded-capsule px-3 text-xs",
+                  sectionEditorMode === "rename" ? "bg-accent text-white" : "bg-subsurface",
+                )}
+                type="button"
+                onClick={openRenameSectionEditor}
+              >
+                Rename current
+              </button>
+              <button
+                className="focusable min-h-10 rounded-capsule bg-[color-mix(in_srgb,var(--error)_16%,white)] px-3 text-xs text-error disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={(sectionUsageCounts[normalizedSection] ?? 0) > 0}
+                type="button"
+                onClick={removeCurrentSection}
+              >
+                Delete current
+              </button>
+            </div>
             <p className={inputTagClass}>
               {sectionEditorMode === "add" ? "New section option" : "Rename section option"}
             </p>
@@ -5366,6 +5434,11 @@ function QuestionEditor({
                 Cancel
               </button>
             </div>
+            {(sectionUsageCounts[normalizedSection] ?? 0) > 0 && (
+              <p className="mt-2 text-xs text-muted">
+                Delete is available only for empty sections.
+              </p>
+            )}
           </div>
         )}
         <div className="space-y-2">
@@ -5373,33 +5446,29 @@ function QuestionEditor({
             <p className="text-xs uppercase tracking-[0.14em] text-muted">Analysis mode</p>
             <div
               className="relative"
-              onMouseEnter={() => setShowAnalysisHelp(true)}
-              onMouseLeave={() => setShowAnalysisHelp(false)}
             >
               <button
                 aria-label="Analysis mode help"
                 className="focusable rounded-capsule bg-panel p-1 text-muted transition hover:text-ink"
                 type="button"
-                onBlur={() => setShowAnalysisHelp(false)}
                 onClick={() => setShowAnalysisHelp((previous) => !previous)}
-                onFocus={() => setShowAnalysisHelp(true)}
               >
                 <CircleHelp className="size-4" />
               </button>
-              {showAnalysisHelp && (
-                <div className="pointer-events-none absolute left-0 top-8 z-20 w-72 rounded-2xl bg-panel p-3 text-xs text-muted shadow-soft">
-                  <p>
-                    <strong>Predictor to next day:</strong> behavior on day D aligned to outcomes
-                    on day D+1.
-                  </p>
-                  <p className="mt-2">
-                    <strong>Target to same day:</strong> outcome or subjective state recorded for
-                    day D itself.
-                  </p>
-                </div>
-              )}
             </div>
           </div>
+          {showAnalysisHelp && (
+            <div className="w-full max-w-sm rounded-2xl bg-panel p-3 text-xs text-muted shadow-soft">
+              <p>
+                <strong>Predictor to next day:</strong> behavior on day D aligned to outcomes
+                on day D+1.
+              </p>
+              <p className="mt-2">
+                <strong>Target to same day:</strong> outcome or subjective state recorded for
+                day D itself.
+              </p>
+            </div>
+          )}
           <select
             className="focusable min-h-11 rounded-2xl bg-panel px-3"
             value={question.analysisMode}
@@ -5420,18 +5489,18 @@ function QuestionEditor({
 
         <div className="rounded-2xl bg-panel p-3">
           <div className="mb-3 flex items-center justify-between">
-            <p className="text-xs uppercase tracking-[0.14em] text-muted">Conditional fields</p>
+            <p className="text-xs uppercase tracking-[0.14em] text-muted">Follow-up questions</p>
             <button
               className="focusable min-h-11 rounded-capsule bg-subsurface px-4 text-xs disabled:cursor-not-allowed disabled:opacity-55"
               disabled={!canAddChild}
               type="button"
               onClick={addChild}
             >
-              Add child
+              Add follow-up
             </button>
           </div>
           <p className="mb-3 text-xs text-muted">
-            Show up to 3 child fields. Conditions evaluate only against the parent answer.
+            Show up to 3 follow-up questions when this question is answered a certain way.
           </p>
           <div className="space-y-3">
             {children.map((child) => {
@@ -5439,6 +5508,8 @@ function QuestionEditor({
                 (entry) => entry.value === child.condition.operator,
               );
               const conditionNeedsValue = operatorMeta?.requiresValue ?? false;
+              const isEqualityCondition =
+                child.condition.operator === "equals" || child.condition.operator === "not_equals";
               return (
                 <div key={child.id} className="rounded-2xl bg-subsurface p-3">
                   <div className="mb-2 flex justify-end">
@@ -5447,31 +5518,22 @@ function QuestionEditor({
                       type="button"
                       onClick={() => removeChild(child.id)}
                     >
-                      Remove child
+                      Remove follow-up
                     </button>
                   </div>
                   <div className="space-y-2">
                     <div className="space-y-1">
-                      <p className={inputTagClass}>Child prompt</p>
+                      <p className={inputTagClass}>Follow-up prompt</p>
                       <input
                         className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
-                        placeholder="Child prompt"
+                        placeholder="Follow-up prompt"
                         value={child.prompt}
                         onChange={(event) => patchChild(child.id, { prompt: event.target.value })}
                       />
                     </div>
-                    <div className="space-y-1">
-                      <p className={inputTagClass}>Child id</p>
-                      <input
-                        className="focusable min-h-11 w-full rounded-2xl bg-panel px-3 font-mono text-xs"
-                        placeholder="Child id"
-                        value={child.id}
-                        onChange={(event) => patchChild(child.id, { id: event.target.value })}
-                      />
-                    </div>
                     <div className="grid gap-2 sm:grid-cols-2">
                       <div className="space-y-1">
-                        <p className={inputTagClass}>Child input type</p>
+                        <p className={inputTagClass}>Follow-up input type</p>
                         <select
                           className="focusable min-h-11 rounded-2xl bg-panel px-3"
                           value={child.inputType}
@@ -5493,7 +5555,7 @@ function QuestionEditor({
                         </select>
                       </div>
                       <div className="space-y-1">
-                        <p className={inputTagClass}>Child analysis mode</p>
+                        <p className={inputTagClass}>Follow-up analysis mode</p>
                         <select
                           className="focusable min-h-11 rounded-2xl bg-panel px-3"
                           value={child.analysisMode}
@@ -5514,7 +5576,25 @@ function QuestionEditor({
                     })}
                     <div className="grid gap-2 sm:grid-cols-[220px_1fr]">
                       <div className="space-y-1">
-                        <p className={inputTagClass}>Condition operator</p>
+                        <div className="flex items-center gap-2">
+                          <p className={inputTagClass}>Condition operator</p>
+                          <div
+                            className="relative"
+                          >
+                            <button
+                              aria-label="Condition operator help"
+                              className="focusable rounded-capsule bg-panel p-1 text-muted transition hover:text-ink"
+                              type="button"
+                              onClick={() =>
+                                setActiveConditionHelpChildId((previous) =>
+                                  previous === child.id ? null : child.id,
+                                )
+                              }
+                            >
+                              <CircleHelp className="size-4" />
+                            </button>
+                          </div>
+                        </div>
                         <select
                           className="focusable min-h-11 rounded-2xl bg-panel px-3"
                           value={child.condition.operator}
@@ -5531,10 +5611,72 @@ function QuestionEditor({
                             </option>
                           ))}
                         </select>
+                        {activeConditionHelpChildId === child.id && (
+                          <div className="w-full max-w-sm rounded-2xl bg-panel p-3 text-xs text-muted shadow-soft">
+                            <p>
+                              Controls when this follow-up question appears, based on the parent
+                              answer.
+                            </p>
+                            <p className="mt-2">
+                              <strong>equals:</strong> show when the answer exactly matches the
+                              value.
+                            </p>
+                            <p className="mt-1">
+                              <strong>not equals:</strong> show when the answer is anything except
+                              the value.
+                            </p>
+                            <p className="mt-1">
+                              <strong>greater than:</strong> show when the numeric answer is above
+                              the value.
+                            </p>
+                            <p className="mt-1">
+                              <strong>at least:</strong> show when the numeric answer is equal to
+                              or above the value.
+                            </p>
+                            <p className="mt-1">
+                              <strong>non-empty:</strong> show after any answer is entered.
+                            </p>
+                          </div>
+                        )}
                       </div>
                       <div className="space-y-1">
                         <p className={inputTagClass}>Condition value</p>
-                        {conditionNeedsValue ? (
+                        {conditionNeedsValue && question.inputType === "multi-choice" && isEqualityCondition ? (
+                          <select
+                            className="focusable min-h-11 rounded-2xl bg-panel px-3"
+                            value={String(child.condition.value ?? "")}
+                            onChange={(event) =>
+                              patchChild(child.id, {
+                                condition: {
+                                  ...child.condition,
+                                  value: event.target.value,
+                                },
+                              })
+                            }
+                          >
+                            {(question.options ?? []).map((option) => (
+                              <option key={option.id} value={option.id}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        ) : conditionNeedsValue && question.inputType === "boolean" && isEqualityCondition ? (
+                          <select
+                            className="focusable min-h-11 rounded-2xl bg-panel px-3"
+                            value={String(child.condition.value ?? true)}
+                            onChange={(event) =>
+                              patchChild(child.id, {
+                                condition: {
+                                  ...child.condition,
+                                  value: event.target.value === "true",
+                                },
+                              })
+                            }
+                          >
+                            <option value="true">Yes</option>
+                            <option value="false">No</option>
+                          </select>
+                        ) : conditionNeedsValue ? (
                           <input
                             className="focusable min-h-11 rounded-2xl bg-panel px-3"
                             placeholder="Condition value"
@@ -5572,7 +5714,7 @@ function QuestionEditor({
             })}
             {!children.length && (
               <p className="rounded-2xl bg-subsurface px-3 py-2 text-xs text-muted">
-                No child fields configured.
+                No follow-up questions configured.
               </p>
             )}
           </div>

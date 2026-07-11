@@ -114,7 +114,6 @@ export const DEFAULT_QUESTIONS: CheckInQuestion[] = [
     id: "caffeine_count",
     section: "Nutrition & Substances",
     prompt: "Caffeine",
-    inputLabel: "Count",
     inputType: "slider",
     analysisMode: "predictor_next_day",
     min: 0,
@@ -138,7 +137,6 @@ export const DEFAULT_QUESTIONS: CheckInQuestion[] = [
     id: "alcohol_units",
     section: "Nutrition & Substances",
     prompt: "Alcohol",
-    inputLabel: "Count",
     inputType: "multi-choice",
     analysisMode: "predictor_next_day",
     options: [
