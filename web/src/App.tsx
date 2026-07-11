@@ -74,6 +74,7 @@ import {
   parseClockTimeToMinutes,
   timeToSleepGapMinutes,
 } from "./lib/time";
+import { buildImportProgressDisplay } from "./lib/importProgress";
 import { getZone2PlusMinutes } from "./lib/heartRateZones";
 import {
   aggregateDashboardPlotPoints,
@@ -518,37 +519,6 @@ function arePlotPreferencesEqual(
     && value.reduceMethod === b[index]?.reduceMethod
     && value.chartStyle === b[index]?.chartStyle
   );
-}
-
-function parseImportProgressMessage(message: string): {
-  completedDays: number;
-  totalDays: number;
-  etaLabel: string | null;
-} | null {
-  const segments = message
-    .split("·")
-    .map((segment) => segment.trim())
-    .filter(Boolean);
-  const progressSegment = segments.find((segment) => /\d+\s*\/\s*\d+\s*days/i.test(segment));
-  if (!progressSegment) {
-    return null;
-  }
-
-  const progressMatch = progressSegment.match(/(\d+)\s*\/\s*(\d+)\s*days/i);
-  if (!progressMatch) {
-    return null;
-  }
-
-  const completedDays = Number(progressMatch[1]);
-  const totalDays = Number(progressMatch[2]);
-  if (!Number.isFinite(completedDays) || !Number.isFinite(totalDays) || totalDays <= 0) {
-    return null;
-  }
-
-  const lastSegment = segments[segments.length - 1] ?? "";
-  const etaLabel = lastSegment === progressSegment ? null : lastSegment;
-
-  return { completedDays, totalDays, etaLabel };
 }
 
 function normalizeRangePreset(raw: unknown, fallback: number): number {
@@ -2722,24 +2692,10 @@ function App() {
     ? `${formatReadableDate(importSummary.lastImportAt.slice(0, 10))} ${formatTime(importSummary.lastImportAt)}`
     : "No completed import yet";
   const maxImportDate = formatIsoDateLocal(new Date());
-  const runningImportProgress = useMemo(
-    () =>
-      importSummary.state === "running"
-        ? parseImportProgressMessage(importSummary.message)
-        : null,
-    [importSummary.message, importSummary.state],
+  const runningImportDisplay = useMemo(
+    () => buildImportProgressDisplay(importSummary, activeImportRange),
+    [activeImportRange, importSummary],
   );
-  const runningImportProgressPercent = runningImportProgress
-    ? Math.max(
-        0,
-        Math.min(
-          100,
-          Math.round((runningImportProgress.completedDays / runningImportProgress.totalDays) * 100),
-        ),
-      )
-    : 0;
-  const runningImportEtaLabel = runningImportProgress?.etaLabel ?? "calculating...";
-  const runningImportRange = activeImportRange;
 
   const validateImportRange = (fromDate: string, toDate: string): string | null => {
     const fromParsed = parseIsoDate(fromDate);
@@ -3263,16 +3219,13 @@ function App() {
               />
               <div className="max-w-none whitespace-normal sm:max-w-[320px] sm:shrink-0">
                 <p className="text-xs uppercase tracking-[0.14em] text-muted">Import</p>
-                {importSummary.state === "running" && runningImportProgress && runningImportRange ? (
+                {runningImportDisplay ? (
                   <>
-                    <p className="text-sm font-semibold leading-snug">
-                      Importing from {runningImportRange.fromDate} to {runningImportRange.toDate} ETA{" "}
-                      {runningImportEtaLabel}
-                    </p>
+                    <p className="text-sm font-semibold leading-snug">{runningImportDisplay.title}</p>
                     <div className="mt-2 h-2.5 w-full overflow-hidden rounded-capsule bg-subsurface">
                       <div
                         className="h-full rounded-capsule bg-[color-mix(in_srgb,var(--warning)_76%,white)] transition-[width] duration-500"
-                        style={{ width: `${runningImportProgressPercent}%` }}
+                        style={{ width: `${runningImportDisplay.percent}%` }}
                       />
                     </div>
                   </>
