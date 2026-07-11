@@ -148,6 +148,14 @@ gsap.registerPlugin(ScrollTrigger);
 
 type ViewKey = "dashboard" | "lab" | "checkin" | "settings";
 type MetricDirection = "higher" | "lower";
+type AnswerValue = string | number | boolean;
+type BackfillRangePreset = "none" | "all" | "7" | "14" | "30" | "custom";
+type QuestionBackfillRequest = {
+  questionId: string;
+  fromDate: string;
+  toDate: string;
+  value: AnswerValue;
+};
 type TopCorrelationMode = "target" | "predictor";
 const DEFAULT_TOP_CORRELATION_OUTCOME: OutcomeKey = "metric:restingHr";
 const VIEW_KEYS = new Set<ViewKey>(["dashboard", "lab", "checkin", "settings"]);
@@ -1021,6 +1029,57 @@ function formatIsoDateLocal(value: Date): string {
   return `${year}-${month}-${day}`;
 }
 
+function addIsoDateDays(value: string, days: number): string | null {
+  const parsed = parseIsoDate(value);
+  if (!parsed) {
+    return null;
+  }
+  parsed.setDate(parsed.getDate() + days);
+  return formatIsoDateLocal(parsed);
+}
+
+function buildIsoDateRange(fromDate: string, toDate: string): string[] {
+  const days = rangeDaysInclusive(fromDate, toDate);
+  if (!days || days < 1) {
+    return [];
+  }
+  return Array.from({ length: days }, (_, index) => addIsoDateDays(fromDate, index)).filter(
+    (date): date is string => Boolean(date),
+  );
+}
+
+function defaultAnswerForQuestion(question: Pick<CheckInQuestion, "inputType" | "min" | "options">): AnswerValue {
+  if (question.inputType === "slider") {
+    return question.min ?? 0;
+  }
+  if (question.inputType === "boolean") {
+    return false;
+  }
+  if (question.inputType === "multi-choice") {
+    return question.options?.[0]?.id ?? "";
+  }
+  return "";
+}
+
+function isValidQuestionAnswer(
+  question: Pick<CheckInQuestion, "inputType" | "options">,
+  value: AnswerValue,
+): boolean {
+  if (question.inputType === "boolean") {
+    return typeof value === "boolean";
+  }
+  if (question.inputType === "slider") {
+    return typeof value === "number" && Number.isFinite(value);
+  }
+  if (question.inputType === "multi-choice") {
+    return typeof value === "string" && (question.options ?? []).some((option) => option.id === value);
+  }
+  if (question.inputType === "time") {
+    return typeof value === "string" && parseClockTimeToMinutes(value) !== null;
+  }
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 function parseThresholdCutPointsInput(rawValue: string): number[] {
   const values = rawValue
     .split(",")
@@ -1108,6 +1167,16 @@ function formatIsoDateWeekday(value: string): string | null {
     return null;
   }
   return parsed.toLocaleDateString(undefined, { weekday: "long" });
+}
+
+function formatShortNumericDate(value: string): string {
+  const parsed = parseIsoDate(value);
+  if (!parsed) {
+    return value;
+  }
+  const day = String(parsed.getDate()).padStart(2, "0");
+  const month = String(parsed.getMonth() + 1).padStart(2, "0");
+  return `${day}/${month}/${parsed.getFullYear()}`;
 }
 
 function rangeDaysInclusive(fromDate: string, toDate: string): number | null {
@@ -1445,6 +1514,7 @@ function App() {
   const [isLoadingCheckins, setIsLoadingCheckins] = useState(false);
   const [selectedCheckinDate, setSelectedCheckinDate] = useState(() => formatIsoDateLocal(new Date()));
   const [checkinSaveMessage, setCheckinSaveMessage] = useState<string | null>(null);
+  const [questionBackfillMessage, setQuestionBackfillMessage] = useState<string | null>(null);
   const [importSummary, setImportSummary] = useState<{
     state: ImportState;
     lastImportAt: string | null;
@@ -2630,6 +2700,14 @@ function App() {
     () => JSON.stringify(questionLibrary),
     [questionLibrary],
   );
+  const savedQuestionIds = useMemo(() => {
+    try {
+      const savedQuestions = JSON.parse(lastSavedQuestionsRef.current) as CheckInQuestion[];
+      return new Set(savedQuestions.map((question) => question.id));
+    } catch {
+      return new Set<string>();
+    }
+  }, [questionLibrary]);
   const isQuestionDirty =
     questionLoadState === "ready" && serializedQuestionLibrary !== lastSavedQuestionsRef.current;
   const selectedCheckinRecord = useMemo(
@@ -2720,6 +2798,11 @@ function App() {
     ? `${formatReadableDate(importSummary.lastImportAt.slice(0, 10))} ${formatTime(importSummary.lastImportAt)}`
     : "No completed import yet";
   const maxImportDate = formatIsoDateLocal(new Date());
+  const firstTrackedDate = allRecords[0]?.date ?? null;
+  const yesterdayDate = addIsoDateDays(maxImportDate, -1);
+  const maxBackfillDate = [allRecords.at(-1)?.date, yesterdayDate]
+    .filter((date): date is string => Boolean(date))
+    .sort()[0] ?? null;
   const runningImportDisplay = useMemo(
     () => buildImportProgressDisplay(importSummary, activeImportRange),
     [activeImportRange, importSummary],
@@ -3078,17 +3161,46 @@ function App() {
     });
   };
 
-  const handleSaveQuestions = async () => {
+  const applyQuestionBackfill = async (request: QuestionBackfillRequest): Promise<number> => {
+    const dates = buildIsoDateRange(request.fromDate, request.toDate);
+    const existingEntries = await fetchCheckIns(request.fromDate, request.toDate);
+    const existingEntriesByDate = Object.fromEntries(
+      existingEntries.entries.map((entry) => [entry.date, entry]),
+    );
+    let savedCount = 0;
+    const nextEntriesByDate = { ...checkinEntriesByDate };
+
+    for (const date of dates) {
+      const existingAnswers = existingEntriesByDate[date]?.answers ?? {};
+      const payload = await saveCheckIn(date, {
+        ...existingAnswers,
+        [request.questionId]: request.value,
+      });
+      nextEntriesByDate[payload.entry.date] = payload.entry;
+      savedCount += 1;
+    }
+
+    setCheckinEntriesByDate(nextEntriesByDate);
+    return savedCount;
+  };
+
+  const handleSaveQuestions = async (backfillRequest?: QuestionBackfillRequest | null) => {
     if (!isQuestionDirty || isSavingQuestions) {
       return;
     }
     setIsSavingQuestions(true);
     setQuestionSyncError(null);
+    setQuestionBackfillMessage(null);
     try {
       const payload = await saveQuestionSettings(questionLibrary);
       const nextQuestions = migrateQuestionLibrary(payload.questions);
       setQuestionLibrary(nextQuestions);
       lastSavedQuestionsRef.current = JSON.stringify(nextQuestions);
+      if (backfillRequest) {
+        const savedCount = await applyQuestionBackfill(backfillRequest);
+        await loadCorrelationValues();
+        setQuestionBackfillMessage(`Backfilled ${savedCount} previous days.`);
+      }
     } catch (error) {
       const message =
         error instanceof Error
@@ -3116,135 +3228,21 @@ function App() {
     [questionLibrary, setDraftAnswers],
   );
 
-  const renderQuestionInput = (question: CheckInQuestion | CheckInQuestionChild) => {
-    const value = draftAnswers[question.id];
-
-    if (question.inputType === "slider") {
-      return (
-        <div className="space-y-2">
-          <input
-            className="focusable h-11 w-full cursor-pointer accent-accent"
-            min={question.min ?? 0}
-            max={question.max ?? 10}
-            step={question.step ?? 1}
-            type="range"
-            value={typeof value === "number" ? value : question.min ?? 0}
-            onChange={(event) => updateDraftAnswer(question.id, Number(event.target.value))}
-          />
-          <div className="metric-number text-sm text-muted">{String(value ?? question.min ?? 0)}</div>
-        </div>
-      );
-    }
-
-    if (question.inputType === "multi-choice") {
-      return (
-        <div className="flex flex-wrap gap-2">
-          {(question.options ?? []).map((option) => {
-            const selected = value === option.id;
-            return (
-              <button
-                key={option.id}
-                className={clsx(
-                  "focusable min-h-11 rounded-capsule px-4 py-2 text-sm shadow-soft transition",
-                  selected ? "bg-accent text-white" : "bg-subsurface text-ink",
-                )}
-                type="button"
-                onClick={() => updateDraftAnswer(question.id, option.id)}
-              >
-                {option.label}
-              </button>
-            );
-          })}
-        </div>
-      );
-    }
-
-    if (question.inputType === "boolean") {
-      return (
-        <div className="flex gap-3">
-          {[true, false].map((candidate) => (
-            <button
-              key={String(candidate)}
-              className={clsx(
-                "focusable min-h-11 rounded-capsule px-5 py-2 text-sm shadow-soft transition",
-                value === candidate ? "bg-accent text-white" : "bg-subsurface text-ink",
-              )}
-              type="button"
-              onClick={() => {
-                if (value === candidate) {
-                  setDraftAnswers((previous) => {
-                    const nextAnswers = { ...previous };
-                    delete nextAnswers[question.id];
-                    return pruneHiddenChildAnswers(questionLibrary, nextAnswers);
-                  });
-                  return;
-                }
-                updateDraftAnswer(question.id, candidate);
-              }}
-            >
-              {candidate ? "Yes" : "No"}
-            </button>
-          ))}
-        </div>
-      );
-    }
-
-    if (question.inputType === "time") {
-      const parsedMinutes =
-        typeof value === "string" ? parseClockTimeToMinutes(value) : null;
-      const sliderMinutes = parsedMinutes ?? TIME_SLIDER_MINUTES.min;
-      const clockValue = parsedMinutes === null ? "--:--" : formatMinutesAsClock(parsedMinutes);
-      const stepTime = (direction: -1 | 1) => {
-        updateDraftAnswer(question.id, formatMinutesAsClock(stepClockMinutes(parsedMinutes, direction)));
-      };
-      return (
-        <div className="space-y-2">
-          <input
-            className="focusable h-11 w-full cursor-pointer accent-accent"
-            min={TIME_SLIDER_MINUTES.min}
-            max={TIME_SLIDER_MINUTES.max}
-            step={TIME_STEP_MINUTES}
-            type="range"
-            value={sliderMinutes}
-            onChange={(event) => {
-              const minutes = Number(event.target.value);
-              updateDraftAnswer(question.id, formatMinutesAsClock(minutes));
-            }}
-          />
-          <div className="flex items-center justify-between gap-3">
-            <div className="metric-number text-sm text-muted">{clockValue}</div>
-            <div className="flex gap-2">
-              <button
-                aria-label={`Move ${question.prompt} down ${TIME_STEP_MINUTES} minutes`}
-                className="focusable flex size-9 items-center justify-center rounded-2xl bg-subsurface text-muted transition hover:bg-surface-hover hover:text-ink"
-                type="button"
-                onClick={() => stepTime(-1)}
-              >
-                <ChevronDown className="size-4" aria-hidden="true" />
-              </button>
-              <button
-                aria-label={`Move ${question.prompt} up ${TIME_STEP_MINUTES} minutes`}
-                className="focusable flex size-9 items-center justify-center rounded-2xl bg-subsurface text-muted transition hover:bg-surface-hover hover:text-ink"
-                type="button"
-                onClick={() => stepTime(1)}
-              >
-                <ChevronUp className="size-4" aria-hidden="true" />
-              </button>
-            </div>
-          </div>
-        </div>
-      );
-    }
-
-    return (
-      <textarea
-        className="focusable min-h-24 w-full rounded-2xl bg-subsurface p-3"
-        placeholder="Optional note"
-        value={typeof value === "string" ? value : ""}
-        onChange={(event) => updateDraftAnswer(question.id, event.target.value)}
-      />
-    );
-  };
+  const renderQuestionInput = (question: CheckInQuestion | CheckInQuestionChild) => (
+    <QuestionAnswerInput
+      panelClassName="bg-subsurface"
+      question={question}
+      value={draftAnswers[question.id]}
+      onChange={(nextValue) => updateDraftAnswer(question.id, nextValue)}
+      onClear={() =>
+        setDraftAnswers((previous) => {
+          const nextAnswers = { ...previous };
+          delete nextAnswers[question.id];
+          return pruneHiddenChildAnswers(questionLibrary, nextAnswers);
+        })
+      }
+    />
+  );
 
   return (
     <div ref={appRef} className="min-h-screen px-4 pb-10 pt-4 text-ink sm:px-6 sm:pt-32 lg:px-9">
@@ -4521,6 +4519,9 @@ function App() {
                               ? "Unsaved changes. Click save to update SQLite."
                             : "Synced with SQLite."}
                     </p>
+                    {questionBackfillMessage && (
+                      <p className="mt-1 text-sm text-success">{questionBackfillMessage}</p>
+                    )}
                   </div>
                   <button
                     className="focusable min-h-11 rounded-capsule bg-accent px-4 text-sm font-semibold text-white shadow-soft transition"
@@ -4556,17 +4557,22 @@ function App() {
                               <div ref={selectedQuestionEditorRef}>
                                 <QuestionEditor
                                   availableSections={editableSectionOptions}
+                                  firstTrackedDate={firstTrackedDate}
                                   isSaveDisabled={
                                     !isQuestionDirty
                                     || isSavingQuestions
                                     || questionLoadState !== "ready"
                                   }
                                   isSaving={isSavingQuestions}
+                                  isNewQuestion={!savedQuestionIds.has(question.id)}
+                                  maxBackfillDate={maxBackfillDate}
                                   sectionUsageCounts={sectionUsageCounts}
                                   onAddSection={addQuestionSection}
                                   onRemoveSection={removeQuestionSectionOption}
                                   onRenameSection={renameQuestionSection}
-                                  onSave={() => void handleSaveQuestions()}
+                                  onSave={(backfillRequest) =>
+                                    void handleSaveQuestions(backfillRequest)
+                                  }
                                   question={question}
                                   onDelete={() => removeQuestion(question.id)}
                                   onPatch={(patch) => updateQuestion(question.id, patch)}
@@ -5010,10 +5016,151 @@ const CONDITION_OPERATOR_META: Array<{
   { value: "non_empty", label: "non-empty", requiresValue: false },
 ];
 
+function QuestionAnswerInput({
+  panelClassName,
+  question,
+  value,
+  onChange,
+  onClear,
+}: {
+  panelClassName: string;
+  question: CheckInQuestion | CheckInQuestionChild;
+  value: AnswerValue | undefined;
+  onChange: (value: AnswerValue) => void;
+  onClear?: () => void;
+}) {
+  if (question.inputType === "slider") {
+    return (
+      <div className="space-y-2">
+        <input
+          className="focusable h-11 w-full cursor-pointer accent-accent"
+          min={question.min ?? 0}
+          max={question.max ?? 10}
+          step={question.step ?? 1}
+          type="range"
+          value={typeof value === "number" ? value : question.min ?? 0}
+          onChange={(event) => onChange(Number(event.target.value))}
+        />
+        <div className="metric-number text-sm text-muted">{String(value ?? question.min ?? 0)}</div>
+      </div>
+    );
+  }
+
+  if (question.inputType === "multi-choice") {
+    return (
+      <div className="flex flex-wrap gap-2">
+        {(question.options ?? []).map((option) => {
+          const selected = value === option.id;
+          return (
+            <button
+              key={option.id}
+              className={clsx(
+                "focusable min-h-11 rounded-capsule px-4 py-2 text-sm shadow-soft transition",
+                selected ? "bg-accent text-white" : `${panelClassName} text-ink`,
+              )}
+              type="button"
+              onClick={() => onChange(option.id)}
+            >
+              {option.label}
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
+
+  if (question.inputType === "boolean") {
+    return (
+      <div className="flex gap-3">
+        {[true, false].map((candidate) => (
+          <button
+            key={String(candidate)}
+            className={clsx(
+              "focusable min-h-11 rounded-capsule px-5 py-2 text-sm shadow-soft transition",
+              value === candidate ? "bg-accent text-white" : `${panelClassName} text-ink`,
+            )}
+            type="button"
+            onClick={() => {
+              if (value === candidate && onClear) {
+                onClear();
+                return;
+              }
+              onChange(candidate);
+            }}
+          >
+            {candidate ? "Yes" : "No"}
+          </button>
+        ))}
+      </div>
+    );
+  }
+
+  if (question.inputType === "time") {
+    const parsedMinutes = typeof value === "string" ? parseClockTimeToMinutes(value) : null;
+    const sliderMinutes = parsedMinutes ?? TIME_SLIDER_MINUTES.min;
+    const clockValue = parsedMinutes === null ? "--:--" : formatMinutesAsClock(parsedMinutes);
+    const stepTime = (direction: -1 | 1) => {
+      onChange(formatMinutesAsClock(stepClockMinutes(parsedMinutes, direction)));
+    };
+    return (
+      <div className="space-y-2">
+        <input
+          className="focusable h-11 w-full cursor-pointer accent-accent"
+          min={TIME_SLIDER_MINUTES.min}
+          max={TIME_SLIDER_MINUTES.max}
+          step={TIME_STEP_MINUTES}
+          type="range"
+          value={sliderMinutes}
+          onChange={(event) => onChange(formatMinutesAsClock(Number(event.target.value)))}
+        />
+        <div className="flex items-center justify-between gap-3">
+          <div className="metric-number text-sm text-muted">{clockValue}</div>
+          <div className="flex gap-2">
+            <button
+              aria-label={`Move ${question.prompt} down ${TIME_STEP_MINUTES} minutes`}
+              className={clsx(
+                "focusable flex size-9 items-center justify-center rounded-2xl text-muted transition hover:bg-surface-hover hover:text-ink",
+                panelClassName,
+              )}
+              type="button"
+              onClick={() => stepTime(-1)}
+            >
+              <ChevronDown className="size-4" aria-hidden="true" />
+            </button>
+            <button
+              aria-label={`Move ${question.prompt} up ${TIME_STEP_MINUTES} minutes`}
+              className={clsx(
+                "focusable flex size-9 items-center justify-center rounded-2xl text-muted transition hover:bg-surface-hover hover:text-ink",
+                panelClassName,
+              )}
+              type="button"
+              onClick={() => stepTime(1)}
+            >
+              <ChevronUp className="size-4" aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <textarea
+      className={clsx("focusable min-h-24 w-full rounded-2xl p-3", panelClassName)}
+      placeholder="Optional note"
+      value={typeof value === "string" ? value : ""}
+      onChange={(event) => onChange(event.target.value)}
+    />
+  );
+}
+
 function QuestionEditor({
   availableSections,
+  firstTrackedDate,
   isSaveDisabled,
   isSaving,
+  isNewQuestion,
+  maxBackfillDate,
   sectionUsageCounts,
   onAddSection,
   onRemoveSection,
@@ -5024,13 +5171,16 @@ function QuestionEditor({
   onDelete,
 }: {
   availableSections: string[];
+  firstTrackedDate: string | null;
   isSaveDisabled: boolean;
   isSaving: boolean;
+  isNewQuestion: boolean;
+  maxBackfillDate: string | null;
   sectionUsageCounts: Record<string, number>;
   onAddSection: (section: string) => void;
   onRemoveSection: (section: string) => void;
   onRenameSection: (source: string, target: string) => void;
-  onSave: () => void;
+  onSave: (backfillRequest?: QuestionBackfillRequest | null) => void;
   question: CheckInQuestion;
   onPatch: (patch: Partial<CheckInQuestion>) => void;
   onDelete: () => void;
@@ -5038,15 +5188,88 @@ function QuestionEditor({
   const children = question.children ?? [];
   const canAddChild = children.length < 3;
   const [showAnalysisHelp, setShowAnalysisHelp] = useState(false);
+  const [showBackfillHelp, setShowBackfillHelp] = useState(false);
   const [activeConditionHelpChildId, setActiveConditionHelpChildId] = useState<string | null>(null);
   const [isSectionEditorOpen, setIsSectionEditorOpen] = useState(false);
   const [sectionEditorMode, setSectionEditorMode] = useState<"add" | "rename">("add");
   const [sectionEditorValue, setSectionEditorValue] = useState("");
+  const [isBackfillActive, setIsBackfillActive] = useState(false);
+  const [backfillAnswer, setBackfillAnswer] = useState<AnswerValue>(() =>
+    defaultAnswerForQuestion(question),
+  );
+  const [backfillRange, setBackfillRange] = useState<BackfillRangePreset>("all");
+  const [customBackfillFromDate, setCustomBackfillFromDate] = useState(firstTrackedDate ?? "");
+  const [customBackfillToDate, setCustomBackfillToDate] = useState(maxBackfillDate ?? "");
   const inputTagClass = "text-[10px] uppercase tracking-[0.12em] text-muted";
   const normalizedSection = normalizeSectionName(question.section);
   const sectionOptions = availableSections.includes(normalizedSection)
     ? availableSections
     : [...availableSections, normalizedSection];
+  const hasBackfillWindow =
+    Boolean(firstTrackedDate && maxBackfillDate && firstTrackedDate <= maxBackfillDate);
+
+  useEffect(() => {
+    setBackfillAnswer(defaultAnswerForQuestion(question));
+    setIsBackfillActive(false);
+    setShowBackfillHelp(false);
+  }, [question.id, question.inputType]);
+
+  useEffect(() => {
+    if (firstTrackedDate) {
+      setCustomBackfillFromDate(firstTrackedDate);
+    }
+  }, [firstTrackedDate]);
+
+  useEffect(() => {
+    if (maxBackfillDate) {
+      setCustomBackfillToDate(maxBackfillDate);
+    }
+  }, [maxBackfillDate]);
+
+  const resolveBackfillDates = (): Pick<QuestionBackfillRequest, "fromDate" | "toDate"> | null => {
+    if (!hasBackfillWindow || !firstTrackedDate || !maxBackfillDate || backfillRange === "none") {
+      return null;
+    }
+    if (backfillRange === "all") {
+      return { fromDate: firstTrackedDate, toDate: maxBackfillDate };
+    }
+    if (backfillRange === "custom") {
+      if (!parseIsoDate(customBackfillFromDate) || !parseIsoDate(customBackfillToDate)) {
+        return null;
+      }
+      if (customBackfillFromDate < firstTrackedDate || customBackfillToDate > maxBackfillDate) {
+        return null;
+      }
+      return customBackfillFromDate <= customBackfillToDate
+        ? { fromDate: customBackfillFromDate, toDate: customBackfillToDate }
+        : null;
+    }
+
+    const start = addIsoDateDays(maxBackfillDate, -(Number(backfillRange) - 1));
+    if (!start) {
+      return null;
+    }
+    return { fromDate: start < firstTrackedDate ? firstTrackedDate : start, toDate: maxBackfillDate };
+  };
+
+  const resolvedBackfillDates = resolveBackfillDates();
+  const backfillDays = resolvedBackfillDates
+    ? rangeDaysInclusive(resolvedBackfillDates.fromDate, resolvedBackfillDates.toDate)
+    : null;
+  const isBackfillEnabled =
+    isNewQuestion && isBackfillActive && hasBackfillWindow && backfillRange !== "none";
+  const isBackfillInvalid =
+    isBackfillEnabled && (!resolvedBackfillDates || !isValidQuestionAnswer(question, backfillAnswer));
+  const buildBackfillRequest = (): QuestionBackfillRequest | null => {
+    if (!isBackfillEnabled || !resolvedBackfillDates || isBackfillInvalid) {
+      return null;
+    }
+    return {
+      questionId: question.id,
+      value: backfillAnswer,
+      ...resolvedBackfillDates,
+    };
+  };
 
   const closeSectionEditor = () => {
     setIsSectionEditorOpen(false);
@@ -5487,6 +5710,111 @@ function QuestionEditor({
           onFieldPatch: (patch) => onPatch(patch as Partial<CheckInQuestion>),
         })}
 
+        {isNewQuestion && (
+          <div className="rounded-2xl bg-panel p-3">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <label className="flex min-w-0 items-center gap-3 text-sm font-semibold">
+                <input
+                  className="size-4 accent-accent"
+                  type="checkbox"
+                  checked={isBackfillActive}
+                  onChange={(event) => setIsBackfillActive(event.target.checked)}
+                />
+                <span>Answer previous days</span>
+              </label>
+              <button
+                aria-label="Answer previous days help"
+                className="focusable rounded-capsule bg-subsurface p-1 text-muted transition hover:text-ink"
+                type="button"
+                onClick={() => setShowBackfillHelp((previous) => !previous)}
+              >
+                <CircleHelp className="size-4" />
+              </button>
+            </div>
+            {showBackfillHelp && (
+              <div className="mb-3 w-full max-w-sm rounded-2xl bg-subsurface p-3 text-xs text-muted shadow-soft">
+                Applies one answer to past days when saving this new question. Useful when
+                starting a new habit and you already know the answer was "No" before today.
+              </div>
+            )}
+            {isBackfillActive && !hasBackfillWindow ? (
+              <p className="rounded-2xl bg-subsurface px-3 py-2 text-xs text-muted">
+                Previous-day answers are available after at least one earlier tracked day exists.
+              </p>
+            ) : isBackfillActive ? (
+              <div className="max-w-2xl space-y-3">
+                <div className="grid gap-2 sm:grid-cols-[220px_minmax(0,320px)]">
+                  <div className="space-y-1">
+                    <p className={inputTagClass}>Range</p>
+                    <select
+                      className="focusable min-h-11 w-full rounded-2xl bg-subsurface px-3"
+                      value={backfillRange}
+                      onChange={(event) => setBackfillRange(event.target.value as BackfillRangePreset)}
+                    >
+                      <option value="all">
+                        From the start ({formatShortNumericDate(firstTrackedDate ?? "")})
+                      </option>
+                      <option value="30">Last 30 days</option>
+                      <option value="14">Last 14 days</option>
+                      <option value="7">Last 7 days</option>
+                      <option value="custom">Custom range</option>
+                      <option value="none">Do not backfill</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <p className={inputTagClass}>Answer</p>
+                    {backfillRange === "none" ? (
+                      <p className="flex min-h-11 items-center rounded-2xl bg-subsurface px-3 text-xs text-muted">
+                        No previous days will be changed.
+                      </p>
+                    ) : (
+                      <QuestionAnswerInput
+                        panelClassName="bg-subsurface"
+                        question={question}
+                        value={backfillAnswer}
+                        onChange={setBackfillAnswer}
+                      />
+                    )}
+                  </div>
+                </div>
+                {backfillRange === "custom" && (
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <div className="space-y-1">
+                      <p className={inputTagClass}>From</p>
+                      <input
+                        className="focusable min-h-11 w-full rounded-2xl bg-subsurface px-3"
+                        max={customBackfillToDate || maxBackfillDate || undefined}
+                        min={firstTrackedDate ?? undefined}
+                        type="date"
+                        value={customBackfillFromDate}
+                        onChange={(event) => setCustomBackfillFromDate(event.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <p className={inputTagClass}>To</p>
+                      <input
+                        className="focusable min-h-11 w-full rounded-2xl bg-subsurface px-3"
+                        max={maxBackfillDate ?? undefined}
+                        min={customBackfillFromDate || firstTrackedDate || undefined}
+                        type="date"
+                        value={customBackfillToDate}
+                        onChange={(event) => setCustomBackfillToDate(event.target.value)}
+                      />
+                    </div>
+                  </div>
+                )}
+                {backfillRange !== "none" && (
+                  <p className={clsx("text-xs", isBackfillInvalid ? "text-error" : "text-muted")}>
+                    {isBackfillInvalid
+                      ? "Choose a valid range and answer before saving."
+                      : `Will apply to ${backfillDays} previous day${backfillDays === 1 ? "" : "s"}.`}
+                  </p>
+                )}
+              </div>
+            ) : null}
+          </div>
+        )}
+
         <div className="rounded-2xl bg-panel p-3">
           <div className="mb-3 flex items-center justify-between">
             <p className="text-xs uppercase tracking-[0.14em] text-muted">Follow-up questions</p>
@@ -5723,9 +6051,9 @@ function QuestionEditor({
       <div className="mt-3 flex justify-end gap-2">
         <button
           className="focusable min-h-11 rounded-capsule bg-panel px-4 text-sm font-semibold shadow-soft transition disabled:cursor-not-allowed disabled:opacity-60"
-          disabled={isSaveDisabled}
+          disabled={isSaveDisabled || isBackfillInvalid}
           type="button"
-          onClick={onSave}
+          onClick={() => onSave(buildBackfillRequest())}
         >
           {isSaving ? "Saving..." : "Save"}
         </button>
