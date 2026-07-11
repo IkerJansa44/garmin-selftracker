@@ -15,6 +15,19 @@ interface ImportStatusSummary {
   errorDetail: string | null;
 }
 
+export interface CorrelationNotification {
+  id: string;
+  key: string;
+  predictor: string;
+  outcome: string;
+  predictorLabel: string;
+  outcomeLabel: string;
+  sampleCount: number;
+  correlation: number;
+  qValue: number;
+  createdAt: string;
+}
+
 interface DashboardMeta {
   source: string;
   days: number;
@@ -24,6 +37,9 @@ interface DashboardMeta {
 export interface DashboardApiResponse {
   records: DailyRecord[];
   importStatus: ImportStatusSummary;
+  notifications?: {
+    correlations?: CorrelationNotification[];
+  };
   meta: DashboardMeta;
   hrZoneBounds: number[] | null;
 }
@@ -233,6 +249,22 @@ export async function saveCheckIn(
     throw await readApiError(response, `Saving check-in failed: ${response.status}`);
   }
   return (await response.json()) as CheckInSaveApiResponse;
+}
+
+export async function dismissCorrelationNotifications(
+  ids: string[],
+  signal?: AbortSignal,
+): Promise<{ correlations: CorrelationNotification[] }> {
+  const response = await fetch("/api/notifications/correlations", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+    signal,
+  });
+  if (!response.ok) {
+    throw await readApiError(response, `Dismissing notifications failed: ${response.status}`);
+  }
+  return (await response.json()) as { correlations: CorrelationNotification[] };
 }
 
 export async function fetchCheckinReminderSettings(

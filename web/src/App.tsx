@@ -115,6 +115,7 @@ import {
   fetchDashboardPlotSettings,
   fetchDerivedPredictors,
   fetchQuestionSettings,
+  dismissCorrelationNotifications,
   saveCheckIn,
   saveCheckinReminderSettings,
   saveDashboardPlotSettings,
@@ -123,6 +124,7 @@ import {
   startDateRangeImport,
   startRefreshImport,
   type PlotAggregation,
+  type CorrelationNotification,
   type PlotDirection,
   type PlotReduceMethod,
 } from "./lib/api";
@@ -1447,6 +1449,10 @@ function describeCorrelationDirection(pair: CorrelationPairResult): string {
   return `Higher ${pair.predictorLabel} is associated with ${pair.direction} ${pair.outcomeLabel}.`;
 }
 
+function formatCorrelationStat(value: number): string {
+  return Number.isFinite(value) ? value.toFixed(2) : "--";
+}
+
 function App() {
   const appRef = useRef<HTMLDivElement | null>(null);
   const heroRef = useRef<HTMLDivElement | null>(null);
@@ -1528,6 +1534,7 @@ function App() {
   });
   const [dataStatus, setDataStatus] = useState<"loading" | "ready" | "error">("loading");
   const [dataError, setDataError] = useState<string | null>(null);
+  const [correlationNotifications, setCorrelationNotifications] = useState<CorrelationNotification[]>([]);
   const [predictorKey, setPredictorKey] = useState<PredictorKey>(readUrlPredictorKey);
   const [outcomeKey, setOutcomeKey] = useState<OutcomeKey>(readUrlOutcomeKey);
   const [topCorrelationMode, setTopCorrelationMode] = useState<TopCorrelationMode>("target");
@@ -1648,6 +1655,7 @@ function App() {
         const payload = await fetchDashboardData(365, signal);
         setAllRecords(payload.records);
         setImportSummary(payload.importStatus);
+        setCorrelationNotifications(payload.notifications?.correlations ?? []);
         setHrZoneBounds(payload.hrZoneBounds ?? null);
         setDataStatus("ready");
       } catch (error) {
@@ -3244,8 +3252,77 @@ function App() {
     />
   );
 
+  const dismissCorrelationNotificationIds = useCallback(async (ids: string[]) => {
+    setCorrelationNotifications((current) =>
+      current.filter((notification) => !ids.includes(notification.id)),
+    );
+    try {
+      const payload = await dismissCorrelationNotifications(ids);
+      setCorrelationNotifications(payload.correlations);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to dismiss notification.";
+      setImportFeedback(message);
+      await loadDashboardData({ setLoading: false });
+    }
+  }, [loadDashboardData]);
+
+  const openCorrelationNotification = useCallback((notification: CorrelationNotification) => {
+    setPredictorKey(notification.predictor as PredictorKey);
+    setOutcomeKey(notification.outcome as OutcomeKey);
+    setActiveView("lab");
+    void dismissCorrelationNotificationIds([notification.id]);
+  }, [dismissCorrelationNotificationIds]);
+
   return (
     <div ref={appRef} className="min-h-screen px-4 pb-10 pt-4 text-ink sm:px-6 sm:pt-32 lg:px-9">
+      {correlationNotifications.length > 0 && (
+        <div className="fixed right-3 top-4 z-[65] flex w-[min(50vw,420px)] flex-col gap-2 sm:right-4 sm:top-24 sm:gap-3">
+          {correlationNotifications.map((notification) => (
+            <div
+              key={notification.id}
+              className="rounded-[18px] border border-[rgba(18,18,18,0.08)] bg-panel p-3 shadow-soft sm:rounded-[22px] sm:p-4"
+              role="status"
+            >
+              <div className="flex items-start gap-3">
+                <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-success" aria-hidden="true" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold tracking-tight">New meaningful correlation</p>
+                  <p className="mt-1 text-sm text-muted">
+                    {notification.predictorLabel} vs {notification.outcomeLabel}
+                  </p>
+                  <p className="metric-number mt-2 text-xs text-muted">
+                    r={formatCorrelationStat(notification.correlation)} · q={notification.qValue.toExponential(2)} · N={notification.sampleCount}
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      className="focusable rounded-capsule bg-accent px-3 py-1.5 text-xs font-semibold text-white"
+                      onClick={() => openCorrelationNotification(notification)}
+                    >
+                      Open
+                    </button>
+                    <button
+                      type="button"
+                      className="focusable rounded-capsule bg-subsurface px-3 py-1.5 text-xs font-semibold text-muted"
+                      onClick={() => void dismissCorrelationNotificationIds([notification.id])}
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="focusable rounded-full p-1 text-muted transition hover:bg-subsurface"
+                  aria-label="Dismiss correlation notification"
+                  onClick={() => void dismissCorrelationNotificationIds([notification.id])}
+                >
+                  <X className="h-4 w-4" aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
       <header
         className={clsx(
           "z-50 mb-6 rounded-[32px] bg-[rgba(255,255,255,0.78)] p-3 shadow-soft transition sm:fixed sm:inset-x-3 sm:top-4 sm:mb-0 lg:inset-x-7",

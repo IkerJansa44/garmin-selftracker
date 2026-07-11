@@ -114,10 +114,13 @@ def notify_new_meaningful_correlations(
         _save_notified_keys(settings.db_path, current_keys)
         return []
 
-    _send_correlation_email(settings, new_correlations)
+    try:
+        _send_correlation_email(settings, new_correlations)
+    except Exception:
+        logger.exception("Failed to send meaningful correlation email")
     _save_notified_keys(settings.db_path, current_keys)
     logger.info(
-        "Sent %d new meaningful correlation notifications", len(new_correlations)
+        "Recorded %d new meaningful correlation notifications", len(new_correlations)
     )
     return new_correlations
 

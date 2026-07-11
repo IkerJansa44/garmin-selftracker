@@ -12,8 +12,10 @@ from src.api import (
     ApiSettings,
     ImportJobManager,
     ImportRequest,
+    _append_correlation_notifications,
     _as_clock_time,
     _build_settings,
+    _dismiss_correlation_notifications,
     _load_derived_predictors_payload,
     _load_checkin_reminder_settings_payload,
     _import_status_message,
@@ -31,6 +33,7 @@ from src.api import (
     _save_checkin_reminder_settings_payload,
     _save_dashboard_plots_payload,
 )
+from src.correlation_notifications import MeaningfulCorrelation
 from src.config import Settings
 from src.sync import SyncResult
 from src.db import connect_db, init_db
@@ -905,6 +908,52 @@ def test_import_job_manager_notifies_after_successful_import(
     )
 
     assert calls == [(str(db_path), {"existing"})]
+
+
+def test_correlation_notifications_are_stored_and_dismissed(tmp_path: Path) -> None:
+    db_path = tmp_path / "garmin.db"
+    correlations = [
+        MeaningfulCorrelation(
+            key="garmin:steps__metric:restingHr",
+            predictor="garmin:steps",
+            outcome="metric:restingHr",
+            predictor_label="Steps",
+            outcome_label="Resting HR",
+            sample_count=31,
+            correlation=0.42,
+            p_value=0.01,
+            q_value=0.02,
+        ),
+        MeaningfulCorrelation(
+            key="garmin:sleepSeconds__metric:sleepScore",
+            predictor="garmin:sleepSeconds",
+            outcome="metric:sleepScore",
+            predictor_label="Sleep Duration",
+            outcome_label="Sleep Score",
+            sample_count=45,
+            correlation=0.51,
+            p_value=0.002,
+            q_value=0.01,
+        ),
+    ]
+
+    stored = _append_correlation_notifications(str(db_path), correlations)
+    assert [notification["id"] for notification in stored] == [
+        "garmin:steps__metric:restingHr",
+        "garmin:sleepSeconds__metric:sleepScore",
+    ]
+
+    payload = _load_dashboard_payload(str(db_path), 7)
+    assert len(payload["notifications"]["correlations"]) == 2
+
+    remaining = _dismiss_correlation_notifications(
+        str(db_path),
+        ["garmin:steps__metric:restingHr"],
+    )
+
+    assert [notification["id"] for notification in remaining] == [
+        "garmin:sleepSeconds__metric:sleepScore"
+    ]
 
 
 def test_load_correlation_values_payload_uses_materialized_analysis_values(
