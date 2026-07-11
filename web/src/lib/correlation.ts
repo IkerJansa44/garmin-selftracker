@@ -704,7 +704,7 @@ export function buildDerivedPredictorSourceOptions(questions: CheckInQuestion[])
     .filter((question) => question.inputType === "slider" || question.inputType === "time")
     .map((question) => ({
       key: `question:${question.id}`,
-      label: `${question.prompt} (prev day)`,
+      label: question.prompt,
     }));
   return [...garminOptions, ...questionOptions];
 }
@@ -726,7 +726,7 @@ export function buildPredictorOptions(
     .filter((question) => question.inputType !== "text")
     .map((question) => ({
       key: `question:${question.id}`,
-      label: `${question.prompt} (prev day)`,
+      label: question.prompt,
     }));
   const derivedOptions = derivedPredictors.map((definition) => ({
     key: `derived:${definition.id}`,
