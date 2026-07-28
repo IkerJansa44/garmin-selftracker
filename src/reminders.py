@@ -8,6 +8,7 @@ import threading
 from dataclasses import dataclass
 from datetime import date, datetime
 from email.message import EmailMessage
+from email.utils import make_msgid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -17,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 CHECKIN_REMINDER_SETTINGS_KEY = "checkin_email_reminder"
 CHECKIN_REMINDER_LAST_SENT_KEY = "checkin_email_reminder_last_sent"
+CHECKIN_REMINDER_THREAD_KEY = "checkin_email_reminder_thread"
+MAX_MESSAGES_PER_THREAD = 100
 DEFAULT_NOTIFY_AFTER = "22:30"
 DEFAULT_CHECKIN_REMINDER_SETTINGS = {
     "enabled": True,
@@ -106,6 +109,28 @@ class ReminderServiceSettings:
     dashboard_url: str
 
 
+@dataclass(frozen=True)
+class ReminderThreadState:
+    root_message_id: str
+    message_count: int
+
+
+def parse_reminder_thread_state(payload: Any) -> ReminderThreadState | None:
+    if not isinstance(payload, dict):
+        return None
+    root_message_id = payload.get("rootMessageId")
+    message_count = payload.get("messageCount")
+    if not isinstance(root_message_id, str) or not root_message_id.strip():
+        return None
+    if (
+        not isinstance(message_count, int)
+        or isinstance(message_count, bool)
+        or message_count < 1
+    ):
+        return None
+    return ReminderThreadState(root_message_id.strip(), message_count)
+
+
 def build_checkin_reminder_email_body(current_hour: str, dashboard_url: str) -> str:
     dashboard_line = f"\n\nDashboard: {dashboard_url}" if dashboard_url else ""
     template = CHECKIN_REMINDER_EMAIL_TEMPLATE_PATH.read_text(encoding="utf-8")
@@ -168,6 +193,7 @@ class CheckinReminderService:
         connection = connect_db(self._settings.db_path)
         try:
             init_db(connection)
+            connection.execute("BEGIN IMMEDIATE")
             raw_settings = get_setting_json(connection, CHECKIN_REMINDER_SETTINGS_KEY)
             reminder_settings = normalize_checkin_reminder_settings(raw_settings)
             if reminder_settings is None:
@@ -188,11 +214,14 @@ class CheckinReminderService:
                 return
 
             try:
-                self._send_email(
+                thread_state = self._send_email(
                     now_local.strftime("%H:%M"),
                     str(reminder_settings["emailBody"])
                     if "emailBody" in reminder_settings
                     else None,
+                    parse_reminder_thread_state(
+                        get_setting_json(connection, CHECKIN_REMINDER_THREAD_KEY)
+                    ),
                 )
             except Exception:
                 logger.exception(
@@ -200,6 +229,15 @@ class CheckinReminderService:
                 )
                 return
 
+            if thread_state is not None:
+                upsert_setting_json(
+                    connection,
+                    CHECKIN_REMINDER_THREAD_KEY,
+                    {
+                        "rootMessageId": thread_state.root_message_id,
+                        "messageCount": thread_state.message_count,
+                    },
+                )
             upsert_setting_json(
                 connection, CHECKIN_REMINDER_LAST_SENT_KEY, current_date
             )
@@ -234,10 +272,15 @@ class CheckinReminderService:
             self._smtp_missing_warning_emitted = True
         return False
 
-    def _send_email(self, current_hour: str, email_body: str | None = None) -> None:
+    def _send_email(
+        self,
+        current_hour: str,
+        email_body: str | None,
+        thread_state: ReminderThreadState | None,
+    ) -> ReminderThreadState | None:
         if self._send_email_fn is not None:
             self._send_email_fn(current_hour)
-            return
+            return None
 
         if not self._settings.smtp_host:
             raise RuntimeError("SMTP_HOST is not configured")
@@ -252,6 +295,19 @@ class CheckinReminderService:
         message["Subject"] = "Fes el Check-In de Garmin"
         message["From"] = self._settings.smtp_user
         message["To"] = self._settings.recipient_email
+        message_id = make_msgid()
+        message["Message-ID"] = message_id
+        if thread_state is not None and (
+            thread_state.message_count < MAX_MESSAGES_PER_THREAD
+        ):
+            message["In-Reply-To"] = thread_state.root_message_id
+            message["References"] = thread_state.root_message_id
+            next_thread_state = ReminderThreadState(
+                thread_state.root_message_id,
+                thread_state.message_count + 1,
+            )
+        else:
+            next_thread_state = ReminderThreadState(message_id, 1)
         message.set_content(
             email_body
             or build_checkin_reminder_email_body(
@@ -268,3 +324,4 @@ class CheckinReminderService:
             smtp_client.starttls()
             smtp_client.login(self._settings.smtp_user, self._settings.smtp_pass)
             smtp_client.send_message(message)
+        return next_thread_state

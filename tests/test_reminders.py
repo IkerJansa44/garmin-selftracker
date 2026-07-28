@@ -18,12 +18,42 @@ from src.db import (
 from src.reminders import (
     CHECKIN_REMINDER_LAST_SENT_KEY,
     CHECKIN_REMINDER_SETTINGS_KEY,
+    CHECKIN_REMINDER_THREAD_KEY,
+    MAX_MESSAGES_PER_THREAD,
     CheckinReminderService,
     ReminderServiceSettings,
     build_checkin_reminder_email_body,
 )
 
 TEST_DASHBOARD_URL = "http://dashboard.test"
+
+
+def _record_smtp_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[EmailMessage]:
+    sent_messages: list[EmailMessage] = []
+
+    class FakeSmtp:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def __enter__(self) -> "FakeSmtp":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            pass
+
+        def starttls(self) -> None:
+            pass
+
+        def login(self, _: str, __: str) -> None:
+            pass
+
+        def send_message(self, message: EmailMessage) -> None:
+            sent_messages.append(message)
+
+    monkeypatch.setattr("src.reminders.smtplib.SMTP", FakeSmtp)
+    return sent_messages
 
 
 def _build_service(
@@ -243,28 +273,7 @@ def test_custom_email_body_is_sent(
     finally:
         connection.close()
 
-    sent_messages: list[EmailMessage] = []
-
-    class FakeSmtp:
-        def __init__(self, **_: object) -> None:
-            pass
-
-        def __enter__(self) -> "FakeSmtp":
-            return self
-
-        def __exit__(self, *_: object) -> None:
-            pass
-
-        def starttls(self) -> None:
-            pass
-
-        def login(self, _: str, __: str) -> None:
-            pass
-
-        def send_message(self, message: EmailMessage) -> None:
-            sent_messages.append(message)
-
-    monkeypatch.setattr("src.reminders.smtplib.SMTP", FakeSmtp)
+    sent_messages = _record_smtp_messages(monkeypatch)
     service = _build_service(
         db_path,
         now_fn=lambda: datetime(2026, 2, 21, 22, 45),
@@ -275,6 +284,84 @@ def test_custom_email_body_is_sent(
 
     assert len(sent_messages) == 1
     assert sent_messages[0].get_content() == "Custom reminder body\n"
+
+
+def test_reminder_emails_persist_and_reuse_thread_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "garmin.db"
+    sent_messages = _record_smtp_messages(monkeypatch)
+    current_times = iter([datetime(2026, 2, 21, 22, 45), datetime(2026, 2, 22, 22, 45)])
+    service = _build_service(
+        db_path,
+        now_fn=lambda: next(current_times),
+        send_email_fn=None,
+    )
+
+    service.run_once()
+    service.run_once()
+
+    root_message_id = sent_messages[0]["Message-ID"]
+    assert root_message_id
+    assert sent_messages[0]["In-Reply-To"] is None
+    assert sent_messages[0]["References"] is None
+    assert sent_messages[1]["Message-ID"] != root_message_id
+    assert sent_messages[1]["In-Reply-To"] == root_message_id
+    assert sent_messages[1]["References"] == root_message_id
+
+    connection = connect_db(str(db_path))
+    try:
+        thread_state = get_setting_json(connection, CHECKIN_REMINDER_THREAD_KEY)
+        assert thread_state == {
+            "rootMessageId": root_message_id,
+            "messageCount": 2,
+        }
+    finally:
+        connection.close()
+
+
+def test_reminder_email_starts_new_thread_after_gmail_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "garmin.db"
+    connection = connect_db(str(db_path))
+    try:
+        init_db(connection)
+        upsert_setting_json(
+            connection,
+            CHECKIN_REMINDER_THREAD_KEY,
+            {
+                "rootMessageId": "<previous-root@example.com>",
+                "messageCount": MAX_MESSAGES_PER_THREAD,
+            },
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    sent_messages = _record_smtp_messages(monkeypatch)
+    service = _build_service(
+        db_path,
+        now_fn=lambda: datetime(2026, 2, 21, 22, 45),
+        send_email_fn=None,
+    )
+
+    service.run_once()
+
+    new_root_message_id = sent_messages[0]["Message-ID"]
+    assert new_root_message_id != "<previous-root@example.com>"
+    assert sent_messages[0]["In-Reply-To"] is None
+    assert sent_messages[0]["References"] is None
+
+    connection = connect_db(str(db_path))
+    try:
+        thread_state = get_setting_json(connection, CHECKIN_REMINDER_THREAD_KEY)
+        assert thread_state == {
+            "rootMessageId": new_root_message_id,
+            "messageCount": 1,
+        }
+    finally:
+        connection.close()
 
 
 def test_build_checkin_reminder_email_body_includes_dashboard_url() -> None:
