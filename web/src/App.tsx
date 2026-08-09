@@ -46,7 +46,7 @@ import { SleepWindowChart } from "./components/SleepWindowChart";
 import { QuestionAnswerInput } from "./components/QuestionAnswerInput";
 import { CheckinFeature, useCheckinFeature } from "./features/checkin/CheckinFeature";
 import { CheckinReminderSettings } from "./features/checkin/CheckinReminderSettings";
-import { PushNotificationSettings } from "./features/checkin/PushNotificationSettings";
+import { NotificationSettings } from "./features/checkin/NotificationSettings";
 import { CorrelationFeature } from "./features/correlation/CorrelationFeature";
 import { useCorrelationFeature } from "./features/correlation/useCorrelationFeature";
 import {
@@ -2457,7 +2457,7 @@ function App() {
         {activeView === "settings" && (
           <section className="panel gsap-fade p-6 sm:p-8">
             <div className="space-y-5">
-              <PushNotificationSettings />
+              <NotificationSettings />
               <CheckinReminderSettings />
 
               <article className="rounded-[24px] bg-subsurface p-5">

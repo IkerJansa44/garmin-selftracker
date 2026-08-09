@@ -109,12 +109,14 @@ The dashboard includes a web app manifest, Home Screen icons, and a service work
 1. Open its HTTPS address in Safari on the iPhone.
 2. Tap **Share**, then **Add to Home Screen**.
 3. Launch Selftracker from its new Home Screen icon.
-4. Open **Settings → Push Notifications** and tap **Enable push notifications**.
+4. Open **Settings → Notifications** and select **iPhone**.
 5. Tap **Allow** in the iOS notification prompt.
 
 If Selftracker was already installed before PWA support was added, remove that Home Screen copy and add it again so iOS picks up the manifest and icon. The service worker caches the application shell for resilient startup, but Garmin data and mutations still require access to the API.
 
-The API provides the Web Push subscription lifecycle through `GET /api/push/public-key`, `POST /api/push/subscriptions`, and `DELETE /api/push/subscriptions`. Subscription endpoints and encryption keys are stored in SQLite and are never returned by the API.
+Under **Settings → Notifications**, Email and iPhone delivery can be enabled independently or together. Both missed check-in reminders and newly discovered meaningful correlations use these preferences. Selecting iPhone creates the device subscription and requests permission immediately when needed.
+
+The API provides notification preferences through `GET` and `PUT /api/notification-preferences`, plus the Web Push subscription lifecycle through `GET /api/push/public-key`, `POST /api/push/subscriptions`, and `DELETE /api/push/subscriptions`. Subscription endpoints and encryption keys are stored in SQLite and are never returned by the API. The VAPID private key is used only by the server to deliver encrypted notifications.
 
 ## Development checks
 

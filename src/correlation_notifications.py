@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from email.message import EmailMessage
 from html import escape
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from src.db import (
@@ -17,6 +17,12 @@ from src.db import (
     init_db,
     rebuild_analysis_values,
     upsert_setting_json,
+)
+from src.notifications import (
+    PushNotification,
+    WebPushSettings,
+    load_notification_preferences,
+    send_web_push,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,6 +70,9 @@ class CorrelationEmailSettings:
     smtp_pass: str
     recipient_email: str
     dashboard_url: str
+    web_push_vapid_private_key: str = ""
+    web_push_vapid_subject: str = ""
+    send_push_fn: Callable[[PushNotification], int] | None = None
 
 
 @dataclass(frozen=True)
@@ -114,10 +123,17 @@ def notify_new_meaningful_correlations(
         _save_notified_keys(settings.db_path, current_keys)
         return []
 
-    try:
-        _send_correlation_email(settings, new_correlations)
-    except Exception:
-        logger.exception("Failed to send meaningful correlation email")
+    preferences = load_notification_preferences(settings.db_path)
+    if preferences["email"]:
+        try:
+            _send_correlation_email(settings, new_correlations)
+        except Exception:
+            logger.exception("Failed to send meaningful correlation email")
+    if preferences["iphone"]:
+        try:
+            _send_correlation_push(settings, new_correlations)
+        except Exception:
+            logger.exception("Failed to send meaningful correlation push notification")
     _save_notified_keys(settings.db_path, current_keys)
     logger.info(
         "Recorded %d new meaningful correlation notifications", len(new_correlations)
@@ -496,6 +512,36 @@ def _send_correlation_email(
         smtp_client.starttls()
         smtp_client.login(settings.smtp_user, settings.smtp_pass)
         smtp_client.send_message(message)
+
+
+def _send_correlation_push(
+    settings: CorrelationEmailSettings,
+    correlations: list[MeaningfulCorrelation],
+) -> int:
+    strongest = max(correlations, key=lambda item: abs(item.correlation))
+    body = (
+        _describe_correlation(strongest)
+        if len(correlations) == 1
+        else f"{len(correlations)} new meaningful correlations were found."
+    )
+    notification = PushNotification(
+        title="New meaningful Garmin correlation",
+        body=body,
+        url=_build_correlation_link(settings.dashboard_url, strongest)
+        or settings.dashboard_url
+        or "/",
+        tag="meaningful-correlations",
+    )
+    if settings.send_push_fn is not None:
+        return settings.send_push_fn(notification)
+    return send_web_push(
+        WebPushSettings(
+            db_path=settings.db_path,
+            vapid_private_key=settings.web_push_vapid_private_key,
+            vapid_subject=settings.web_push_vapid_subject,
+        ),
+        notification,
+    )
 
 
 def _build_email_body(

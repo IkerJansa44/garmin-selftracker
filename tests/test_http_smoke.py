@@ -100,3 +100,24 @@ def test_push_subscription_lifecycle_through_http_and_sqlite(tmp_path: Path) -> 
     )
     assert removed == {"subscribed": False, "removed": True}
     assert load_push_subscriptions(TestApiHandler.db_path) == []
+
+
+def test_notification_preferences_through_http_and_sqlite(tmp_path: Path) -> None:
+    class TestApiHandler(ApiHandler):
+        db_path = str(tmp_path / "garmin.db")
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    defaults = _request_json(TestApiHandler, "/api/notification-preferences")
+    saved = _request_json(
+        TestApiHandler,
+        "/api/notification-preferences",
+        "PUT",
+        {"email": False, "iphone": True},
+    )
+    loaded = _request_json(TestApiHandler, "/api/notification-preferences")
+
+    assert defaults == {"email": True, "iphone": False}
+    assert saved == {"email": False, "iphone": True}
+    assert loaded == saved

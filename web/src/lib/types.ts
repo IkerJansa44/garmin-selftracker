@@ -162,3 +162,8 @@ export interface CheckinReminderSettings {
   notifyAfter: string;
   emailBody?: string;
 }
+
+export interface NotificationPreferences {
+  email: boolean;
+  iphone: boolean;
+}

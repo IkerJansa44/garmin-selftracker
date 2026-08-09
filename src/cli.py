@@ -57,6 +57,8 @@ def _correlation_email_settings(settings: Settings) -> CorrelationEmailSettings:
         smtp_pass=settings.smtp_pass,
         recipient_email=settings.garmin_email,
         dashboard_url=settings.dashboard_url,
+        web_push_vapid_private_key=settings.web_push_vapid_private_key,
+        web_push_vapid_subject=settings.web_push_vapid_subject,
     )
 
 

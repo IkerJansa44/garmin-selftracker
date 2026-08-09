@@ -20,6 +20,7 @@ from src.correlation_notifications import (
     notify_new_meaningful_correlations,
 )
 from src.db import connect_db, get_setting_json, init_db
+from src.notifications import PushNotification, save_notification_preferences
 
 
 class FakeSmtp:
@@ -280,6 +281,38 @@ def test_notify_new_meaningful_correlations_baselines_first_scan(
     finally:
         connection.close()
     assert "garmin:steps__metric:restingHr" in notified
+
+
+def test_notify_new_meaningful_correlations_uses_iphone_preference(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "garmin.db"
+    _insert_correlated_metrics(db_path)
+    save_notification_preferences(str(db_path), {"email": False, "iphone": True})
+    sent_pushes: list[PushNotification] = []
+
+    def send_push(notification: PushNotification) -> int:
+        sent_pushes.append(notification)
+        return 1
+
+    settings = CorrelationEmailSettings(
+        db_path=str(db_path),
+        smtp_host="",
+        smtp_port=587,
+        smtp_user="",
+        smtp_pass="",
+        recipient_email="",
+        dashboard_url="http://dashboard",
+        send_push_fn=send_push,
+    )
+
+    correlations = notify_new_meaningful_correlations(settings, previous_keys=set())
+
+    assert correlations
+    assert len(sent_pushes) == 1
+    assert sent_pushes[0].title == "New meaningful Garmin correlation"
+    assert "Resting HR" in sent_pushes[0].body
+    assert "view=lab" in sent_pushes[0].url
 
 
 def test_build_email_body_describes_negative_correlations_with_scatterplot_link() -> (

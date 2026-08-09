@@ -24,6 +24,7 @@ from src.reminders import (
     ReminderServiceSettings,
     build_checkin_reminder_email_body,
 )
+from src.notifications import PushNotification, save_notification_preferences
 
 TEST_DASHBOARD_URL = "http://dashboard.test"
 
@@ -65,6 +66,7 @@ def _build_service(
     recipient_email: str = "recipient@example.com",
     now_fn: Callable[[], datetime],
     send_email_fn: Callable[[str], None] | None,
+    send_push_fn: Callable[[PushNotification], int] | None = None,
 ) -> CheckinReminderService:
     return CheckinReminderService(
         ReminderServiceSettings(
@@ -78,6 +80,7 @@ def _build_service(
         ),
         now_fn=now_fn,
         send_email_fn=send_email_fn,
+        send_push_fn=send_push_fn,
     )
 
 
@@ -100,6 +103,36 @@ def test_enabled_after_cutoff_without_checkin_sends_once(tmp_path: Path) -> None
         assert last_sent == "2026-02-21"
     finally:
         connection.close()
+
+
+def test_iphone_only_preference_sends_checkin_push(tmp_path: Path) -> None:
+    db_path = tmp_path / "garmin.db"
+    save_notification_preferences(str(db_path), {"email": False, "iphone": True})
+    sent_email_hours: list[str] = []
+    sent_pushes: list[PushNotification] = []
+
+    def send_push(notification: PushNotification) -> int:
+        sent_pushes.append(notification)
+        return 1
+
+    service = _build_service(
+        db_path,
+        now_fn=lambda: datetime(2026, 2, 21, 22, 45),
+        send_email_fn=sent_email_hours.append,
+        send_push_fn=send_push,
+    )
+
+    service.run_once()
+
+    assert sent_email_hours == []
+    assert sent_pushes == [
+        PushNotification(
+            title="Garmin check-in reminder",
+            body="You haven't completed today's check-in. Tap to open Selftracker.",
+            url=TEST_DASHBOARD_URL,
+            tag="checkin-reminder-2026-02-21",
+        )
+    ]
 
 
 def test_enabled_after_cutoff_with_checkin_does_not_send(tmp_path: Path) -> None:

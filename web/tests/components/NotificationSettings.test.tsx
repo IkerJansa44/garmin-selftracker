@@ -4,13 +4,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
   deletePushSubscription: vi.fn(),
+  fetchNotificationPreferences: vi.fn(),
   fetchWebPushPublicKey: vi.fn(),
+  saveNotificationPreferences: vi.fn(),
   savePushSubscription: vi.fn(),
 }));
 
 vi.mock("../../src/lib/api", () => api);
 
-import { PushNotificationSettings } from "../../src/features/checkin/PushNotificationSettings";
+import { NotificationSettings } from "../../src/features/checkin/NotificationSettings";
 
 const descriptors = {
   notification: Object.getOwnPropertyDescriptor(window, "Notification"),
@@ -20,14 +22,11 @@ const descriptors = {
 };
 
 function restoreProperty(target: object, key: string, descriptor?: PropertyDescriptor) {
-  if (descriptor) {
-    Object.defineProperty(target, key, descriptor);
-    return;
-  }
-  Reflect.deleteProperty(target, key);
+  if (descriptor) Object.defineProperty(target, key, descriptor);
+  else Reflect.deleteProperty(target, key);
 }
 
-describe("PushNotificationSettings", () => {
+describe("NotificationSettings", () => {
   const unsubscribe = vi.fn().mockResolvedValue(true);
   const browserSubscription = {
     endpoint: "https://web.push.apple.com/example",
@@ -56,7 +55,9 @@ describe("PushNotificationSettings", () => {
       configurable: true,
       value: { permission: "default" },
     });
+    api.fetchNotificationPreferences.mockResolvedValue({ email: true, iphone: false });
     api.fetchWebPushPublicKey.mockResolvedValue({ publicKey: "AQID" });
+    api.saveNotificationPreferences.mockImplementation(async (preferences) => preferences);
     api.savePushSubscription.mockResolvedValue({ subscribed: true, created: true });
     api.deletePushSubscription.mockResolvedValue({ subscribed: false, removed: true });
   });
@@ -68,11 +69,11 @@ describe("PushNotificationSettings", () => {
     restoreProperty(navigator, "standalone", descriptors.standalone);
   });
 
-  it("enables and stores a browser push subscription", async () => {
+  it("requests permission and stores the subscription when iPhone is selected", async () => {
     const user = userEvent.setup();
-    render(<PushNotificationSettings />);
+    render(<NotificationSettings />);
 
-    await user.click(await screen.findByRole("button", { name: "Enable push notifications" }));
+    await user.click(await screen.findByRole("checkbox", { name: /iPhone/i }));
 
     expect(subscribe).toHaveBeenCalledWith({
       userVisibleOnly: true,
@@ -83,34 +84,42 @@ describe("PushNotificationSettings", () => {
       expirationTime: null,
       keys: { p256dh: "device-public-key", auth: "device-auth-key" },
     });
-    expect(await screen.findByText("Enabled")).toBeInTheDocument();
+    expect(api.saveNotificationPreferences).toHaveBeenCalledWith({ email: true, iphone: true });
+    expect(await screen.findByText("This iPhone is ready to receive notifications.")).toBeVisible();
   });
 
-  it("removes and unsubscribes an existing subscription", async () => {
+  it("unsubscribes this device when iPhone is deselected", async () => {
+    api.fetchNotificationPreferences.mockResolvedValue({ email: true, iphone: true });
     getSubscription.mockResolvedValue(browserSubscription);
     const user = userEvent.setup();
-    render(<PushNotificationSettings />);
+    render(<NotificationSettings />);
 
-    await user.click(await screen.findByRole("button", { name: "Disable push notifications" }));
+    await user.click(await screen.findByRole("checkbox", { name: /iPhone/i }));
 
-    expect(api.savePushSubscription).toHaveBeenCalledWith(
-      expect.objectContaining({ endpoint: browserSubscription.endpoint }),
-      expect.any(AbortSignal),
-    );
     expect(api.deletePushSubscription).toHaveBeenCalledWith(browserSubscription.endpoint);
     expect(unsubscribe).toHaveBeenCalledOnce();
-    await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: "Enable push notifications" }),
-      ).toBeInTheDocument(),
-    );
+    expect(api.saveNotificationPreferences).toHaveBeenCalledWith({ email: true, iphone: false });
   });
 
-  it("directs iPhone Safari users to the Home Screen app", async () => {
-    Object.defineProperty(navigator, "standalone", { configurable: true, value: false });
-    render(<PushNotificationSettings />);
+  it("saves email independently", async () => {
+    const user = userEvent.setup();
+    render(<NotificationSettings />);
 
-    expect(await screen.findByText("Home Screen required")).toBeInTheDocument();
-    expect(api.fetchWebPushPublicKey).not.toHaveBeenCalled();
+    await user.click(await screen.findByRole("checkbox", { name: /Email/i }));
+
+    expect(api.saveNotificationPreferences).toHaveBeenCalledWith({ email: false, iphone: false });
+  });
+
+  it("requires the iPhone Home Screen app only for the iPhone channel", async () => {
+    Object.defineProperty(navigator, "standalone", { configurable: true, value: false });
+    render(<NotificationSettings />);
+
+    expect(await screen.findByRole("checkbox", { name: /Email/i })).toBeEnabled();
+    expect(screen.getByRole("checkbox", { name: /iPhone/i })).toBeDisabled();
+    await waitFor(() =>
+      expect(
+        screen.getByText("Open Selftracker from its Home Screen icon to enable iPhone notifications."),
+      ).toBeVisible(),
+    );
   });
 });

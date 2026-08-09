@@ -13,6 +13,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 from src.db import connect_db, get_setting_json, init_db, upsert_setting_json
+from src.notifications import (
+    PushNotification,
+    WebPushSettings,
+    load_notification_preferences,
+    send_web_push,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +113,8 @@ class ReminderServiceSettings:
     smtp_pass: str
     recipient_email: str
     dashboard_url: str
+    web_push_vapid_private_key: str = ""
+    web_push_vapid_subject: str = ""
 
 
 @dataclass(frozen=True)
@@ -148,11 +156,13 @@ class CheckinReminderService:
         poll_interval_seconds: int = 60,
         now_fn: Callable[[], datetime] | None = None,
         send_email_fn: Callable[[str], None] | None = None,
+        send_push_fn: Callable[[PushNotification], int] | None = None,
     ) -> None:
         self._settings = settings
         self._poll_interval_seconds = max(1, poll_interval_seconds)
         self._now_fn = now_fn or datetime.now
         self._send_email_fn = send_email_fn
+        self._send_push_fn = send_push_fn
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._thread_lock = threading.Lock()
@@ -193,7 +203,6 @@ class CheckinReminderService:
         connection = connect_db(self._settings.db_path)
         try:
             init_db(connection)
-            connection.execute("BEGIN IMMEDIATE")
             raw_settings = get_setting_json(connection, CHECKIN_REMINDER_SETTINGS_KEY)
             reminder_settings = normalize_checkin_reminder_settings(raw_settings)
             if reminder_settings is None:
@@ -210,23 +219,52 @@ class CheckinReminderService:
             last_sent_date = parse_last_sent_date(raw_last_sent)
             if last_sent_date == current_date:
                 return
-            if not self._can_send_email():
+            preferences = load_notification_preferences(
+                self._settings.db_path, connection
+            )
+            if not preferences["email"] and not preferences["iphone"]:
                 return
 
-            try:
-                thread_state = self._send_email(
-                    now_local.strftime("%H:%M"),
-                    str(reminder_settings["emailBody"])
-                    if "emailBody" in reminder_settings
-                    else None,
-                    parse_reminder_thread_state(
-                        get_setting_json(connection, CHECKIN_REMINDER_THREAD_KEY)
-                    ),
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to send check-in reminder email for %s", current_date
-                )
+            delivered = False
+            thread_state = None
+            if preferences["email"] and self._can_send_email():
+                try:
+                    thread_state = self._send_email(
+                        now_local.strftime("%H:%M"),
+                        str(reminder_settings["emailBody"])
+                        if "emailBody" in reminder_settings
+                        else None,
+                        parse_reminder_thread_state(
+                            get_setting_json(connection, CHECKIN_REMINDER_THREAD_KEY)
+                        ),
+                    )
+                    delivered = True
+                except Exception:
+                    logger.exception(
+                        "Failed to send check-in reminder email for %s", current_date
+                    )
+
+            if preferences["iphone"]:
+                try:
+                    delivered = (
+                        self._send_push(
+                            PushNotification(
+                                title="Garmin check-in reminder",
+                                body="You haven't completed today's check-in. Tap to open Selftracker.",
+                                url=self._settings.dashboard_url or "/",
+                                tag=f"checkin-reminder-{current_date}",
+                            )
+                        )
+                        > 0
+                        or delivered
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to send check-in reminder push notification for %s",
+                        current_date,
+                    )
+
+            if not delivered:
                 return
 
             if thread_state is not None:
@@ -242,7 +280,7 @@ class CheckinReminderService:
                 connection, CHECKIN_REMINDER_LAST_SENT_KEY, current_date
             )
             connection.commit()
-            logger.info("Sent check-in reminder email for %s", current_date)
+            logger.info("Sent check-in reminder notification for %s", current_date)
         finally:
             connection.close()
 
@@ -325,3 +363,15 @@ class CheckinReminderService:
             smtp_client.login(self._settings.smtp_user, self._settings.smtp_pass)
             smtp_client.send_message(message)
         return next_thread_state
+
+    def _send_push(self, notification: PushNotification) -> int:
+        if self._send_push_fn is not None:
+            return self._send_push_fn(notification)
+        return send_web_push(
+            WebPushSettings(
+                db_path=self._settings.db_path,
+                vapid_private_key=self._settings.web_push_vapid_private_key,
+                vapid_subject=self._settings.web_push_vapid_subject,
+            ),
+            notification,
+        )

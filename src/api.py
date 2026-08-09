@@ -45,6 +45,10 @@ from src.garmin_client import (
     is_garmin_rate_limited_error,
 )
 from src.manual_import import run_manual_import_dir
+from src.notifications import (
+    load_notification_preferences,
+    save_notification_preferences,
+)
 from src.reminders import (
     CHECKIN_REMINDER_SETTINGS_KEY,
     CheckinReminderService,
@@ -402,6 +406,8 @@ def _correlation_email_settings(settings: ApiSettings) -> CorrelationEmailSettin
         smtp_pass=settings.smtp_pass,
         recipient_email=settings.garmin_email,
         dashboard_url=settings.dashboard_url,
+        web_push_vapid_private_key=settings.web_push_vapid_private_key,
+        web_push_vapid_subject=settings.web_push_vapid_subject,
     )
 
 
@@ -1847,6 +1853,14 @@ class ApiHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if parsed.path == "/api/notification-preferences":
+            self._send_operation(
+                lambda: load_notification_preferences(self.db_path),
+                failure_log="Failed to load notification preferences",
+                failure_error="Failed to load notification preferences",
+            )
+            return
+
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler signature
@@ -2130,6 +2144,22 @@ class ApiHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if parsed.path == "/api/notification-preferences":
+            preferences_payload = (
+                raw_payload.get("preferences")
+                if isinstance(raw_payload, dict) and "preferences" in raw_payload
+                else raw_payload
+            )
+            self._send_operation(
+                lambda: save_notification_preferences(
+                    self.db_path, preferences_payload
+                ),
+                failure_log="Failed to save notification preferences",
+                failure_error="Failed to save notification preferences",
+                invalid_error="Invalid notification preferences payload",
+            )
+            return
+
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
     def do_DELETE(self) -> None:  # noqa: N802 - stdlib handler signature
@@ -2253,6 +2283,8 @@ def main() -> int:
             smtp_pass=settings.smtp_pass,
             recipient_email=settings.garmin_email,
             dashboard_url=settings.dashboard_url,
+            web_push_vapid_private_key=settings.web_push_vapid_private_key,
+            web_push_vapid_subject=settings.web_push_vapid_subject,
         )
     )
     reminder_service.start()

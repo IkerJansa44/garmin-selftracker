@@ -7,6 +7,7 @@ import {
   type CheckInQuestion,
   type DailyRecord,
   type ImportState,
+  type NotificationPreferences,
 } from "./types";
 
 interface ImportStatusSummary {
@@ -296,6 +297,25 @@ export async function fetchWebPushPublicKey(
   signal?: AbortSignal,
 ): Promise<{ publicKey: string }> {
   return apiRequest("/api/push/public-key", "Web Push configuration API failed", { signal });
+}
+
+export async function fetchNotificationPreferences(
+  signal?: AbortSignal,
+): Promise<NotificationPreferences> {
+  return apiRequest("/api/notification-preferences", "Notification preferences API failed", {
+    signal,
+  });
+}
+
+export async function saveNotificationPreferences(
+  preferences: NotificationPreferences,
+  signal?: AbortSignal,
+): Promise<NotificationPreferences> {
+  return apiRequest("/api/notification-preferences", "Saving notification preferences failed", {
+    method: "PUT",
+    json: preferences,
+    signal,
+  });
 }
 
 export async function savePushSubscription(
