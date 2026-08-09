@@ -62,6 +62,7 @@ export function CheckinPanel({
         showSavedState && "border border-[#d7e6dc]",
       )}
       style={showSavedState ? { backgroundColor: SAVED_BACKGROUND_COLOR } : undefined}
+      data-swipe-ignore
       onPointerCancel={() => {
         pointerStartRef.current = null;
       }}

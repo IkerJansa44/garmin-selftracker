@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   CheckinPanel,
   resolveSwipeDirection,
@@ -48,6 +48,37 @@ describe("CheckinPanel", () => {
   it("maps deliberate horizontal swipes to day navigation", () => {
     expect(resolveSwipeDirection(-80, 10)).toBe("next");
     expect(resolveSwipeDirection(80, 10)).toBe("previous");
+  });
+
+  it("invokes previous-day navigation for a right swipe inside the card", () => {
+    const onPrevious = vi.fn();
+    const onNext = vi.fn();
+    render(
+      <CheckinPanel
+        isDirty={false}
+        isSaved={false}
+        onNext={onNext}
+        onPrevious={onPrevious}
+      />,
+    );
+    const panel = screen.getByRole("article", { name: "Daily Check-In" });
+    Object.defineProperty(panel, "setPointerCapture", { value: vi.fn() });
+
+    fireEvent.pointerDown(panel, {
+      clientX: 120,
+      clientY: 200,
+      pointerId: 1,
+      pointerType: "touch",
+    });
+    fireEvent.pointerUp(panel, {
+      clientX: 220,
+      clientY: 205,
+      pointerId: 1,
+      pointerType: "touch",
+    });
+
+    expect(onPrevious).toHaveBeenCalledOnce();
+    expect(onNext).not.toHaveBeenCalled();
   });
 
   it("ignores short or mostly vertical gestures", () => {

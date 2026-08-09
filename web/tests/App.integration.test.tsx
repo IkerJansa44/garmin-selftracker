@@ -259,6 +259,63 @@ describe("App persistence workflows", () => {
     );
   });
 
+  it("keeps a Check-In card swipe within date navigation", async () => {
+    setView("checkin");
+    render(<App />);
+    const panel = await screen.findByRole("article", { name: "Daily Check-In" });
+    const dateInput = within(panel).getByDisplayValue(todayIso());
+    const previousDate = new Date();
+    previousDate.setDate(previousDate.getDate() - 1);
+    const previousDateIso = new Date(
+      previousDate.getTime() - previousDate.getTimezoneOffset() * 60_000,
+    ).toISOString().slice(0, 10);
+    Object.defineProperty(panel, "setPointerCapture", { value: vi.fn() });
+
+    fireEvent.touchStart(panel, { touches: [{ clientX: 120, clientY: 200 }] });
+    fireEvent.pointerDown(panel, {
+      clientX: 120,
+      clientY: 200,
+      pointerId: 1,
+      pointerType: "touch",
+    });
+    fireEvent.pointerUp(panel, {
+      clientX: 220,
+      clientY: 205,
+      pointerId: 1,
+      pointerType: "touch",
+    });
+    fireEvent.touchEnd(panel, { changedTouches: [{ clientX: 220, clientY: 205 }] });
+
+    await waitFor(() => expect(dateInput).toHaveValue(previousDateIso));
+    expect(screen.getByRole("button", { name: "Check-In" })).toHaveClass("bg-accent");
+    expect(screen.getByRole("button", { name: "Correlation" })).not.toHaveClass("bg-accent");
+  });
+
+  it("adds a short lateral transition when swiping between tabs", async () => {
+    setView("dashboard");
+    render(<App />);
+    const main = screen.getByRole("main");
+    const animate = vi.fn(() => ({
+      cancel: vi.fn(),
+      finished: Promise.resolve(),
+    }) as unknown as Animation);
+    Object.defineProperty(main, "animate", { configurable: true, value: animate });
+
+    fireEvent.touchStart(main, { touches: [{ clientX: 300, clientY: 200 }] });
+    fireEvent.touchEnd(main, { changedTouches: [{ clientX: 180, clientY: 205 }] });
+
+    await waitFor(() => expect(animate).toHaveBeenCalledTimes(2));
+    expect(animate.mock.calls[0][0]).toEqual([
+      { transform: "translateX(0)", opacity: 1 },
+      { transform: "translateX(-24px)", opacity: 0.82 },
+    ]);
+    expect(animate.mock.calls[1][0]).toEqual([
+      { transform: "translateX(24px)", opacity: 0.82 },
+      { transform: "translateX(0)", opacity: 1 },
+    ]);
+    expect(screen.getByRole("button", { name: "Correlation" })).toHaveClass("bg-accent");
+  });
+
   it("persists dashboard plot removal", async () => {
     setView("dashboard");
     const user = userEvent.setup();

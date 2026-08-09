@@ -139,6 +139,9 @@ const VIEW_BUTTONS: Array<{ key: ViewKey; label: string }> = [
 ];
 const SWIPE_MIN_DISTANCE_PX = 64;
 const SWIPE_HORIZONTAL_RATIO = 1.25;
+const VIEW_TRANSITION_DISTANCE_PX = 24;
+const VIEW_EXIT_DURATION_MS = 100;
+const VIEW_ENTER_DURATION_MS = 160;
 type GarminPlotKey =
   | "steps"
   | "calories"
@@ -1044,7 +1047,9 @@ function adjacentView(view: ViewKey, direction: -1 | 1): ViewKey {
 function App() {
   const appRef = useRef<HTMLDivElement | null>(null);
   const heroRef = useRef<HTMLDivElement | null>(null);
+  const mainRef = useRef<HTMLElement | null>(null);
   const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
+  const isViewTransitioningRef = useRef(false);
 
   const [activeView, setActiveView] = useState<ViewKey>(readUrlView);
   const [rangePreset, setRangePreset] = usePersistentState<number>(
@@ -1131,6 +1136,61 @@ function App() {
     return () => window.removeEventListener("popstate", handlePopState);
   }, []);
 
+  const animateViewStep = useCallback(async (direction: -1 | 1) => {
+    if (isViewTransitioningRef.current) return;
+    const nextView = adjacentView(activeView, direction);
+    if (nextView === activeView) return;
+    const main = mainRef.current;
+    if (
+      !main
+      || typeof main.animate !== "function"
+      || (typeof window.matchMedia === "function"
+        && window.matchMedia("(prefers-reduced-motion: reduce)").matches)
+    ) {
+      setActiveView(nextView);
+      return;
+    }
+
+    isViewTransitioningRef.current = true;
+    const exitOffset = -direction * VIEW_TRANSITION_DISTANCE_PX;
+    const enterOffset = direction * VIEW_TRANSITION_DISTANCE_PX;
+    let exitAnimation: Animation | null = null;
+    let enterAnimation: Animation | null = null;
+    let viewChanged = false;
+    try {
+      exitAnimation = main.animate(
+        [
+          { transform: "translateX(0)", opacity: 1 },
+          { transform: `translateX(${exitOffset}px)`, opacity: 0.82 },
+        ],
+        {
+          duration: VIEW_EXIT_DURATION_MS,
+          easing: "cubic-bezier(0.4, 0, 1, 1)",
+          fill: "forwards",
+        },
+      );
+      await exitAnimation.finished;
+      setActiveView(nextView);
+      viewChanged = true;
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      enterAnimation = main.animate(
+        [
+          { transform: `translateX(${enterOffset}px)`, opacity: 0.82 },
+          { transform: "translateX(0)", opacity: 1 },
+        ],
+        { duration: VIEW_ENTER_DURATION_MS, easing: "cubic-bezier(0, 0, 0.2, 1)" },
+      );
+      exitAnimation.cancel();
+      await enterAnimation.finished;
+    } catch {
+      if (!viewChanged) setActiveView(nextView);
+    } finally {
+      exitAnimation?.cancel();
+      enterAnimation?.cancel();
+      isViewTransitioningRef.current = false;
+    }
+  }, [activeView]);
+
   const handleViewTouchStart = useCallback((event: ReactTouchEvent<HTMLElement>) => {
     if (event.touches.length !== 1 || !isSwipeNavigationTarget(event.target)) {
       swipeStartRef.current = null;
@@ -1154,8 +1214,8 @@ function App() {
     ) {
       return;
     }
-    setActiveView((current) => adjacentView(current, deltaX < 0 ? 1 : -1));
-  }, []);
+    void animateViewStep(deltaX < 0 ? 1 : -1);
+  }, [animateViewStep]);
 
   const loadDashboardData = useCallback(
     async ({
@@ -1992,7 +2052,7 @@ function App() {
     setOutcomeKey,
   });
   return (
-    <div ref={appRef} className="min-h-screen px-4 pb-10 pt-4 text-ink sm:px-6 sm:pt-32 lg:px-9">
+    <div ref={appRef} className="min-h-screen overflow-x-clip px-4 pb-10 pt-4 text-ink sm:px-6 sm:pt-32 lg:px-9">
       {correlationNotifications.length > 0 && (
         <div className="fixed right-3 top-4 z-[65] flex w-[min(50vw,420px)] flex-col gap-2 sm:right-4 sm:top-24 sm:gap-3">
           {correlationNotifications.map((notification) => (
@@ -2168,6 +2228,7 @@ function App() {
       </header>
 
       <main
+        ref={mainRef}
         className="mx-auto flex w-full max-w-[1400px] touch-pan-y flex-col gap-8"
         onTouchCancel={() => {
           swipeStartRef.current = null;
