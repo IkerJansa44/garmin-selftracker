@@ -96,3 +96,20 @@ docker compose up --build
 
 - [http://localhost:5180](http://localhost:5180)
 - `http://<your-computer-ip-or-hostname>:5180` from your phone on the same network or VPN
+
+## Development checks
+
+Install the development tools and Git hook once after cloning:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install --editable ".[dev]"
+.venv/bin/pre-commit install
+```
+
+Every commit then runs Ruff formatting, Ruff linting, and the Python test suite.
+The commit is cancelled if any check fails. Run the same checks on demand with:
+
+```bash
+.venv/bin/pre-commit run --all-files
+```

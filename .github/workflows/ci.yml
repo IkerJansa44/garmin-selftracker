@@ -25,7 +25,7 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Install dependencies
-        run: python -m pip install --editable . pytest ruff
+        run: python -m pip install --editable . pytest "ruff==0.15.11"
       - name: Check formatting
         run: ruff format --check .
       - name: Lint
