@@ -1,5 +1,5 @@
 import { type ReactNode } from "react";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { generateMockRecords } from "../src/lib/mockData";
@@ -14,6 +14,7 @@ const api = vi.hoisted(() => ({
   fetchDashboardData: vi.fn(),
   fetchDashboardPlotSettings: vi.fn(),
   fetchDerivedPredictors: vi.fn(),
+  fetchNotificationPreferences: vi.fn(),
   fetchQuestionSettings: vi.fn(),
   fetchWebPushPublicKey: vi.fn(),
   saveCheckIn: vi.fn(),
@@ -21,6 +22,7 @@ const api = vi.hoisted(() => ({
   saveCheckinReminderSettings: vi.fn(),
   saveDashboardPlotSettings: vi.fn(),
   saveDerivedPredictors: vi.fn(),
+  saveNotificationPreferences: vi.fn(),
   saveQuestionSettings: vi.fn(),
   savePushSubscription: vi.fn(),
   startDateRangeImport: vi.fn(),
@@ -82,7 +84,7 @@ const RECOVERY_PLOT = {
   chartStyle: "line" as const,
 };
 
-function setView(view: "checkin" | "dashboard" | "settings") {
+function setView(view: "checkin" | "dashboard" | "lab" | "settings") {
   window.history.replaceState(null, "", `/?view=${view}`);
 }
 
@@ -108,6 +110,7 @@ function mockInitialLoads({
   api.fetchCorrelationValues.mockResolvedValue({ values: [] });
   api.fetchQuestionSettings.mockResolvedValue({ questions: [JOURNAL_QUESTION] });
   api.fetchDerivedPredictors.mockResolvedValue({ definitions: [] });
+  api.fetchNotificationPreferences.mockResolvedValue({ email: true, iphone: false });
   api.fetchCheckinReminderSettings.mockResolvedValue(REMINDER_SETTINGS);
   api.fetchDashboardPlotSettings.mockImplementation(
     () => new Promise((resolve) => window.setTimeout(() => resolve({ plots }), 0)),
@@ -117,6 +120,7 @@ function mockInitialLoads({
   }));
   api.saveCheckinReminderSettings.mockImplementation(async (settings) => settings);
   api.saveDashboardPlotSettings.mockImplementation(async (plots) => ({ plots }));
+  api.saveNotificationPreferences.mockImplementation(async (preferences) => preferences);
 }
 
 function todayIso() {
@@ -202,15 +206,56 @@ describe("App persistence workflows", () => {
     render(<App />);
     const reminderHeading = await screen.findByRole("heading", { name: "Check-In Reminder" });
     const checkbox = within(reminderHeading.closest("article")!).getByRole("checkbox", {
-      name: "Enable email reminder",
+      name: "Enable Check-In reminder",
     });
+    expect(screen.queryByText("Email text")).not.toBeInTheDocument();
     await user.click(checkbox);
 
     await waitFor(() =>
       expect(api.saveCheckinReminderSettings).toHaveBeenCalledWith(
-        expect.objectContaining({ enabled: true }),
+        { enabled: true, notifyAfter: "21:00" },
         expect.any(AbortSignal),
       ),
+    );
+  });
+
+  it("moves through the primary tabs with horizontal swipes", async () => {
+    setView("dashboard");
+    render(<App />);
+    const main = screen.getByRole("main");
+
+    const swipe = (fromX: number, toX: number, fromY = 200, toY = 205) => {
+      fireEvent.touchStart(main, { touches: [{ clientX: fromX, clientY: fromY }] });
+      fireEvent.touchEnd(main, { changedTouches: [{ clientX: toX, clientY: toY }] });
+    };
+    const expectActive = async (name: string) => {
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name })).toHaveClass("bg-accent"),
+      );
+    };
+
+    swipe(300, 180);
+    await expectActive("Correlation");
+    swipe(300, 180);
+    await expectActive("Check-In");
+    swipe(300, 180);
+    await expectActive("Settings");
+    swipe(300, 180);
+    await expectActive("Settings");
+    swipe(180, 300);
+    await expectActive("Check-In");
+  });
+
+  it("does not change tabs for a mostly vertical gesture", async () => {
+    setView("dashboard");
+    render(<App />);
+    const main = screen.getByRole("main");
+
+    fireEvent.touchStart(main, { touches: [{ clientX: 220, clientY: 300 }] });
+    fireEvent.touchEnd(main, { changedTouches: [{ clientX: 140, clientY: 120 }] });
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Dashboard" })).toHaveClass("bg-accent"),
     );
   });
 

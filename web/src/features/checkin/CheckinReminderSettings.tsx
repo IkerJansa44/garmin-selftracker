@@ -26,7 +26,6 @@ function normalizeSettings(raw: unknown): CheckinReminderSettings {
   return {
     enabled: settings.enabled,
     notifyAfter: settings.notifyAfter,
-    ...(typeof settings.emailBody === "string" ? { emailBody: settings.emailBody } : {}),
   };
 }
 
@@ -126,7 +125,7 @@ export function CheckinReminderSettings() {
 
       <div className="grid gap-4 md:grid-cols-2">
         <label className="flex items-center justify-between rounded-2xl bg-panel p-4 text-sm font-medium">
-          Enable email reminder
+          Enable Check-In reminder
           <input
             checked={settings.enabled}
             type="checkbox"
@@ -140,7 +139,7 @@ export function CheckinReminderSettings() {
             Notify after
           </span>
           <input
-            className="focusable block min-h-11 w-full min-w-0 max-w-full appearance-none rounded-2xl bg-subsurface px-3 text-center disabled:cursor-not-allowed disabled:opacity-60"
+            className="checkin-time-input focusable block h-11 w-full min-w-0 max-w-full appearance-none rounded-2xl bg-subsurface px-3 text-center disabled:cursor-not-allowed disabled:opacity-60"
             disabled={!settings.enabled}
             step={60}
             type="time"
@@ -150,28 +149,11 @@ export function CheckinReminderSettings() {
               setSettings((previous) => ({
                 ...previous,
                 notifyAfter,
-                ...(previous.emailBody
-                  ? { emailBody: previous.emailBody.replaceAll(previous.notifyAfter, notifyAfter) }
-                  : {}),
               }));
             }}
           />
         </label>
       </div>
-      {settings.enabled && settings.emailBody && (
-        <div className="mt-4 rounded-2xl bg-panel p-4">
-          <p className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-muted">
-            Email text
-          </p>
-          <textarea
-            className="focusable min-h-80 w-full resize-y rounded-2xl bg-subsurface p-4 text-sm leading-6 text-foreground"
-            value={settings.emailBody}
-            onChange={(event) =>
-              setSettings((previous) => ({ ...previous, emailBody: event.target.value }))
-            }
-          />
-        </div>
-      )}
     </article>
   );
 }

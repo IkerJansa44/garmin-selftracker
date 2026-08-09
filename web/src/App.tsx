@@ -1,4 +1,5 @@
 import {
+  type TouchEvent as ReactTouchEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -130,6 +131,14 @@ type QuestionBackfillRequest = {
 };
 const DEFAULT_TOP_CORRELATION_OUTCOME: OutcomeKey = "metric:restingHr";
 const VIEW_KEYS = new Set<ViewKey>(["dashboard", "lab", "checkin", "settings"]);
+const VIEW_BUTTONS: Array<{ key: ViewKey; label: string }> = [
+  { key: "dashboard", label: "Dashboard" },
+  { key: "lab", label: "Correlation" },
+  { key: "checkin", label: "Check-In" },
+  { key: "settings", label: "Settings" },
+];
+const SWIPE_MIN_DISTANCE_PX = 64;
+const SWIPE_HORIZONTAL_RATIO = 1.25;
 type GarminPlotKey =
   | "steps"
   | "calories"
@@ -1019,9 +1028,23 @@ function formatCorrelationStat(value: number): string {
   return Number.isFinite(value) ? value.toFixed(2) : "--";
 }
 
+function isSwipeNavigationTarget(target: EventTarget | null): boolean {
+  return target instanceof Element
+    && target.closest(
+      "a, button, input, select, textarea, [data-swipe-ignore], .recharts-wrapper",
+    ) === null;
+}
+
+function adjacentView(view: ViewKey, direction: -1 | 1): ViewKey {
+  const currentIndex = VIEW_BUTTONS.findIndex((button) => button.key === view);
+  const nextIndex = Math.min(VIEW_BUTTONS.length - 1, Math.max(0, currentIndex + direction));
+  return VIEW_BUTTONS[nextIndex].key;
+}
+
 function App() {
   const appRef = useRef<HTMLDivElement | null>(null);
   const heroRef = useRef<HTMLDivElement | null>(null);
+  const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
 
   const [activeView, setActiveView] = useState<ViewKey>(readUrlView);
   const [rangePreset, setRangePreset] = usePersistentState<number>(
@@ -1106,6 +1129,32 @@ function App() {
     };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  const handleViewTouchStart = useCallback((event: ReactTouchEvent<HTMLElement>) => {
+    if (event.touches.length !== 1 || !isSwipeNavigationTarget(event.target)) {
+      swipeStartRef.current = null;
+      return;
+    }
+    const touch = event.touches[0];
+    swipeStartRef.current = { x: touch.clientX, y: touch.clientY };
+  }, []);
+
+  const handleViewTouchEnd = useCallback((event: ReactTouchEvent<HTMLElement>) => {
+    const start = swipeStartRef.current;
+    swipeStartRef.current = null;
+    const touch = event.changedTouches[0];
+    if (!start || !touch) return;
+
+    const deltaX = touch.clientX - start.x;
+    const deltaY = touch.clientY - start.y;
+    if (
+      Math.abs(deltaX) < SWIPE_MIN_DISTANCE_PX
+      || Math.abs(deltaX) <= Math.abs(deltaY) * SWIPE_HORIZONTAL_RATIO
+    ) {
+      return;
+    }
+    setActiveView((current) => adjacentView(current, deltaX < 0 ? 1 : -1));
   }, []);
 
   const loadDashboardData = useCallback(
@@ -1911,13 +1960,6 @@ function App() {
     }
   };
 
-  const topViewButtons: Array<{ key: ViewKey; label: string }> = [
-    { key: "dashboard", label: "Dashboard" },
-    { key: "lab", label: "Correlation" },
-    { key: "checkin", label: "Check-In" },
-    { key: "settings", label: "Settings" },
-  ];
-
   const dismissCorrelationNotificationIds = useCallback(async (ids: string[]) => {
     setCorrelationNotifications((current) =>
       current.filter((notification) => !ids.includes(notification.id)),
@@ -2106,7 +2148,7 @@ function App() {
 
             <div className="panel gsap-fade flex min-h-16 min-w-0 px-4 py-2 sm:shrink-0 sm:items-center sm:px-3">
               <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
-                {topViewButtons.map((button) => (
+                {VIEW_BUTTONS.map((button) => (
                   <button
                     key={button.key}
                     className={clsx(
@@ -2125,7 +2167,14 @@ function App() {
         </div>
       </header>
 
-      <main className="mx-auto flex w-full max-w-[1400px] flex-col gap-8">
+      <main
+        className="mx-auto flex w-full max-w-[1400px] touch-pan-y flex-col gap-8"
+        onTouchCancel={() => {
+          swipeStartRef.current = null;
+        }}
+        onTouchEnd={handleViewTouchEnd}
+        onTouchStart={handleViewTouchStart}
+      >
         {dataStatus !== "ready" && (
           <div
             className={clsx(
@@ -2148,7 +2197,10 @@ function App() {
               <div className="mt-4 grid w-full grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] lg:items-center">
                 <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl xl:text-5xl">Dashboard</h1>
                 <div className="flex w-full flex-col items-start gap-3 lg:w-auto lg:items-center lg:justify-self-center">
-                  <div className="scrollbar-hide flex w-full flex-nowrap gap-2 overflow-x-auto rounded-[24px] bg-subsurface p-1 sm:w-fit sm:rounded-capsule">
+                  <div
+                    className="scrollbar-hide flex w-full touch-pan-x flex-nowrap gap-2 overflow-x-auto rounded-[24px] bg-subsurface p-1 sm:w-fit sm:rounded-capsule"
+                    data-swipe-ignore
+                  >
                     {RANGE_PRESETS.map((preset) => (
                       <button
                         key={preset}
