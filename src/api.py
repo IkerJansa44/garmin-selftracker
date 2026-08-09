@@ -53,6 +53,10 @@ from src.reminders import (
     default_checkin_reminder_settings,
     normalize_checkin_reminder_settings,
 )
+from src.push_subscriptions import (
+    delete_push_subscription,
+    save_push_subscription,
+)
 from src.sync import run_sync
 
 logger = logging.getLogger(__name__)
@@ -134,6 +138,9 @@ class ApiSettings:
     smtp_user: str
     smtp_pass: str
     timezone: str | None
+    web_push_vapid_public_key: str = ""
+    web_push_vapid_private_key: str = ""
+    web_push_vapid_subject: str = ""
 
 
 @dataclass(frozen=True)
@@ -1754,6 +1761,19 @@ class ApiHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, {"ok": True})
             return
 
+        if parsed.path == "/api/push/public-key":
+            public_key = (
+                self.settings.web_push_vapid_public_key if self.settings else ""
+            )
+            if not public_key:
+                self._send_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    {"error": "Web Push is not configured"},
+                )
+                return
+            self._send_json(HTTPStatus.OK, {"publicKey": public_key})
+            return
+
         if parsed.path == "/api/dashboard":
             query = parse_qs(parsed.query)
             days = _parse_days(query)
@@ -1831,6 +1851,19 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler signature
         parsed = urlparse(self.path)
+        if parsed.path == "/api/push/subscriptions":
+            raw_payload = self._read_json_body()
+            if raw_payload is None:
+                return
+            self._send_operation(
+                lambda: save_push_subscription(self.db_path, raw_payload),
+                failure_log="Failed to save push subscription",
+                failure_error="Failed to save push subscription",
+                invalid_error="Invalid push subscription payload",
+                wrap=lambda created: {"subscribed": True, "created": created},
+            )
+            return
+
         if parsed.path == "/api/manual-import":
             self._handle_manual_import()
             return
@@ -2099,6 +2132,23 @@ class ApiHandler(BaseHTTPRequestHandler):
 
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
+    def do_DELETE(self) -> None:  # noqa: N802 - stdlib handler signature
+        parsed = urlparse(self.path)
+        if parsed.path != "/api/push/subscriptions":
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
+            return
+
+        raw_payload = self._read_json_body()
+        if raw_payload is None:
+            return
+        self._send_operation(
+            lambda: delete_push_subscription(self.db_path, raw_payload),
+            failure_log="Failed to delete push subscription",
+            failure_error="Failed to delete push subscription",
+            invalid_error="Invalid push subscription removal payload",
+            wrap=lambda removed: {"subscribed": False, "removed": removed},
+        )
+
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
         logger.info("API %s - %s", self.address_string(), format % args)
 
@@ -2175,6 +2225,9 @@ def _build_settings() -> ApiSettings:
         smtp_user=env_settings.smtp_user,
         smtp_pass=env_settings.smtp_pass,
         timezone=env_settings.timezone,
+        web_push_vapid_public_key=env_settings.web_push_vapid_public_key,
+        web_push_vapid_private_key=env_settings.web_push_vapid_private_key,
+        web_push_vapid_subject=env_settings.web_push_vapid_subject,
     )
 
 

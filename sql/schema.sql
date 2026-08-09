@@ -67,6 +67,15 @@ CREATE TABLE IF NOT EXISTS app_settings (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    endpoint TEXT PRIMARY KEY,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    expiration_time INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS checkin_entries (
     checkin_date TEXT PRIMARY KEY,
     answers_json TEXT NOT NULL,

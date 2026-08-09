@@ -6,6 +6,7 @@ import { generateMockRecords } from "../src/lib/mockData";
 import { type CheckInQuestion } from "../src/lib/types";
 
 const api = vi.hoisted(() => ({
+  deletePushSubscription: vi.fn(),
   dismissCorrelationNotifications: vi.fn(),
   fetchCheckinReminderSettings: vi.fn(),
   fetchCheckIns: vi.fn(),
@@ -14,12 +15,14 @@ const api = vi.hoisted(() => ({
   fetchDashboardPlotSettings: vi.fn(),
   fetchDerivedPredictors: vi.fn(),
   fetchQuestionSettings: vi.fn(),
+  fetchWebPushPublicKey: vi.fn(),
   saveCheckIn: vi.fn(),
   saveCheckInDraft: vi.fn(),
   saveCheckinReminderSettings: vi.fn(),
   saveDashboardPlotSettings: vi.fn(),
   saveDerivedPredictors: vi.fn(),
   saveQuestionSettings: vi.fn(),
+  savePushSubscription: vi.fn(),
   startDateRangeImport: vi.fn(),
   startManualImport: vi.fn(),
   startRefreshImport: vi.fn(),

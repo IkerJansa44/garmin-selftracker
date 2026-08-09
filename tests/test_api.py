@@ -1658,7 +1658,9 @@ def test_load_dashboard_payload_includes_failed_import_error_detail(
     )
 
 
-def test_build_settings_includes_dashboard_url(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_settings_includes_dashboard_and_web_push(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(
         "src.api._parse_args",
         lambda: Namespace(host="127.0.0.1", port=8000, db_path=None),
@@ -1678,6 +1680,9 @@ def test_build_settings_includes_dashboard_url(monkeypatch: pytest.MonkeyPatch) 
             smtp_user="smtp-user",
             smtp_pass="smtp-pass",
             timezone="Europe/Madrid",
+            web_push_vapid_public_key="public-key",
+            web_push_vapid_private_key="private-key",
+            web_push_vapid_subject="mailto:user@example.com",
         ),
     )
 
@@ -1686,3 +1691,6 @@ def test_build_settings_includes_dashboard_url(monkeypatch: pytest.MonkeyPatch) 
     assert settings.dashboard_url == "http://phone.example.com:5180"
     assert settings.garmin_tokenstore == "/data/garmin-tokens"
     assert settings.garmin_manual_import_dir == "/data/manual-imports"
+    assert settings.web_push_vapid_public_key == "public-key"
+    assert settings.web_push_vapid_private_key == "private-key"
+    assert settings.web_push_vapid_subject == "mailto:user@example.com"

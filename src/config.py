@@ -18,6 +18,9 @@ class Settings:
     smtp_user: str
     smtp_pass: str
     timezone: str | None
+    web_push_vapid_public_key: str = ""
+    web_push_vapid_private_key: str = ""
+    web_push_vapid_subject: str = ""
 
 
 class SettingsError(RuntimeError):
@@ -72,4 +75,7 @@ def load_settings(*, require_garmin_credentials: bool = True) -> Settings:
         smtp_user=_optional_env("SMTP_USER"),
         smtp_pass=_optional_env("SMTP_PASS"),
         timezone=timezone,
+        web_push_vapid_public_key=_optional_env("WEB_PUSH_VAPID_PUBLIC_KEY"),
+        web_push_vapid_private_key=_optional_env("WEB_PUSH_VAPID_PRIVATE_KEY"),
+        web_push_vapid_subject=_optional_env("WEB_PUSH_VAPID_SUBJECT"),
     )

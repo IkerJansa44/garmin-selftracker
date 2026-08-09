@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { fetchQuestionSettings, saveCheckInDraft } from "../../src/lib/api";
+import {
+  deletePushSubscription,
+  fetchQuestionSettings,
+  fetchWebPushPublicKey,
+  saveCheckInDraft,
+  savePushSubscription,
+} from "../../src/lib/api";
 
 describe("API requests", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -31,5 +37,45 @@ describe("API requests", () => {
 
     await expect(saveCheckInDraft("", {})).rejects.toThrow("Invalid draft: Date is required");
     await expect(fetchQuestionSettings()).rejects.toThrow("Questions API failed: 503");
+  });
+
+  it("loads, saves, and removes Web Push subscriptions", async () => {
+    const subscription = {
+      endpoint: "https://web.push.apple.com/example",
+      expirationTime: null,
+      keys: { p256dh: "public-key", auth: "auth-key" },
+    };
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ publicKey: "vapid-key" })))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ subscribed: true, created: true })),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ subscribed: false, removed: true })),
+      );
+
+    await expect(fetchWebPushPublicKey()).resolves.toEqual({ publicKey: "vapid-key" });
+    await expect(savePushSubscription(subscription)).resolves.toEqual({
+      subscribed: true,
+      created: true,
+    });
+    await expect(deletePushSubscription(subscription.endpoint)).resolves.toEqual({
+      subscribed: false,
+      removed: true,
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/push/subscriptions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(subscription),
+      signal: undefined,
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/push/subscriptions", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint: subscription.endpoint }),
+      signal: undefined,
+    });
   });
 });

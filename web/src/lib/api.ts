@@ -108,6 +108,15 @@ interface DashboardPlotsApiResponse {
   plots: DashboardPlotPreference[];
 }
 
+export interface PushSubscriptionPayload {
+  endpoint: string;
+  expirationTime: number | null;
+  keys: {
+    p256dh: string;
+    auth: string;
+  };
+}
+
 async function readApiError(response: Response, fallback: string): Promise<Error> {
   try {
     const payload = (await response.json()) as { error?: string; details?: string };
@@ -279,6 +288,34 @@ export async function saveCheckinReminderSettings(
   return apiRequest("/api/checkin-reminder-settings", "Saving check-in reminder settings failed", {
     method: "PUT",
     json: settings,
+    signal,
+  });
+}
+
+export async function fetchWebPushPublicKey(
+  signal?: AbortSignal,
+): Promise<{ publicKey: string }> {
+  return apiRequest("/api/push/public-key", "Web Push configuration API failed", { signal });
+}
+
+export async function savePushSubscription(
+  subscription: PushSubscriptionPayload,
+  signal?: AbortSignal,
+): Promise<{ subscribed: true; created: boolean }> {
+  return apiRequest("/api/push/subscriptions", "Saving push subscription failed", {
+    method: "POST",
+    json: subscription,
+    signal,
+  });
+}
+
+export async function deletePushSubscription(
+  endpoint: string,
+  signal?: AbortSignal,
+): Promise<{ subscribed: false; removed: boolean }> {
+  return apiRequest("/api/push/subscriptions", "Deleting push subscription failed", {
+    method: "DELETE",
+    json: { endpoint },
     signal,
   });
 }
