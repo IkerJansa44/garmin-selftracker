@@ -73,18 +73,10 @@ interface CheckInDraftSaveApiResponse {
 
 interface ImportApiResponse {
   status: string;
-  mode: "refresh" | "range";
+  mode: "range";
   fromDate: string;
   toDate: string;
   days: number;
-}
-
-interface ManualImportApiResponse {
-  status: string;
-  mode: "manual";
-  days: number;
-  archives: number;
-  importDir: string;
 }
 
 export type PlotDirection = "higher" | "lower";
@@ -340,14 +332,6 @@ export async function deletePushSubscription(
   });
 }
 
-export async function startRefreshImport(signal?: AbortSignal): Promise<ImportApiResponse> {
-  return apiRequest("/api/import", "Import refresh failed", {
-    method: "POST",
-    json: { mode: "refresh" },
-    signal,
-  });
-}
-
 export async function startDateRangeImport(
   fromDate: string,
   toDate: string,
@@ -358,8 +342,4 @@ export async function startDateRangeImport(
     json: { mode: "range", fromDate, toDate },
     signal,
   });
-}
-
-export async function startManualImport(signal?: AbortSignal): Promise<ManualImportApiResponse> {
-  return apiRequest("/api/manual-import", "Manual import failed", { method: "POST", signal });
 }

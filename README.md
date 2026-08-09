@@ -66,7 +66,6 @@ If you want to install the dashboard on a phone or have reminder emails open it,
 GARMIN_EMAIL=you@example.com
 GARMIN_PASSWORD=your_password
 GARMIN_TOKENSTORE=/data/garmin-tokens
-GARMIN_MANUAL_IMPORT_DIR=/data/manual-imports
 DASHBOARD_URL=https://<your-tailscale-hostname>.ts.net
 ALLOWED_HOSTS=<your-tailscale-hostname>.ts.net,localhost,127.0.0.1
 
@@ -85,11 +84,6 @@ SMTP_PASS=<insert_pass>
 If you only use the dashboard from the same computer, `DASHBOARD_URL=http://localhost:5180` is still fine. Keep the VAPID private key secret and stable: replacing the pair requires each device to create a new push subscription.
 
 `GARMIN_TOKENSTORE` defaults to `/data/garmin-tokens`. After the first successful Garmin login, the app reuses saved OAuth tokens from that directory to avoid repeated full sign-ins.
-
-For Garmin web exports, place daily wellness `.zip` files in `data/manual-imports/`
-on the host. The dashboard's `Import files` button reads that folder through
-`GARMIN_MANUAL_IMPORT_DIR` and imports compatible `.fit` data without signing in
-to Garmin.
 
 3. Start services:
 

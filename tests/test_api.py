@@ -774,24 +774,9 @@ def test_import_status_message_surfaces_garmin_rate_limit() -> None:
     assert message == "Garmin login rate-limited · Retry in ~23h 55m"
 
 
-def test_parse_import_request_refresh_uses_default_days() -> None:
-    request = _parse_import_request(
-        {"mode": "refresh"},
-        default_sync_days=3,
-        today=date(2026, 2, 21),
-    )
-
-    assert request == ImportRequest(
-        mode="refresh",
-        start_date=date(2026, 2, 19),
-        end_date=date(2026, 2, 21),
-    )
-
-
 def test_parse_import_request_range_accepts_valid_payload() -> None:
     request = _parse_import_request(
         {"mode": "range", "fromDate": "2026-02-01", "toDate": "2026-02-15"},
-        default_sync_days=2,
         today=date(2026, 2, 21),
     )
 
@@ -805,7 +790,7 @@ def test_parse_import_request_range_accepts_valid_payload() -> None:
 @pytest.mark.parametrize(
     ("payload", "message"),
     [
-        ({"mode": "unknown"}, "mode must be either"),
+        ({"mode": "unknown"}, "mode must be 'range'"),
         (
             {"mode": "range", "fromDate": "2026-02-11", "toDate": "2026-02-10"},
             "on or before",
@@ -828,7 +813,6 @@ def test_parse_import_request_rejects_invalid_payload(
     with pytest.raises(ValueError, match=message):
         _parse_import_request(
             payload,
-            default_sync_days=2,
             today=date(2026, 2, 21),
         )
 
@@ -916,8 +900,6 @@ def test_import_job_manager_notifies_after_successful_import(
         garmin_email="user@example.com",
         garmin_password="password",
         garmin_tokenstore=str(tmp_path / "tokens"),
-        garmin_manual_import_dir=str(tmp_path / "manual"),
-        default_sync_days=1,
         dashboard_url="http://dashboard",
         smtp_host="smtp.example.com",
         smtp_port=587,
@@ -929,7 +911,7 @@ def test_import_job_manager_notifies_after_successful_import(
     manager._run_job(  # noqa: SLF001 - direct call keeps the worker test deterministic
         settings,
         ImportRequest(
-            mode="refresh",
+            mode="range",
             start_date=date(2026, 2, 21),
             end_date=date(2026, 2, 21),
         ),
@@ -1531,8 +1513,6 @@ def test_import_job_manager_rejects_when_sync_run_already_running(
         garmin_email="user@example.com",
         garmin_password="secret",
         garmin_tokenstore="/tmp/garmin-tokens",
-        garmin_manual_import_dir="/tmp/manual-imports",
-        default_sync_days=2,
         dashboard_url="http://dashboard.example.com",
         smtp_host="smtp.example.com",
         smtp_port=587,
@@ -1541,7 +1521,7 @@ def test_import_job_manager_rejects_when_sync_run_already_running(
         timezone="Europe/Madrid",
     )
     request = ImportRequest(
-        mode="refresh",
+        mode="range",
         start_date=date(2026, 2, 20),
         end_date=date(2026, 2, 21),
     )
@@ -1589,8 +1569,6 @@ def test_import_job_manager_rejects_during_garmin_rate_limit_cooldown(
         garmin_email="user@example.com",
         garmin_password="secret",
         garmin_tokenstore="/tmp/garmin-tokens",
-        garmin_manual_import_dir="/tmp/manual-imports",
-        default_sync_days=2,
         dashboard_url="http://dashboard.example.com",
         smtp_host="smtp.example.com",
         smtp_port=587,
@@ -1599,7 +1577,7 @@ def test_import_job_manager_rejects_during_garmin_rate_limit_cooldown(
         timezone="Europe/Madrid",
     )
     request = ImportRequest(
-        mode="refresh",
+        mode="range",
         start_date=date(2026, 2, 20),
         end_date=date(2026, 2, 21),
     )
@@ -1671,7 +1649,6 @@ def test_build_settings_includes_dashboard_and_web_push(
             garmin_email="user@example.com",
             garmin_password="secret",
             garmin_tokenstore="/data/garmin-tokens",
-            garmin_manual_import_dir="/data/manual-imports",
             db_path="/tmp/garmin.db",
             default_sync_days=2,
             dashboard_url="http://phone.example.com:5180",
@@ -1690,7 +1667,6 @@ def test_build_settings_includes_dashboard_and_web_push(
 
     assert settings.dashboard_url == "http://phone.example.com:5180"
     assert settings.garmin_tokenstore == "/data/garmin-tokens"
-    assert settings.garmin_manual_import_dir == "/data/manual-imports"
     assert settings.web_push_vapid_public_key == "public-key"
     assert settings.web_push_vapid_private_key == "private-key"
     assert settings.web_push_vapid_subject == "mailto:user@example.com"

@@ -14,7 +14,6 @@ import {
   CirclePlus,
   CircleHelp,
   Check,
-  FolderInput,
   GripVertical,
   LoaderCircle,
   Pencil,
@@ -95,7 +94,6 @@ import {
   saveDashboardPlotSettings,
   saveQuestionSettings,
   startDateRangeImport,
-  startRefreshImport,
   type PlotAggregation,
   type CorrelationNotification,
   type PlotDirection,
@@ -384,8 +382,6 @@ const ENERGY_TARGET_QUESTION_ID = "felt_energized_during_day";
 const IMPORT_POLL_INTERVAL_MS = 5000;
 const DASHBOARD_REFRESH_INTERVAL_MS = 60000;
 const MAX_IMPORT_RANGE_DAYS = 365;
-const GARMIN_ACCOUNT_INFORMATION_URL =
-  "https://connect.garmin.com/app/settings/accountInformation";
 const EMPTY_DERIVED_GAP_PREDICTORS = Object.fromEntries(
   DERIVED_GAP_METRICS.map((metric) => [metric.key, null]),
 ) as Record<DerivedGapMetricKey, number | null>;
@@ -1116,7 +1112,7 @@ function App() {
   const [importFromDate, setImportFromDate] = useState(() => {
     const end = new Date();
     const start = new Date(end);
-    start.setDate(end.getDate() - 6);
+    start.setDate(end.getDate() - 1);
     return formatIsoDateLocal(start);
   });
   const [importToDate, setImportToDate] = useState(() => formatIsoDateLocal(new Date()));
@@ -1779,22 +1775,14 @@ function App() {
     return null;
   };
 
-  const handleRefreshImport = async () => {
-    setIsImportSubmitting(true);
+  const handleOpenImport = () => {
+    const end = new Date();
+    const start = new Date(end);
+    start.setDate(end.getDate() - 1);
+    setImportFromDate(formatIsoDateLocal(start));
+    setImportToDate(formatIsoDateLocal(end));
     setImportFeedback(null);
-    try {
-      const response = await startRefreshImport();
-      setActiveImportRange({
-        fromDate: response.fromDate,
-        toDate: response.toDate,
-      });
-      await loadDashboardData({ setLoading: false });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to trigger refresh import.";
-      setImportFeedback(message);
-    } finally {
-      setIsImportSubmitting(false);
-    }
+    setShowImportModal(true);
   };
 
   const handleDateImport = async () => {
@@ -1819,10 +1807,6 @@ function App() {
     } finally {
       setIsImportSubmitting(false);
     }
-  };
-
-  const handleManualImport = async () => {
-    window.open(GARMIN_ACCOUNT_INFORMATION_URL, "_blank", "noopener,noreferrer");
   };
 
   const handleSelectDashboardPlotToAdd = (option: DashboardPlotVariableOption) => {
@@ -2164,39 +2148,9 @@ function App() {
                   className="focusable min-h-10 rounded-capsule bg-panel px-3 text-xs font-semibold shadow-soft transition disabled:cursor-not-allowed disabled:opacity-60 sm:px-3"
                   disabled={isImportSubmitting}
                   type="button"
-                  onClick={() => void handleRefreshImport()}
+                  onClick={handleOpenImport}
                 >
-                  {isImportSubmitting ? (
-                    <span className="inline-flex items-center gap-2">
-                      <LoaderCircle className="size-4 animate-spin" />
-                      <span className="sm:hidden">Syncing</span>
-                      <span className="hidden sm:inline">Importing</span>
-                    </span>
-                  ) : (
-                    <>
-                      <span className="sm:hidden">Refresh</span>
-                      <span className="hidden sm:inline">Refresh import</span>
-                    </>
-                  )}
-                </button>
-                <button
-                  className="focusable min-h-10 rounded-capsule bg-panel px-3 text-xs font-semibold shadow-soft transition disabled:cursor-not-allowed disabled:opacity-60 sm:px-3"
-                  disabled={isImportSubmitting}
-                  type="button"
-                  onClick={() => setShowImportModal(true)}
-                >
-                  <span className="sm:hidden">Dates</span>
-                  <span className="hidden sm:inline">Import dates</span>
-                </button>
-                <button
-                  className="focusable inline-flex min-h-10 items-center gap-1.5 rounded-capsule bg-panel px-3 text-xs font-semibold shadow-soft transition disabled:cursor-not-allowed disabled:opacity-60 sm:px-3"
-                  disabled={isImportSubmitting}
-                  type="button"
-                  onClick={() => void handleManualImport()}
-                >
-                  <FolderInput className="size-4" />
-                  <span className="sm:hidden">Files</span>
-                  <span className="hidden sm:inline">Import files</span>
+                  Import
                 </button>
               </div>
               {importFeedback && <p className="text-sm font-medium text-error">{importFeedback}</p>}
@@ -2692,7 +2646,7 @@ function App() {
         <div className="fixed inset-0 z-[70] grid place-items-center bg-[rgba(18,18,18,0.2)] p-4 backdrop-blur-xs">
           <div className="panel w-full max-w-lg p-6">
             <div className="mb-5 flex items-center justify-between">
-              <h2 className="text-xl font-semibold">Import Date Range</h2>
+              <h2 className="text-xl font-semibold">Import Garmin Data</h2>
               <button
                 className="focusable min-h-11 rounded-capsule bg-subsurface px-3"
                 disabled={isImportSubmitting}

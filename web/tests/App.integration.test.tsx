@@ -26,8 +26,6 @@ const api = vi.hoisted(() => ({
   saveQuestionSettings: vi.fn(),
   savePushSubscription: vi.fn(),
   startDateRangeImport: vi.fn(),
-  startManualImport: vi.fn(),
-  startRefreshImport: vi.fn(),
 }));
 
 vi.mock("../src/lib/api", () => api);
@@ -129,11 +127,43 @@ function todayIso() {
   return new Date(date.getTime() - offset).toISOString().slice(0, 10);
 }
 
+function shiftIsoDate(isoDate: string, days: number) {
+  const date = new Date(`${isoDate}T12:00:00`);
+  date.setDate(date.getDate() + days);
+  const offset = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 10);
+}
+
 describe("App persistence workflows", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     window.localStorage.clear();
     mockInitialLoads();
+  });
+
+  it("opens one import flow with the current two-day range selected", async () => {
+    const user = userEvent.setup();
+    const today = todayIso();
+    const yesterday = shiftIsoDate(today, -1);
+    api.startDateRangeImport.mockResolvedValue({
+      status: "accepted",
+      mode: "range",
+      fromDate: yesterday,
+      toDate: today,
+      days: 2,
+    });
+
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "Import" }));
+
+    expect(screen.getByRole("heading", { name: "Import Garmin Data" })).toBeInTheDocument();
+    expect(screen.getByLabelText("From date")).toHaveValue(yesterday);
+    expect(screen.getByLabelText("To date")).toHaveValue(today);
+    expect(screen.queryByRole("button", { name: /refresh/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /files/i })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Start import" }));
+    expect(api.startDateRangeImport).toHaveBeenCalledWith(yesterday, today);
   });
 
   it("saves the actual check-in form and turns its panel green", async () => {

@@ -11,7 +11,6 @@ from src.correlation_notifications import (
     notify_new_meaningful_correlations,
 )
 from src.db import connect_db, init_db
-from src.manual_import import run_manual_import_dir
 from src.sync import run_sync
 
 
@@ -35,15 +34,6 @@ def build_parser() -> argparse.ArgumentParser:
     backfill_parser = subparsers.add_parser("backfill", help="Sync a fixed date range")
     backfill_parser.add_argument("--from-date", type=parse_date, required=True)
     backfill_parser.add_argument("--to-date", type=parse_date, required=True)
-
-    manual_parser = subparsers.add_parser(
-        "import-manual",
-        help="Import Garmin wellness zip files from the manual import folder",
-    )
-    manual_parser.add_argument(
-        "--path",
-        help="Folder containing Garmin wellness .zip files",
-    )
 
     return parser
 
@@ -98,29 +88,6 @@ def main() -> int:
         connection.close()
         logging.info("Database initialized at %s", settings.db_path)
         return 0
-
-    if args.command == "import-manual":
-        settings = load_settings(require_garmin_credentials=False)
-        previous_correlation_keys = _current_meaningful_correlation_keys(
-            settings.db_path
-        )
-        result = run_manual_import_dir(
-            db_path=settings.db_path,
-            import_dir=args.path or settings.garmin_manual_import_dir,
-        )
-        if result.status != "failed" and result.days_imported > 0:
-            _notify_new_meaningful_correlations(
-                settings,
-                previous_keys=previous_correlation_keys,
-            )
-        logging.info(
-            "Manual import run %s finished with status=%s (%s/%s archives)",
-            result.run_id,
-            result.status,
-            result.archives_imported,
-            result.archives_found,
-        )
-        return 0 if result.status == "success" else 1
 
     try:
         settings = load_settings(require_garmin_credentials=True)
