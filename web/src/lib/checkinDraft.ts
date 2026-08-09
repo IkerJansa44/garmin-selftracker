@@ -1,7 +1,7 @@
 import { shiftIsoDate } from "./dateAlignment";
 import { defaultDraftAnswers } from "./mockData";
 import { flattenQuestionFields, pruneHiddenChildAnswers } from "./questions";
-import { type CheckInEntry, type CheckInQuestion } from "./types";
+import { type CheckInDraft, type CheckInEntry, type CheckInQuestion } from "./types";
 
 type CheckInDraftAnswers = Record<string, string | number | boolean>;
 
@@ -22,8 +22,13 @@ export function resolveCheckinDraftAnswers(
   selectedDate: string,
   questions: CheckInQuestion[],
   entriesByDate: Record<string, CheckInEntry>,
+  draftsByDate: Record<string, CheckInDraft> = {},
 ): CheckInDraftAnswers {
   const defaults = defaultDraftAnswers(questions);
+  const selectedDraft = draftsByDate[selectedDate];
+  if (selectedDraft) {
+    return mergeSourceIntoDraft(defaults, questions, selectedDraft.answers);
+  }
   const selectedEntry = entriesByDate[selectedDate];
   if (selectedEntry) {
     return mergeSourceIntoDraft(defaults, questions, selectedEntry.answers);

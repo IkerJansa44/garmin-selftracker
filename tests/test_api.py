@@ -28,10 +28,11 @@ from src.api import (
     _normalize_derived_predictors_payload,
     _normalize_questions_payload,
     _parse_import_request,
-    _save_derived_predictors_payload,
+    _save_checkin_draft_payload,
     _save_checkin_payload,
     _save_checkin_reminder_settings_payload,
     _save_dashboard_plots_payload,
+    _save_derived_predictors_payload,
 )
 from src.correlation_notifications import MeaningfulCorrelation
 from src.config import Settings
@@ -848,9 +849,36 @@ def test_checkins_save_and_load_roundtrip(tmp_path: Path) -> None:
         from_date=date(2026, 2, 20),
         to_date=date(2026, 2, 20),
     )
-    assert len(loaded) == 1
-    assert loaded[0]["date"] == "2026-02-20"
-    assert loaded[0]["answers"]["late_meal"] == "21:15"
+    assert len(loaded["entries"]) == 1
+    assert loaded["entries"][0]["date"] == "2026-02-20"
+    assert loaded["entries"][0]["answers"]["late_meal"] == "21:15"
+    assert loaded["drafts"] == []
+
+
+def test_final_checkin_removes_same_day_draft(tmp_path: Path) -> None:
+    db_path = tmp_path / "garmin.db"
+    _save_checkin_draft_payload(
+        str(db_path),
+        {"date": "2026-02-20", "answers": {"energy": 2}},
+    )
+
+    loaded = _load_checkins_payload(
+        str(db_path),
+        from_date=date(2026, 2, 20),
+        to_date=date(2026, 2, 20),
+    )
+    assert loaded["drafts"][0]["answers"] == {"energy": 2}
+
+    _save_checkin_payload(
+        str(db_path),
+        {"date": "2026-02-20", "answers": {"energy": 5}},
+    )
+    loaded = _load_checkins_payload(
+        str(db_path),
+        from_date=date(2026, 2, 20),
+        to_date=date(2026, 2, 20),
+    )
+    assert loaded["drafts"] == []
 
 
 def test_import_job_manager_notifies_after_successful_import(

@@ -1,4 +1,5 @@
-import { defineConfig, loadEnv } from "vite";
+import { loadEnv } from "vite";
+import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 const DEFAULT_ALLOWED_HOSTS = ["ikers-macbook-pro"];
@@ -15,6 +16,10 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    test: {
+      environment: "jsdom",
+      setupFiles: "./src/test/setup.ts",
+    },
     server: {
       allowedHosts: [...DEFAULT_ALLOWED_HOSTS, ...parseAllowedHosts(env.ALLOWED_HOSTS ?? "")],
       host: true,

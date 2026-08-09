@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { resolveCheckinDraftAnswers } from "./checkinDraft";
-import { type CheckInEntry, type CheckInQuestion } from "./types";
+import { type CheckInDraft, type CheckInEntry, type CheckInQuestion } from "./types";
 
 const QUESTIONS: CheckInQuestion[] = [
   {
@@ -54,6 +54,25 @@ function entry(date: string, answers: CheckInEntry["answers"]): CheckInEntry {
 }
 
 describe("resolveCheckinDraftAnswers", () => {
+  it("prefers a SQLite draft over a completed entry", () => {
+    const entriesByDate = { "2026-02-23": entry("2026-02-23", { energy: 8 }) };
+    const draftsByDate: Record<string, CheckInDraft> = {
+      "2026-02-23": {
+        date: "2026-02-23",
+        answers: { energy: 3, notes: "Morning draft" },
+        updatedAt: "2026-02-23T08:00:00Z",
+      },
+    };
+
+    expect(
+      resolveCheckinDraftAnswers("2026-02-23", QUESTIONS, entriesByDate, draftsByDate),
+    ).toEqual({
+      energy: 3,
+      caffeine_count: 0,
+      notes: "Morning draft",
+    });
+  });
+
   it("returns selected day saved answers when selected day exists", () => {
     const entriesByDate = {
       "2026-02-22": entry("2026-02-22", { energy: 5 }),

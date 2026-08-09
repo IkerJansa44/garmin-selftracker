@@ -114,6 +114,12 @@ export interface CheckInEntry {
   completedAt: string;
 }
 
+export interface CheckInDraft {
+  date: string;
+  answers: Record<string, string | number | boolean>;
+  updatedAt: string;
+}
+
 export type AnalysisValueRole = "predictor" | "target";
 
 export interface AnalysisValueRecord {

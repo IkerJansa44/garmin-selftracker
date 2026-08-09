@@ -21,8 +21,10 @@ from src.correlation_notifications import (
     notify_new_meaningful_correlations,
 )
 from src.db import (
-    build_time_to_sleep_gap_by_metric_date,
     build_sleep_consistency_by_source_date,
+    build_time_to_sleep_gap_by_metric_date,
+    delete_checkin_draft,
+    get_checkin_drafts,
     connect_db,
     get_analysis_values,
     get_checkin_entries,
@@ -31,6 +33,7 @@ from src.db import (
     init_db,
     rebuild_analysis_values,
     upsert_checkin_entry,
+    upsert_checkin_draft,
     upsert_setting_json,
 )
 from src.derived_metrics import (
@@ -1379,15 +1382,18 @@ def _normalize_answers_payload(payload: Any) -> dict[str, Any] | None:
 
 def _load_checkins_payload(
     db_path: str, from_date: date, to_date: date
-) -> list[dict[str, Any]]:
+) -> dict[str, list[dict[str, Any]]]:
     connection = connect_db(db_path)
     try:
         init_db(connection)
-        return get_checkin_entries(
-            connection,
-            from_date=from_date.isoformat(),
-            to_date=to_date.isoformat(),
-        )
+        date_range = {
+            "from_date": from_date.isoformat(),
+            "to_date": to_date.isoformat(),
+        }
+        return {
+            "entries": get_checkin_entries(connection, **date_range),
+            "drafts": get_checkin_drafts(connection, **date_range),
+        }
     finally:
         connection.close()
 
@@ -1418,7 +1424,28 @@ def _save_checkin_payload(db_path: str, payload: Any) -> dict[str, Any]:
     connection = connect_db(db_path)
     try:
         init_db(connection)
-        return upsert_checkin_entry(
+        entry = upsert_checkin_entry(
+            connection,
+            checkin_date=checkin_date.isoformat(),
+            answers=answers_payload,
+        )
+        delete_checkin_draft(connection, checkin_date=checkin_date.isoformat())
+        return entry
+    finally:
+        connection.close()
+
+
+def _save_checkin_draft_payload(db_path: str, payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("Check-in draft payload must be a JSON object")
+    checkin_date = _parse_iso_date(payload.get("date"), field_name="date")
+    answers_payload = _normalize_answers_payload(payload.get("answers"))
+    if answers_payload is None:
+        raise ValueError("answers must be an object of scalar values")
+    connection = connect_db(db_path)
+    try:
+        init_db(connection)
+        return upsert_checkin_draft(
             connection,
             checkin_date=checkin_date.isoformat(),
             answers=answers_payload,
@@ -1755,7 +1782,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                     query,
                     max_range_days=MAX_IMPORT_RANGE_DAYS + 1,
                 )
-                entries = _load_checkins_payload(self.db_path, from_date, to_date)
+                payload = _load_checkins_payload(self.db_path, from_date, to_date)
             except ValueError as exc:
                 self._send_json(
                     HTTPStatus.BAD_REQUEST,
@@ -1769,7 +1796,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                     {"error": "Failed to load check-ins", "details": str(exc)},
                 )
                 return
-            self._send_json(HTTPStatus.OK, {"entries": entries})
+            self._send_json(HTTPStatus.OK, payload)
             return
 
         if parsed.path == "/api/dashboard-plots":
@@ -2007,6 +2034,25 @@ class ApiHandler(BaseHTTPRequestHandler):
                 )
                 return
             self._send_json(HTTPStatus.OK, {"entry": entry})
+            return
+
+        if parsed.path == "/api/checkin-drafts":
+            try:
+                draft = _save_checkin_draft_payload(self.db_path, raw_payload)
+            except ValueError as exc:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "Invalid check-in draft payload", "details": str(exc)},
+                )
+                return
+            except Exception as exc:  # pragma: no cover - runtime guard
+                logger.exception("Failed to save check-in draft")
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"error": "Failed to save check-in draft", "details": str(exc)},
+                )
+                return
+            self._send_json(HTTPStatus.OK, {"draft": draft})
             return
 
         if parsed.path == "/api/notifications/correlations":

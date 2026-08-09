@@ -49,6 +49,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { DerivedMetricCard } from "./components/DerivedMetricCard";
+import { CheckinPanel } from "./components/CheckinPanel";
 import { SleepWindowChart } from "./components/SleepWindowChart";
 import {
   DEFAULT_QUESTIONS,
@@ -117,6 +118,7 @@ import {
   fetchQuestionSettings,
   dismissCorrelationNotifications,
   saveCheckIn,
+  saveCheckInDraft,
   saveCheckinReminderSettings,
   saveDashboardPlotSettings,
   saveDerivedPredictors,
@@ -132,6 +134,7 @@ import { usePersistentState } from "./lib/storage";
 import {
   type CheckInQuestion,
   type CheckInQuestionChild,
+  type CheckInDraft,
   type CheckInEntry,
   type CheckinReminderSettings,
   type AnalysisValueRecord,
@@ -161,6 +164,9 @@ type QuestionBackfillRequest = {
 type TopCorrelationMode = "target" | "predictor";
 const DEFAULT_TOP_CORRELATION_OUTCOME: OutcomeKey = "metric:restingHr";
 const VIEW_KEYS = new Set<ViewKey>(["dashboard", "lab", "checkin", "settings"]);
+const CHECKIN_TRANSITION_DISTANCE_PX = 24;
+const CHECKIN_EXIT_DURATION_MS = 100;
+const CHECKIN_ENTER_DURATION_MS = 160;
 type GarminPlotKey =
   | "steps"
   | "calories"
@@ -1456,6 +1462,8 @@ function formatCorrelationStat(value: number): string {
 function App() {
   const appRef = useRef<HTMLDivElement | null>(null);
   const heroRef = useRef<HTMLDivElement | null>(null);
+  const checkinPanelRef = useRef<HTMLDivElement | null>(null);
+  const isCheckinTransitioningRef = useRef(false);
 
   const [activeView, setActiveView] = useState<ViewKey>(readUrlView);
   const [rangePreset, setRangePreset] = usePersistentState<number>(
@@ -1482,10 +1490,16 @@ function App() {
   const [pendingAddPlotChartStyle, setPendingAddPlotChartStyle] = useState<DashboardPlotChartStyle>("line");
   const [pendingAddPlotAggregation, setPendingAddPlotAggregation] = useState<PlotAggregation>("daily");
   const [pendingAddPlotRolling, setPendingAddPlotRolling] = useState(false);
-  const [draftAnswers, setDraftAnswers] = usePersistentState<Record<string, string | number | boolean>>(
-    "ui.checkinDraft",
+  const [draftAnswers, setDraftAnswers] = useState<Record<string, string | number | boolean>>(
     defaultDraftAnswers(),
   );
+  const draftAnswersRef = useRef(draftAnswers);
+  const draftSaveTimeoutRef = useRef<number | null>(null);
+  const pendingDraftRef = useRef<{
+    date: string;
+    answers: Record<string, string | number | boolean>;
+  } | null>(null);
+  const draftSavePromisesRef = useRef(new Set<Promise<void>>());
   const [isScrolled, setIsScrolled] = useState(false);
   const [questionLibrary, setQuestionLibrary] = useState<CheckInQuestion[]>(DEFAULT_QUESTIONS);
   const [selectedQuestionId, setSelectedQuestionId] = useState("");
@@ -1515,6 +1529,9 @@ function App() {
   const [hrZoneBounds, setHrZoneBounds] = useState<number[] | null>(null);
   const [analysisValues, setAnalysisValues] = useState<AnalysisValueRecord[]>([]);
   const [checkinEntriesByDate, setCheckinEntriesByDate] = useState<Record<string, CheckInEntry>>({});
+  const [checkinDraftsByDate, setCheckinDraftsByDate] = useState<Record<string, CheckInDraft>>({});
+  const [draftSaveState, setDraftSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [draftSaveDate, setDraftSaveDate] = useState<string | null>(null);
   const [checkinSyncError, setCheckinSyncError] = useState<string | null>(null);
   const [isSavingCheckin, setIsSavingCheckin] = useState(false);
   const [isLoadingCheckins, setIsLoadingCheckins] = useState(false);
@@ -1619,6 +1636,45 @@ function App() {
     scheduleCorrelationTooltipHide();
   }, [scheduleCorrelationTooltipHide]);
 
+  const persistPendingCheckinDraft = useCallback(() => {
+    const pendingDraft = pendingDraftRef.current;
+    if (!pendingDraft) return;
+    pendingDraftRef.current = null;
+    draftSaveTimeoutRef.current = null;
+    let failed = false;
+    const promise = saveCheckInDraft(pendingDraft.date, pendingDraft.answers)
+      .then(({ draft }) => {
+        setCheckinDraftsByDate((previous) => ({ ...previous, [draft.date]: draft }));
+      })
+      .catch(() => {
+        failed = true;
+      })
+      .finally(() => {
+        draftSavePromisesRef.current.delete(promise);
+        if (draftSavePromisesRef.current.size || pendingDraftRef.current) return;
+        setDraftSaveState(failed ? "error" : "saved");
+      });
+    draftSavePromisesRef.current.add(promise);
+  }, []);
+
+  const scheduleCheckinDraftSave = useCallback(
+    (date: string, answers: Record<string, string | number | boolean>) => {
+      if (pendingDraftRef.current?.date !== date) {
+        if (draftSaveTimeoutRef.current !== null) {
+          window.clearTimeout(draftSaveTimeoutRef.current);
+        }
+        persistPendingCheckinDraft();
+      } else if (draftSaveTimeoutRef.current !== null) {
+        window.clearTimeout(draftSaveTimeoutRef.current);
+      }
+      pendingDraftRef.current = { date, answers };
+      setDraftSaveDate(date);
+      setDraftSaveState("saving");
+      draftSaveTimeoutRef.current = window.setTimeout(persistPendingCheckinDraft, 500);
+    },
+    [persistPendingCheckinDraft],
+  );
+
   useEffect(() => () => {
     if (correlationTooltipHideTimeoutRef.current !== null) {
       window.clearTimeout(correlationTooltipHideTimeoutRef.current);
@@ -1701,12 +1757,16 @@ function App() {
   useEffect(() => {
     if (!allRecords.length) {
       setCheckinEntriesByDate({});
+      setCheckinDraftsByDate({});
       return;
     }
     const controller = new AbortController();
     const loadCheckins = async () => {
       const firstDate = allRecords[0]?.date;
-      const lastDate = allRecords[allRecords.length - 1]?.date;
+      const lastDate = [allRecords.at(-1)?.date, formatIsoDateLocal(new Date())]
+        .filter((value): value is string => Boolean(value))
+        .sort()
+        .at(-1);
       if (!firstDate || !lastDate) {
         return;
       }
@@ -1716,6 +1776,9 @@ function App() {
         const payload = await fetchCheckIns(firstDate, lastDate, controller.signal);
         setCheckinEntriesByDate(
           Object.fromEntries(payload.entries.map((entry) => [entry.date, entry])),
+        );
+        setCheckinDraftsByDate(
+          Object.fromEntries(payload.drafts.map((draft) => [draft.date, draft])),
         );
       } catch (error) {
         if (controller.signal.aborted) {
@@ -2025,12 +2088,29 @@ function App() {
     draftDateRef.current = selectedCheckinDate;
     // Pre-load = fetch hasn't started yet or is still in-flight.
     draftWasPreLoadRef.current = !checkinFetchEverStartedRef.current || isLoadingCheckins;
-    setDraftAnswers(resolveCheckinDraftAnswers(selectedCheckinDate, questionLibrary, checkinEntriesByDate));
-  }, [checkinEntriesByDate, isLoadingCheckins, questionLibrary, selectedCheckinDate, setDraftAnswers]);
+    setDraftSaveState("idle");
+    setDraftSaveDate(null);
+    const answers = resolveCheckinDraftAnswers(
+      selectedCheckinDate,
+      questionLibrary,
+      checkinEntriesByDate,
+      checkinDraftsByDate,
+    );
+    draftAnswersRef.current = answers;
+    setDraftAnswers(answers);
+  }, [
+    checkinDraftsByDate,
+    checkinEntriesByDate,
+    isLoadingCheckins,
+    questionLibrary,
+    selectedCheckinDate,
+  ]);
 
   useEffect(() => {
-    setDraftAnswers((previous) => pruneHiddenChildAnswers(questionLibrary, previous));
-  }, [draftAnswers, questionLibrary, setDraftAnswers]);
+    const answers = pruneHiddenChildAnswers(questionLibrary, draftAnswersRef.current);
+    draftAnswersRef.current = answers;
+    setDraftAnswers(answers);
+  }, [questionLibrary]);
 
   useEffect(() => {
     const context = gsap.context(() => {
@@ -2723,6 +2803,8 @@ function App() {
     [allRecords, selectedCheckinDate],
   );
   const selectedCheckinEntry = checkinEntriesByDate[selectedCheckinDate];
+  const selectedCheckinDraft = checkinDraftsByDate[selectedCheckinDate];
+  const selectedDraftSaveState = draftSaveDate === selectedCheckinDate ? draftSaveState : "idle";
   const selectedCheckinWeekday = useMemo(
     () => formatIsoDateWeekday(selectedCheckinDate),
     [selectedCheckinDate],
@@ -2889,15 +2971,28 @@ function App() {
   };
 
   const handleQuickSave = async () => {
+    if (draftSaveTimeoutRef.current !== null) {
+      window.clearTimeout(draftSaveTimeoutRef.current);
+      draftSaveTimeoutRef.current = null;
+    }
+    pendingDraftRef.current = null;
     setIsSavingCheckin(true);
     setCheckinSaveMessage(null);
     setCheckinSyncError(null);
     try {
-      const payload = await saveCheckIn(selectedCheckinDate, draftAnswers);
+      await Promise.all(draftSavePromisesRef.current);
+      const payload = await saveCheckIn(selectedCheckinDate, draftAnswersRef.current);
       setCheckinEntriesByDate((previous) => ({
         ...previous,
         [payload.entry.date]: payload.entry,
       }));
+      setCheckinDraftsByDate((previous) => {
+        const next = { ...previous };
+        delete next[payload.entry.date];
+        return next;
+      });
+      setDraftSaveState("idle");
+      setDraftSaveDate(null);
       await loadCorrelationValues();
       setCheckinSaveMessage(`Saved check-in for ${formatReadableDate(payload.entry.date)}.`);
     } catch (error) {
@@ -2919,13 +3014,69 @@ function App() {
     setShowAddPlotMenu(false);
   };
 
-  const handleCheckinDateStep = (delta: number) => {
+  const handleCheckinDateStep = (delta: number): boolean => {
     const parsed = parseIsoDate(selectedCheckinDate);
-    if (!parsed) return;
+    if (!parsed) return false;
     const next = new Date(parsed.getTime() + delta * 86_400_000);
     const nextStr = formatIsoDateLocal(next);
-    if (nextStr > maxImportDate) return;
+    if (nextStr > maxImportDate) return false;
     setSelectedCheckinDate(nextStr);
+    return true;
+  };
+
+  const handleAnimatedCheckinDateStep = async (delta: number) => {
+    if (isCheckinTransitioningRef.current) return;
+    const panel = checkinPanelRef.current;
+    if (
+      !panel ||
+      typeof panel.animate !== "function" ||
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      handleCheckinDateStep(delta);
+      return;
+    }
+
+    isCheckinTransitioningRef.current = true;
+    const exitOffset = -delta * CHECKIN_TRANSITION_DISTANCE_PX;
+    const enterOffset = delta * CHECKIN_TRANSITION_DISTANCE_PX;
+    let exitAnimation: Animation | null = null;
+    let enterAnimation: Animation | null = null;
+    let dateChanged = false;
+    try {
+      exitAnimation = panel.animate(
+        [
+          { transform: "translateX(0)", opacity: 1 },
+          { transform: `translateX(${exitOffset}px)`, opacity: 0.72 },
+        ],
+        {
+          duration: CHECKIN_EXIT_DURATION_MS,
+          easing: "cubic-bezier(0.4, 0, 1, 1)",
+          fill: "forwards",
+        },
+      );
+      await exitAnimation.finished;
+      dateChanged = handleCheckinDateStep(delta);
+      if (!dateChanged) return;
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      enterAnimation = panel.animate(
+        [
+          { transform: `translateX(${enterOffset}px)`, opacity: 0.72 },
+          { transform: "translateX(0)", opacity: 1 },
+        ],
+        {
+          duration: CHECKIN_ENTER_DURATION_MS,
+          easing: "cubic-bezier(0, 0, 0.2, 1)",
+        },
+      );
+      exitAnimation.cancel();
+      await enterAnimation.finished;
+    } catch {
+      if (!dateChanged) handleCheckinDateStep(delta);
+    } finally {
+      exitAnimation?.cancel();
+      enterAnimation?.cancel();
+      isCheckinTransitioningRef.current = false;
+    }
   };
 
   const handleAddDashboardPlot = (
@@ -3229,11 +3380,15 @@ function App() {
 
   const updateDraftAnswer = useCallback(
     (fieldId: string, nextValue: string | number | boolean) => {
-      setDraftAnswers((previous) =>
-        pruneHiddenChildAnswers(questionLibrary, { ...previous, [fieldId]: nextValue }),
+      const answers = pruneHiddenChildAnswers(
+        questionLibrary,
+        { ...draftAnswersRef.current, [fieldId]: nextValue },
       );
+      draftAnswersRef.current = answers;
+      setDraftAnswers(answers);
+      scheduleCheckinDraftSave(selectedCheckinDate, answers);
     },
-    [questionLibrary, setDraftAnswers],
+    [questionLibrary, scheduleCheckinDraftSave, selectedCheckinDate],
   );
 
   const renderQuestionInput = (question: CheckInQuestion | CheckInQuestionChild) => (
@@ -3242,13 +3397,14 @@ function App() {
       question={question}
       value={draftAnswers[question.id]}
       onChange={(nextValue) => updateDraftAnswer(question.id, nextValue)}
-      onClear={() =>
-        setDraftAnswers((previous) => {
-          const nextAnswers = { ...previous };
-          delete nextAnswers[question.id];
-          return pruneHiddenChildAnswers(questionLibrary, nextAnswers);
-        })
-      }
+      onClear={() => {
+        const answers = { ...draftAnswersRef.current };
+        delete answers[question.id];
+        const prunedAnswers = pruneHiddenChildAnswers(questionLibrary, answers);
+        draftAnswersRef.current = prunedAnswers;
+        setDraftAnswers(prunedAnswers);
+        scheduleCheckinDraftSave(selectedCheckinDate, prunedAnswers);
+      }}
     />
   );
 
@@ -4288,16 +4444,16 @@ function App() {
 
         {activeView === "checkin" && (
           <section className="gsap-fade">
-            <article
-              className={clsx(
-                "panel p-6 transition-colors duration-300 sm:p-8",
-                isSelectedDateSaved && !isCheckinDirty && "border border-[#d7e6dc]",
-              )}
-              style={
-                isSelectedDateSaved && !isCheckinDirty
-                  ? { backgroundColor: "#edf5ef" }
+            <CheckinPanel
+              panelRef={checkinPanelRef}
+              isSaved={isSelectedDateSaved}
+              isDirty={isCheckinDirty}
+              onNext={
+                selectedCheckinDate < maxImportDate
+                  ? () => void handleAnimatedCheckinDateStep(1)
                   : undefined
               }
+              onPrevious={() => void handleAnimatedCheckinDateStep(-1)}
             >
               <div className="mb-6 flex items-end gap-8">
                 <div>
@@ -4311,7 +4467,7 @@ function App() {
                       aria-label="Previous day"
                       className="focusable flex min-h-11 w-9 items-center justify-center rounded-2xl bg-subsurface transition hover:bg-surface-hover"
                       type="button"
-                      onClick={() => handleCheckinDateStep(-1)}
+                      onClick={() => void handleAnimatedCheckinDateStep(-1)}
                     >
                       ‹
                     </button>
@@ -4327,7 +4483,7 @@ function App() {
                       className="focusable flex min-h-11 w-9 items-center justify-center rounded-2xl bg-subsurface transition hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-40"
                       disabled={selectedCheckinDate >= maxImportDate}
                       type="button"
-                      onClick={() => handleCheckinDateStep(1)}
+                      onClick={() => void handleAnimatedCheckinDateStep(1)}
                     >
                       ›
                     </button>
@@ -4340,13 +4496,23 @@ function App() {
                     {selectedCheckinWeekday}
                   </p>
                 )}
-                {(isLoadingCheckins || checkinSyncError || (selectedCheckinEntry && isCheckinDirty)) && (
+                {(isLoadingCheckins ||
+                  checkinSyncError ||
+                  selectedDraftSaveState !== "idle" ||
+                  selectedCheckinDraft ||
+                  (selectedCheckinEntry && isCheckinDirty)) && (
                   <p className={clsx("text-muted", selectedCheckinWeekday && "mt-1")}>
                     {isLoadingCheckins
                       ? "Loading check-ins..."
                       : checkinSyncError
                         ? `SQLite sync failed: ${checkinSyncError}`
-                        : "Unsaved modifications."}
+                        : selectedDraftSaveState === "saving"
+                          ? "Saving draft to SQLite..."
+                          : selectedDraftSaveState === "error"
+                            ? "Draft could not be saved to SQLite."
+                            : selectedCheckinDraft || selectedDraftSaveState === "saved"
+                              ? "Draft saved to SQLite · not yet checked in."
+                              : "Unsaved modifications."}
                   </p>
                 )}
                 {checkinSaveMessage && <p className="mt-1 text-success">{checkinSaveMessage}</p>}
@@ -4378,6 +4544,17 @@ function App() {
                     </div>
                   );
                 })}
+              </div>
+
+              <div className="mt-6 flex justify-end">
+                <button
+                  className="focusable min-h-11 rounded-capsule bg-accent px-6 text-sm font-semibold text-white shadow-soft disabled:cursor-not-allowed disabled:opacity-65"
+                  disabled={isSavingCheckin}
+                  type="button"
+                  onClick={() => void handleQuickSave()}
+                >
+                  {isSavingCheckin ? "Saving..." : "Save Check-In"}
+                </button>
               </div>
 
               <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -4442,17 +4619,7 @@ function App() {
                 />
               ))}
 
-              <div className="mt-6 flex justify-end">
-                <button
-                  className="focusable min-h-11 rounded-capsule bg-accent px-6 text-sm font-semibold text-white shadow-soft disabled:cursor-not-allowed disabled:opacity-65"
-                  disabled={isSavingCheckin}
-                  type="button"
-                  onClick={() => void handleQuickSave()}
-                >
-                  {isSavingCheckin ? "Saving..." : "Save Check-In"}
-                </button>
-              </div>
-            </article>
+            </CheckinPanel>
           </section>
         )}
 

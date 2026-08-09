@@ -7,13 +7,16 @@ from src.db import (
     avg_hr_1h_before_sleep_from_raw_payloads,
     connect_db,
     create_sync_run,
+    delete_checkin_draft,
     finalize_sync_run,
+    get_checkin_drafts,
     get_checkin_entries,
     get_setting_json,
     init_db,
     update_sync_run_progress,
     upsert_activity,
     upsert_checkin_entry,
+    upsert_checkin_draft,
     upsert_daily_metrics,
     upsert_raw_payload,
     upsert_setting_json,
@@ -274,4 +277,39 @@ def test_checkin_entries_upsert_and_query(tmp_path: Path) -> None:
     assert entries[1]["date"] == "2026-02-21"
     assert entries[1]["answers"] == {"energy": 6, "late_meal": "22:10"}
 
+    conn.close()
+
+
+def test_checkin_drafts_upsert_query_and_delete(tmp_path: Path) -> None:
+    conn = connect_db(str(tmp_path / "garmin.db"))
+    init_db(conn)
+
+    upsert_checkin_draft(
+        conn,
+        checkin_date="2026-02-20",
+        answers={"energy": 2},
+    )
+    upsert_checkin_draft(
+        conn,
+        checkin_date="2026-02-20",
+        answers={"energy": 4, "notes": "Still tired"},
+    )
+
+    drafts = get_checkin_drafts(
+        conn,
+        from_date="2026-02-20",
+        to_date="2026-02-20",
+    )
+    assert len(drafts) == 1
+    assert drafts[0]["answers"] == {"energy": 4, "notes": "Still tired"}
+
+    delete_checkin_draft(conn, checkin_date="2026-02-20")
+    assert (
+        get_checkin_drafts(
+            conn,
+            from_date="2026-02-20",
+            to_date="2026-02-20",
+        )
+        == []
+    )
     conn.close()

@@ -74,6 +74,12 @@ CREATE TABLE IF NOT EXISTS checkin_entries (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS checkin_drafts (
+    checkin_date TEXT PRIMARY KEY,
+    answers_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS analysis_values (
     analysis_date TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('predictor', 'target')),

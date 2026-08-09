@@ -1,6 +1,7 @@
 import {
   type AnalysisValueRecord,
   type CheckInEntry,
+  type CheckInDraft,
   type DerivedPredictorDefinition,
   type CheckinReminderSettings,
   type CheckInQuestion,
@@ -54,6 +55,7 @@ export interface DerivedPredictorsApiResponse {
 
 interface CheckInsApiResponse {
   entries: CheckInEntry[];
+  drafts: CheckInDraft[];
 }
 
 interface CorrelationValuesApiResponse {
@@ -62,6 +64,10 @@ interface CorrelationValuesApiResponse {
 
 interface CheckInSaveApiResponse {
   entry: CheckInEntry;
+}
+
+interface CheckInDraftSaveApiResponse {
+  draft: CheckInDraft;
 }
 
 interface ImportApiResponse {
@@ -249,6 +255,23 @@ export async function saveCheckIn(
     throw await readApiError(response, `Saving check-in failed: ${response.status}`);
   }
   return (await response.json()) as CheckInSaveApiResponse;
+}
+
+export async function saveCheckInDraft(
+  date: string,
+  answers: Record<string, string | number | boolean>,
+  signal?: AbortSignal,
+): Promise<CheckInDraftSaveApiResponse> {
+  const response = await fetch("/api/checkin-drafts", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ date, answers }),
+    signal,
+  });
+  if (!response.ok) {
+    throw await readApiError(response, `Saving check-in draft failed: ${response.status}`);
+  }
+  return (await response.json()) as CheckInDraftSaveApiResponse;
 }
 
 export async function dismissCorrelationNotifications(

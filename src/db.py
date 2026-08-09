@@ -351,6 +351,60 @@ def upsert_checkin_entry(
     }
 
 
+def upsert_checkin_draft(
+    connection: sqlite3.Connection,
+    *,
+    checkin_date: str,
+    answers: dict[str, Any],
+) -> dict[str, Any]:
+    updated_at = utc_now()
+    connection.execute(
+        """
+        INSERT INTO checkin_drafts (checkin_date, answers_json, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(checkin_date) DO UPDATE SET
+            answers_json = excluded.answers_json,
+            updated_at = excluded.updated_at
+        """,
+        (checkin_date, json.dumps(answers), updated_at),
+    )
+    connection.commit()
+    return {"date": checkin_date, "answers": answers, "updatedAt": updated_at}
+
+
+def delete_checkin_draft(connection: sqlite3.Connection, *, checkin_date: str) -> None:
+    connection.execute(
+        "DELETE FROM checkin_drafts WHERE checkin_date = ?",
+        (checkin_date,),
+    )
+    connection.commit()
+
+
+def get_checkin_drafts(
+    connection: sqlite3.Connection,
+    *,
+    from_date: str,
+    to_date: str,
+) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT checkin_date, answers_json, updated_at
+        FROM checkin_drafts
+        WHERE checkin_date BETWEEN ? AND ?
+        ORDER BY checkin_date
+        """,
+        (from_date, to_date),
+    ).fetchall()
+    return [
+        {
+            "date": str(row["checkin_date"]),
+            "answers": json.loads(str(row["answers_json"])),
+            "updatedAt": str(row["updated_at"]),
+        }
+        for row in rows
+    ]
+
+
 def get_checkin_entries(
     connection: sqlite3.Connection,
     *,
