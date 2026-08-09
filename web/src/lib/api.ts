@@ -121,93 +121,88 @@ async function readApiError(response: Response, fallback: string): Promise<Error
   return new Error(fallback);
 }
 
+type ApiRequestOptions = Omit<RequestInit, "body"> & { json?: unknown };
+
+async function apiRequest<T>(
+  url: string,
+  failureMessage: string,
+  { json, ...options }: ApiRequestOptions = {},
+): Promise<T> {
+  const response = await fetch(url, {
+    ...options,
+    ...(json === undefined
+      ? {}
+      : {
+          headers: { "Content-Type": "application/json", ...options.headers },
+          body: JSON.stringify(json),
+        }),
+  });
+  if (!response.ok) {
+    throw await readApiError(response, `${failureMessage}: ${response.status}`);
+  }
+  return response.json() as Promise<T>;
+}
+
 export async function fetchDashboardData(
   days = 365,
   signal?: AbortSignal,
 ): Promise<DashboardApiResponse> {
-  const response = await fetch(`/api/dashboard?days=${days}`, { signal });
-  if (!response.ok) {
-    throw new Error(`Dashboard API failed: ${response.status}`);
-  }
-  return (await response.json()) as DashboardApiResponse;
+  return apiRequest(`/api/dashboard?days=${days}`, "Dashboard API failed", { signal });
 }
 
 export async function fetchQuestionSettings(
   signal?: AbortSignal,
 ): Promise<QuestionsApiResponse> {
-  const response = await fetch("/api/questions", { signal });
-  if (!response.ok) {
-    throw new Error(`Questions API failed: ${response.status}`);
-  }
-  return (await response.json()) as QuestionsApiResponse;
+  return apiRequest("/api/questions", "Questions API failed", { signal });
 }
 
 export async function fetchDashboardPlotSettings(
   signal?: AbortSignal,
 ): Promise<DashboardPlotsApiResponse> {
-  const response = await fetch("/api/dashboard-plots", { signal });
-  if (!response.ok) {
-    throw new Error(`Dashboard plot settings API failed: ${response.status}`);
-  }
-  return (await response.json()) as DashboardPlotsApiResponse;
+  return apiRequest("/api/dashboard-plots", "Dashboard plot settings API failed", { signal });
 }
 
 export async function saveDashboardPlotSettings(
   plots: DashboardPlotPreference[],
   signal?: AbortSignal,
 ): Promise<DashboardPlotsApiResponse> {
-  const response = await fetch("/api/dashboard-plots", {
+  return apiRequest("/api/dashboard-plots", "Saving dashboard plot settings failed", {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ plots }),
+    json: { plots },
     signal,
   });
-  if (!response.ok) {
-    throw await readApiError(response, `Saving dashboard plot settings failed: ${response.status}`);
-  }
-  return (await response.json()) as DashboardPlotsApiResponse;
 }
 
 export async function saveQuestionSettings(
   questions: CheckInQuestion[],
   signal?: AbortSignal,
 ): Promise<QuestionsApiResponse> {
-  const response = await fetch("/api/questions", {
+  return apiRequest("/api/questions", "Saving questions failed", {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ questions }),
+    json: { questions },
     signal,
   });
-  if (!response.ok) {
-    throw new Error(`Saving questions failed: ${response.status}`);
-  }
-  return (await response.json()) as QuestionsApiResponse;
 }
 
 export async function fetchDerivedPredictors(
   signal?: AbortSignal,
 ): Promise<DerivedPredictorsApiResponse> {
-  const response = await fetch("/api/correlation/derived-predictors", { signal });
-  if (!response.ok) {
-    throw new Error(`Derived predictors API failed: ${response.status}`);
-  }
-  return (await response.json()) as DerivedPredictorsApiResponse;
+  return apiRequest(
+    "/api/correlation/derived-predictors",
+    "Derived predictors API failed",
+    { signal },
+  );
 }
 
 export async function saveDerivedPredictors(
   definitions: DerivedPredictorDefinition[],
   signal?: AbortSignal,
 ): Promise<DerivedPredictorsApiResponse> {
-  const response = await fetch("/api/correlation/derived-predictors", {
+  return apiRequest("/api/correlation/derived-predictors", "Saving derived predictors failed", {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ definitions }),
+    json: { definitions },
     signal,
   });
-  if (!response.ok) {
-    throw await readApiError(response, `Saving derived predictors failed: ${response.status}`);
-  }
-  return (await response.json()) as DerivedPredictorsApiResponse;
 }
 
 export async function fetchCheckIns(
@@ -215,14 +210,11 @@ export async function fetchCheckIns(
   toDate: string,
   signal?: AbortSignal,
 ): Promise<CheckInsApiResponse> {
-  const response = await fetch(
+  return apiRequest(
     `/api/checkins?fromDate=${encodeURIComponent(fromDate)}&toDate=${encodeURIComponent(toDate)}`,
+    "Check-ins API failed",
     { signal },
   );
-  if (!response.ok) {
-    throw new Error(`Check-ins API failed: ${response.status}`);
-  }
-  return (await response.json()) as CheckInsApiResponse;
 }
 
 export async function fetchCorrelationValues(
@@ -230,14 +222,11 @@ export async function fetchCorrelationValues(
   toDate: string,
   signal?: AbortSignal,
 ): Promise<CorrelationValuesApiResponse> {
-  const response = await fetch(
+  return apiRequest(
     `/api/correlation/values?fromDate=${encodeURIComponent(fromDate)}&toDate=${encodeURIComponent(toDate)}`,
+    "Correlation values API failed",
     { signal },
   );
-  if (!response.ok) {
-    throw new Error(`Correlation values API failed: ${response.status}`);
-  }
-  return (await response.json()) as CorrelationValuesApiResponse;
 }
 
 export async function saveCheckIn(
@@ -245,16 +234,11 @@ export async function saveCheckIn(
   answers: Record<string, string | number | boolean>,
   signal?: AbortSignal,
 ): Promise<CheckInSaveApiResponse> {
-  const response = await fetch("/api/checkins", {
+  return apiRequest("/api/checkins", "Saving check-in failed", {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ date, answers }),
+    json: { date, answers },
     signal,
   });
-  if (!response.ok) {
-    throw await readApiError(response, `Saving check-in failed: ${response.status}`);
-  }
-  return (await response.json()) as CheckInSaveApiResponse;
 }
 
 export async function saveCheckInDraft(
@@ -262,74 +246,49 @@ export async function saveCheckInDraft(
   answers: Record<string, string | number | boolean>,
   signal?: AbortSignal,
 ): Promise<CheckInDraftSaveApiResponse> {
-  const response = await fetch("/api/checkin-drafts", {
+  return apiRequest("/api/checkin-drafts", "Saving check-in draft failed", {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ date, answers }),
+    json: { date, answers },
     signal,
   });
-  if (!response.ok) {
-    throw await readApiError(response, `Saving check-in draft failed: ${response.status}`);
-  }
-  return (await response.json()) as CheckInDraftSaveApiResponse;
 }
 
 export async function dismissCorrelationNotifications(
   ids: string[],
   signal?: AbortSignal,
 ): Promise<{ correlations: CorrelationNotification[] }> {
-  const response = await fetch("/api/notifications/correlations", {
+  return apiRequest("/api/notifications/correlations", "Dismissing notifications failed", {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ids }),
+    json: { ids },
     signal,
   });
-  if (!response.ok) {
-    throw await readApiError(response, `Dismissing notifications failed: ${response.status}`);
-  }
-  return (await response.json()) as { correlations: CorrelationNotification[] };
 }
 
 export async function fetchCheckinReminderSettings(
   signal?: AbortSignal,
 ): Promise<CheckinReminderSettings> {
-  const response = await fetch("/api/checkin-reminder-settings", { signal });
-  if (!response.ok) {
-    throw new Error(`Check-in reminder settings API failed: ${response.status}`);
-  }
-  return (await response.json()) as CheckinReminderSettings;
+  return apiRequest("/api/checkin-reminder-settings", "Check-in reminder settings API failed", {
+    signal,
+  });
 }
 
 export async function saveCheckinReminderSettings(
   settings: CheckinReminderSettings,
   signal?: AbortSignal,
 ): Promise<CheckinReminderSettings> {
-  const response = await fetch("/api/checkin-reminder-settings", {
+  return apiRequest("/api/checkin-reminder-settings", "Saving check-in reminder settings failed", {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(settings),
+    json: settings,
     signal,
   });
-  if (!response.ok) {
-    throw await readApiError(
-      response,
-      `Saving check-in reminder settings failed: ${response.status}`,
-    );
-  }
-  return (await response.json()) as CheckinReminderSettings;
 }
 
 export async function startRefreshImport(signal?: AbortSignal): Promise<ImportApiResponse> {
-  const response = await fetch("/api/import", {
+  return apiRequest("/api/import", "Import refresh failed", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode: "refresh" }),
+    json: { mode: "refresh" },
     signal,
   });
-  if (!response.ok) {
-    throw await readApiError(response, `Import refresh failed: ${response.status}`);
-  }
-  return (await response.json()) as ImportApiResponse;
 }
 
 export async function startDateRangeImport(
@@ -337,25 +296,13 @@ export async function startDateRangeImport(
   toDate: string,
   signal?: AbortSignal,
 ): Promise<ImportApiResponse> {
-  const response = await fetch("/api/import", {
+  return apiRequest("/api/import", "Date range import failed", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode: "range", fromDate, toDate }),
+    json: { mode: "range", fromDate, toDate },
     signal,
   });
-  if (!response.ok) {
-    throw await readApiError(response, `Date range import failed: ${response.status}`);
-  }
-  return (await response.json()) as ImportApiResponse;
 }
 
 export async function startManualImport(signal?: AbortSignal): Promise<ManualImportApiResponse> {
-  const response = await fetch("/api/manual-import", {
-    method: "POST",
-    signal,
-  });
-  if (!response.ok) {
-    throw await readApiError(response, `Manual import failed: ${response.status}`);
-  }
-  return (await response.json()) as ManualImportApiResponse;
+  return apiRequest("/api/manual-import", "Manual import failed", { method: "POST", signal });
 }

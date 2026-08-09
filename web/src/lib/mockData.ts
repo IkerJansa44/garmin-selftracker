@@ -375,9 +375,9 @@ export function stdev(values: number[]): number {
   return Math.sqrt(variance);
 }
 
-export function pearsonCorrelation(xs: number[], ys: number[]): number {
+export function pearsonCorrelation(xs: number[], ys: number[]): number | null {
   if (xs.length !== ys.length || xs.length < 2) {
-    return 0;
+    return null;
   }
   const meanX = mean(xs);
   const meanY = mean(ys);
@@ -395,7 +395,7 @@ export function pearsonCorrelation(xs: number[], ys: number[]): number {
   }
 
   if (left === 0 || right === 0) {
-    return 0;
+    return null;
   }
 
   return numerator / Math.sqrt(left * right);

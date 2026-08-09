@@ -56,6 +56,7 @@ export function CheckinPanel({
 
   return (
     <article
+      aria-label="Daily Check-In"
       className={clsx(
         "panel touch-pan-y overflow-x-clip p-6 transition-colors duration-300 sm:p-8",
         showSavedState && "border border-[#d7e6dc]",

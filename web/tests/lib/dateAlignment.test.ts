@@ -5,7 +5,7 @@ import {
   sleepMetricDateForPredictorDate,
   shiftIsoDate,
   sleepSourceDayFromMetricDate,
-} from "./dateAlignment";
+} from "../../src/lib/dateAlignment";
 
 describe("dateAlignment", () => {
   it("shifts ISO dates across month and year boundaries", () => {

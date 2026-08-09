@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { getZone2PlusMinutes } from "./heartRateZones";
-import { type DailyRecord } from "./types";
+import { getZone2PlusMinutes } from "../../src/lib/heartRateZones";
+import { type DailyRecord } from "../../src/lib/types";
 
 function buildPredictors(
   overrides: Partial<DailyRecord["predictors"]> = {},

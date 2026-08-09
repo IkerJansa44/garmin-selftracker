@@ -165,11 +165,13 @@ def _build_correlation_pairs(
 ) -> list[MeaningfulCorrelation]:
     by_role_feature: dict[tuple[str, str], dict[str, float]] = {}
     for value in values:
+        role = str(value["role"])
+        feature_key = str(value["featureKey"])
+        if not _feature_supports_role(feature_key, role, questions):
+            continue
         numeric = _numeric_value(value, questions)
         if numeric is None:
             continue
-        role = str(value["role"])
-        feature_key = str(value["featureKey"])
         date_key = str(value["analysisDate"])
         by_role_feature.setdefault((role, feature_key), {})[date_key] = numeric
 
@@ -215,6 +217,20 @@ def _build_correlation_pairs(
                 )
             )
     return pairs
+
+
+def _feature_supports_role(
+    feature_key: str,
+    role: str,
+    questions: dict[str, dict[str, Any]],
+) -> bool:
+    if not feature_key.startswith("question:"):
+        return True
+    question = questions.get(feature_key.removeprefix("question:"))
+    if not question:
+        return False
+    expected_mode = "predictor_next_day" if role == "predictor" else "target_same_day"
+    return question.get("analysisMode", "predictor_next_day") == expected_mode
 
 
 def _numeric_value(

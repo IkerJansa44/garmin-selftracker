@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
 from src.config import SettingsError, load_settings
@@ -1398,6 +1398,16 @@ def _load_checkins_payload(
         connection.close()
 
 
+def _load_checkin_range_payload(
+    db_path: str, query: dict[str, list[str]]
+) -> dict[str, list[dict[str, Any]]]:
+    from_date, to_date = _parse_date_range_query(
+        query,
+        max_range_days=MAX_IMPORT_RANGE_DAYS + 1,
+    )
+    return _load_checkins_payload(db_path, from_date, to_date)
+
+
 def _load_correlation_values_payload(
     db_path: str, from_date: date, to_date: date
 ) -> list[dict[str, Any]]:
@@ -1412,6 +1422,16 @@ def _load_correlation_values_payload(
         )
     finally:
         connection.close()
+
+
+def _load_correlation_range_payload(
+    db_path: str, query: dict[str, list[str]]
+) -> dict[str, list[dict[str, Any]]]:
+    from_date, to_date = _parse_date_range_query(
+        query,
+        max_range_days=MAX_IMPORT_RANGE_DAYS,
+    )
+    return {"values": _load_correlation_values_payload(db_path, from_date, to_date)}
 
 
 def _save_checkin_payload(db_path: str, payload: Any) -> dict[str, Any]:
@@ -1694,6 +1714,39 @@ class ApiHandler(BaseHTTPRequestHandler):
     settings: ApiSettings | None = None
     import_job_manager = ImportJobManager()
 
+    def _send_operation(
+        self,
+        operation: Callable[[], Any],
+        *,
+        failure_log: str,
+        failure_error: str,
+        invalid_error: str | None = None,
+        wrap: Callable[[Any], dict[str, Any]] | None = None,
+    ) -> None:
+        try:
+            result = operation()
+        except ValueError as exc:
+            if invalid_error is not None:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": invalid_error, "details": str(exc)},
+                )
+                return
+            logger.exception(failure_log)
+            self._send_json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                {"error": failure_error, "details": str(exc)},
+            )
+            return
+        except Exception as exc:  # pragma: no cover - runtime guard
+            logger.exception(failure_log)
+            self._send_json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                {"error": failure_error, "details": str(exc)},
+            )
+            return
+        self._send_json(HTTPStatus.OK, wrap(result) if wrap else result)
+
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler signature
         parsed = urlparse(self.path)
 
@@ -1704,135 +1757,74 @@ class ApiHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/dashboard":
             query = parse_qs(parsed.query)
             days = _parse_days(query)
-            try:
-                payload = _load_dashboard_payload(self.db_path, days)
-            except Exception as exc:  # pragma: no cover - runtime guard
-                logger.exception("Failed to build dashboard payload")
-                self._send_json(
-                    HTTPStatus.INTERNAL_SERVER_ERROR,
-                    {"error": "Failed to load dashboard data", "details": str(exc)},
-                )
-                return
-
-            self._send_json(HTTPStatus.OK, payload)
+            self._send_operation(
+                lambda: _load_dashboard_payload(self.db_path, days),
+                failure_log="Failed to build dashboard payload",
+                failure_error="Failed to load dashboard data",
+            )
             return
 
         if parsed.path == "/api/questions":
-            try:
-                payload = _load_questions_payload(self.db_path)
-            except Exception as exc:  # pragma: no cover - runtime guard
-                logger.exception("Failed to load question settings")
-                self._send_json(
-                    HTTPStatus.INTERNAL_SERVER_ERROR,
-                    {
-                        "error": "Failed to load question settings",
-                        "details": str(exc),
-                    },
-                )
-                return
-            self._send_json(HTTPStatus.OK, {"questions": payload})
+            self._send_operation(
+                lambda: _load_questions_payload(self.db_path),
+                failure_log="Failed to load question settings",
+                failure_error="Failed to load question settings",
+                wrap=lambda payload: {"questions": payload},
+            )
             return
 
         if parsed.path == "/api/correlation/derived-predictors":
-            try:
-                payload = _load_derived_predictors_payload(self.db_path)
-            except Exception as exc:  # pragma: no cover - runtime guard
-                logger.exception("Failed to load derived predictors")
-                self._send_json(
-                    HTTPStatus.INTERNAL_SERVER_ERROR,
-                    {
-                        "error": "Failed to load derived predictors",
-                        "details": str(exc),
-                    },
-                )
-                return
-            self._send_json(HTTPStatus.OK, {"definitions": payload})
+            self._send_operation(
+                lambda: _load_derived_predictors_payload(self.db_path),
+                failure_log="Failed to load derived predictors",
+                failure_error="Failed to load derived predictors",
+                wrap=lambda payload: {"definitions": payload},
+            )
             return
 
         if parsed.path == "/api/correlation/values":
             query = parse_qs(parsed.query)
-            try:
-                from_date, to_date = _parse_date_range_query(
-                    query,
-                    max_range_days=MAX_IMPORT_RANGE_DAYS,
-                )
-                values = _load_correlation_values_payload(
-                    self.db_path, from_date, to_date
-                )
-            except ValueError as exc:
-                self._send_json(
-                    HTTPStatus.BAD_REQUEST,
-                    {"error": "Invalid correlation range", "details": str(exc)},
-                )
-                return
-            except Exception as exc:  # pragma: no cover - runtime guard
-                logger.exception("Failed to load correlation values")
-                self._send_json(
-                    HTTPStatus.INTERNAL_SERVER_ERROR,
-                    {"error": "Failed to load correlation values", "details": str(exc)},
-                )
-                return
-            self._send_json(HTTPStatus.OK, {"values": values})
+            self._send_operation(
+                lambda: _load_correlation_range_payload(self.db_path, query),
+                failure_log="Failed to load correlation values",
+                failure_error="Failed to load correlation values",
+                invalid_error="Invalid correlation range",
+            )
             return
 
         if parsed.path == "/api/checkins":
             query = parse_qs(parsed.query)
-            try:
-                from_date, to_date = _parse_date_range_query(
-                    query,
-                    max_range_days=MAX_IMPORT_RANGE_DAYS + 1,
-                )
-                payload = _load_checkins_payload(self.db_path, from_date, to_date)
-            except ValueError as exc:
-                self._send_json(
-                    HTTPStatus.BAD_REQUEST,
-                    {"error": "Invalid check-in range", "details": str(exc)},
-                )
-                return
-            except Exception as exc:  # pragma: no cover - runtime guard
-                logger.exception("Failed to load check-ins")
-                self._send_json(
-                    HTTPStatus.INTERNAL_SERVER_ERROR,
-                    {"error": "Failed to load check-ins", "details": str(exc)},
-                )
-                return
-            self._send_json(HTTPStatus.OK, payload)
+            self._send_operation(
+                lambda: _load_checkin_range_payload(self.db_path, query),
+                failure_log="Failed to load check-ins",
+                failure_error="Failed to load check-ins",
+                invalid_error="Invalid check-in range",
+            )
             return
 
         if parsed.path == "/api/dashboard-plots":
-            try:
-                plots = _load_dashboard_plots_payload(self.db_path)
-            except Exception as exc:  # pragma: no cover - runtime guard
-                logger.exception("Failed to load dashboard plot settings")
-                self._send_json(
-                    HTTPStatus.INTERNAL_SERVER_ERROR,
-                    {
-                        "error": "Failed to load dashboard plot settings",
-                        "details": str(exc),
-                    },
-                )
-                return
-            self._send_json(HTTPStatus.OK, {"plots": plots})
+            self._send_operation(
+                lambda: _load_dashboard_plots_payload(self.db_path),
+                failure_log="Failed to load dashboard plot settings",
+                failure_error="Failed to load dashboard plot settings",
+                wrap=lambda payload: {"plots": payload},
+            )
             return
 
         if parsed.path == "/api/checkin-reminder-settings":
-            try:
+
+            def load_reminder_settings() -> dict[str, Any]:
                 dashboard_url = self.settings.dashboard_url if self.settings else ""
-                settings = _load_checkin_reminder_settings_payload(
+                return _load_checkin_reminder_settings_payload(
                     self.db_path,
                     dashboard_url,
                 )
-            except Exception as exc:  # pragma: no cover - runtime guard
-                logger.exception("Failed to load check-in reminder settings")
-                self._send_json(
-                    HTTPStatus.INTERNAL_SERVER_ERROR,
-                    {
-                        "error": "Failed to load check-in reminder settings",
-                        "details": str(exc),
-                    },
-                )
-                return
-            self._send_json(HTTPStatus.OK, settings)
+
+            self._send_operation(
+                load_reminder_settings,
+                failure_log="Failed to load check-in reminder settings",
+                failure_error="Failed to load check-in reminder settings",
+            )
             return
 
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
@@ -1999,60 +1991,33 @@ class ApiHandler(BaseHTTPRequestHandler):
                 if isinstance(raw_payload, dict)
                 else raw_payload
             )
-            try:
-                normalized = _save_questions_payload(self.db_path, questions_payload)
-            except ValueError as exc:
-                self._send_json(
-                    HTTPStatus.BAD_REQUEST,
-                    {"error": "Invalid question settings payload", "details": str(exc)},
-                )
-                return
-            except Exception as exc:  # pragma: no cover - runtime guard
-                logger.exception("Failed to save question settings")
-                self._send_json(
-                    HTTPStatus.INTERNAL_SERVER_ERROR,
-                    {"error": "Failed to save question settings", "details": str(exc)},
-                )
-                return
-            self._send_json(HTTPStatus.OK, {"questions": normalized})
+            self._send_operation(
+                lambda: _save_questions_payload(self.db_path, questions_payload),
+                failure_log="Failed to save question settings",
+                failure_error="Failed to save question settings",
+                invalid_error="Invalid question settings payload",
+                wrap=lambda payload: {"questions": payload},
+            )
             return
 
         if parsed.path == "/api/checkins":
-            try:
-                entry = _save_checkin_payload(self.db_path, raw_payload)
-            except ValueError as exc:
-                self._send_json(
-                    HTTPStatus.BAD_REQUEST,
-                    {"error": "Invalid check-in payload", "details": str(exc)},
-                )
-                return
-            except Exception as exc:  # pragma: no cover - runtime guard
-                logger.exception("Failed to save check-in")
-                self._send_json(
-                    HTTPStatus.INTERNAL_SERVER_ERROR,
-                    {"error": "Failed to save check-in", "details": str(exc)},
-                )
-                return
-            self._send_json(HTTPStatus.OK, {"entry": entry})
+            self._send_operation(
+                lambda: _save_checkin_payload(self.db_path, raw_payload),
+                failure_log="Failed to save check-in",
+                failure_error="Failed to save check-in",
+                invalid_error="Invalid check-in payload",
+                wrap=lambda payload: {"entry": payload},
+            )
             return
 
         if parsed.path == "/api/checkin-drafts":
-            try:
-                draft = _save_checkin_draft_payload(self.db_path, raw_payload)
-            except ValueError as exc:
-                self._send_json(
-                    HTTPStatus.BAD_REQUEST,
-                    {"error": "Invalid check-in draft payload", "details": str(exc)},
-                )
-                return
-            except Exception as exc:  # pragma: no cover - runtime guard
-                logger.exception("Failed to save check-in draft")
-                self._send_json(
-                    HTTPStatus.INTERNAL_SERVER_ERROR,
-                    {"error": "Failed to save check-in draft", "details": str(exc)},
-                )
-                return
-            self._send_json(HTTPStatus.OK, {"draft": draft})
+            self._send_operation(
+                lambda: _save_checkin_draft_payload(self.db_path, raw_payload),
+                failure_log="Failed to save check-in draft",
+                failure_error="Failed to save check-in draft",
+                invalid_error="Invalid check-in draft payload",
+                wrap=lambda payload: {"draft": payload},
+            )
             return
 
         if parsed.path == "/api/notifications/correlations":
@@ -2067,22 +2032,15 @@ class ApiHandler(BaseHTTPRequestHandler):
                     {"error": "Invalid notification ids payload"},
                 )
                 return
-            try:
-                notifications = _dismiss_correlation_notifications(
+            self._send_operation(
+                lambda: _dismiss_correlation_notifications(
                     self.db_path,
                     notification_ids,
-                )
-            except Exception as exc:  # pragma: no cover - runtime guard
-                logger.exception("Failed to dismiss correlation notifications")
-                self._send_json(
-                    HTTPStatus.INTERNAL_SERVER_ERROR,
-                    {
-                        "error": "Failed to dismiss correlation notifications",
-                        "details": str(exc),
-                    },
-                )
-                return
-            self._send_json(HTTPStatus.OK, {"correlations": notifications})
+                ),
+                failure_log="Failed to dismiss correlation notifications",
+                failure_error="Failed to dismiss correlation notifications",
+                wrap=lambda payload: {"correlations": payload},
+            )
             return
 
         if parsed.path == "/api/correlation/derived-predictors":
@@ -2091,28 +2049,16 @@ class ApiHandler(BaseHTTPRequestHandler):
                 if isinstance(raw_payload, dict)
                 else raw_payload
             )
-            try:
-                normalized = _save_derived_predictors_payload(
+            self._send_operation(
+                lambda: _save_derived_predictors_payload(
                     self.db_path,
                     definitions_payload,
-                )
-            except ValueError as exc:
-                self._send_json(
-                    HTTPStatus.BAD_REQUEST,
-                    {
-                        "error": "Invalid derived predictors payload",
-                        "details": str(exc),
-                    },
-                )
-                return
-            except Exception as exc:  # pragma: no cover - runtime guard
-                logger.exception("Failed to save derived predictors")
-                self._send_json(
-                    HTTPStatus.INTERNAL_SERVER_ERROR,
-                    {"error": "Failed to save derived predictors", "details": str(exc)},
-                )
-                return
-            self._send_json(HTTPStatus.OK, {"definitions": normalized})
+                ),
+                failure_log="Failed to save derived predictors",
+                failure_error="Failed to save derived predictors",
+                invalid_error="Invalid derived predictors payload",
+                wrap=lambda payload: {"definitions": payload},
+            )
             return
 
         if parsed.path == "/api/dashboard-plots":
@@ -2121,31 +2067,16 @@ class ApiHandler(BaseHTTPRequestHandler):
                 if isinstance(raw_payload, dict)
                 else raw_payload
             )
-            try:
-                normalized = _save_dashboard_plots_payload(
+            self._send_operation(
+                lambda: _save_dashboard_plots_payload(
                     self.db_path,
                     plots_payload,
-                )
-            except ValueError as exc:
-                self._send_json(
-                    HTTPStatus.BAD_REQUEST,
-                    {
-                        "error": "Invalid dashboard plot settings payload",
-                        "details": str(exc),
-                    },
-                )
-                return
-            except Exception as exc:  # pragma: no cover - runtime guard
-                logger.exception("Failed to save dashboard plot settings")
-                self._send_json(
-                    HTTPStatus.INTERNAL_SERVER_ERROR,
-                    {
-                        "error": "Failed to save dashboard plot settings",
-                        "details": str(exc),
-                    },
-                )
-                return
-            self._send_json(HTTPStatus.OK, {"plots": normalized})
+                ),
+                failure_log="Failed to save dashboard plot settings",
+                failure_error="Failed to save dashboard plot settings",
+                invalid_error="Invalid dashboard plot settings payload",
+                wrap=lambda payload: {"plots": payload},
+            )
             return
 
         if parsed.path == "/api/checkin-reminder-settings":
@@ -2154,32 +2085,16 @@ class ApiHandler(BaseHTTPRequestHandler):
                 if isinstance(raw_payload, dict) and "settings" in raw_payload
                 else raw_payload
             )
-            try:
-                normalized = _save_checkin_reminder_settings_payload(
+            self._send_operation(
+                lambda: _save_checkin_reminder_settings_payload(
                     self.db_path,
                     settings_payload,
                     self.settings.dashboard_url if self.settings else "",
-                )
-            except ValueError as exc:
-                self._send_json(
-                    HTTPStatus.BAD_REQUEST,
-                    {
-                        "error": "Invalid check-in reminder settings payload",
-                        "details": str(exc),
-                    },
-                )
-                return
-            except Exception as exc:  # pragma: no cover - runtime guard
-                logger.exception("Failed to save check-in reminder settings")
-                self._send_json(
-                    HTTPStatus.INTERNAL_SERVER_ERROR,
-                    {
-                        "error": "Failed to save check-in reminder settings",
-                        "details": str(exc),
-                    },
-                )
-                return
-            self._send_json(HTTPStatus.OK, normalized)
+                ),
+                failure_log="Failed to save check-in reminder settings",
+                failure_error="Failed to save check-in reminder settings",
+                invalid_error="Invalid check-in reminder settings payload",
+            )
             return
 
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})

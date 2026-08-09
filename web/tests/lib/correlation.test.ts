@@ -9,14 +9,15 @@ import {
   buildPredictorOptions,
   calculateQuantileCutPoints,
   findCorrelationPair,
-} from "./correlation";
+} from "../../src/lib/correlation";
+import { pearsonCorrelation } from "../../src/lib/mockData";
 import {
   type AnalysisValueRecord,
   type CheckInEntry,
   type CheckInQuestion,
   type DailyRecord,
   type DerivedPredictorDefinition,
-} from "./types";
+} from "../../src/lib/types";
 
 const QUESTIONS: CheckInQuestion[] = [
   {
@@ -338,6 +339,83 @@ function buildThreeBinCheckins(days: number): Map<string, CheckInEntry> {
 }
 
 describe("correlation helpers", () => {
+  it("matches Pearson reference values and rejects undefined correlations", () => {
+    const xs = [43, 21, 25, 42, 57, 59];
+    const ys = [99, 65, 79, 75, 87, 81];
+
+    expect(pearsonCorrelation(xs, ys)).toBeCloseTo(0.5298089018901744, 12);
+    expect(pearsonCorrelation(xs, xs.map((value) => -value))).toBeCloseTo(-1, 12);
+    expect(pearsonCorrelation([1, 1, 1], [1, 2, 3])).toBeNull();
+    expect(pearsonCorrelation([1], [1])).toBeNull();
+    expect(pearsonCorrelation([1, 2], [1])).toBeNull();
+  });
+
+  it("matches reference Pearson significance and FDR values", () => {
+    const records = buildRecords(7);
+    const xs = [43, 21, 25, 42, 57, 59];
+    const ys = [99, 65, 79, 75, 87, 81];
+    const analysisValues = xs.flatMap((x, index): AnalysisValueRecord[] => [
+      {
+        analysisDate: records[index + 1].date,
+        role: "predictor",
+        featureKey: "garmin:steps",
+        valueNum: x,
+        valueText: null,
+        valueBool: null,
+        sourceDate: records[index].date,
+        lagDays: -1,
+        alignmentRule: "garmin_previous_day",
+      },
+      {
+        analysisDate: records[index + 1].date,
+        role: "target",
+        featureKey: "metric:recoveryIndex",
+        valueNum: ys[index],
+        valueText: null,
+        valueBool: null,
+        sourceDate: records[index + 1].date,
+        lagDays: 0,
+        alignmentRule: "metric_same_day",
+      },
+    ]);
+    const catalog = buildCorrelationCatalog({
+      records,
+      analysisValues,
+      questions: [],
+      derivedPredictors: [],
+      weekdayOnly: false,
+      trainingOnly: false,
+    });
+    const pair = findCorrelationPair(catalog, "garmin:steps", "metric:recoveryIndex");
+
+    expect(pair?.correlation).toBeCloseTo(0.5298089018901744, 12);
+    expect(pair?.pValue).toBeCloseTo(0.306922352670643, 6);
+    expect(pair?.qValue).toBeCloseTo(0.306922352670643, 6);
+  });
+
+  it("classifies a constant predictor as insufficient", () => {
+    const records = buildRecords(20);
+    const analysisValues = buildAnalysisValues(records, buildCheckins(20)).map(
+      (value) => value.featureKey === "garmin:steps"
+        ? { ...value, valueNum: 1000 }
+        : value,
+    );
+    const catalog = buildCorrelationCatalog({
+      records,
+      analysisValues,
+      questions: QUESTIONS,
+      derivedPredictors: [],
+      weekdayOnly: false,
+      trainingOnly: false,
+    });
+    const pair = findCorrelationPair(catalog, "garmin:steps", "metric:recoveryIndex");
+
+    expect(pair?.correlation).toBeNull();
+    expect(pair?.pValue).toBeNull();
+    expect(pair?.qValue).toBeNull();
+    expect(pair?.classification).toBe("insufficient");
+  });
+
   it("builds predictor and outcome options with expanded metric outcomes", () => {
     const predictors = buildPredictorOptions(QUESTIONS);
     const outcomes = buildOutcomeOptions(QUESTIONS);
@@ -648,6 +726,117 @@ describe("correlation helpers", () => {
         outcomeSourceDate: "2026-02-22",
       },
     ]);
+  });
+
+  it("computes correlation from non-monotonic D-1 predictors", () => {
+    const records = buildRecords(8);
+    const steps = [8, 1, 7, 2, 6, 3, 5, 4];
+    records.forEach((record, index) => {
+      record.predictors.steps = steps[index];
+      record.metrics.recoveryIndex = index === 0 ? 0 : steps[index - 1] * 3 + 10;
+    });
+
+    const result = buildCorrelationResult({
+      records,
+      analysisValues: buildAnalysisValues(records, new Map()),
+      questions: QUESTIONS,
+      predictor: "garmin:steps",
+      outcome: "metric:recoveryIndex",
+      weekdayOnly: false,
+      trainingOnly: false,
+    });
+
+    expect(result.sampleCount).toBe(steps.length - 1);
+    expect(result.correlation).toBeCloseTo(1, 12);
+    expect(result.points.map((point) => point.x)).toEqual(steps.slice(0, -1));
+    expect(result.points.map((point) => point.y)).toEqual(
+      steps.slice(0, -1).map((value) => value * 3 + 10),
+    );
+  });
+
+  it("pairs previous-day question predictors with same-day question targets", () => {
+    const records = buildRecords(4);
+    const checkins = buildCheckins(4);
+    [9, 4, 7, 2].forEach((energy, index) => {
+      const entry = checkins.get(buildDate(index));
+      if (entry) {
+        entry.answers.caffeine_count = [3, 1, 4, 2][index];
+        entry.answers.energy = energy;
+      }
+    });
+
+    const result = buildCorrelationResult({
+      records,
+      analysisValues: buildAnalysisValues(records, checkins),
+      questions: QUESTIONS,
+      predictor: "question:caffeine_count",
+      outcome: "question:energy",
+      weekdayOnly: false,
+      trainingOnly: false,
+    });
+
+    expect(result.points).toEqual([
+      {
+        x: 3,
+        y: 4,
+        date: "2026-01-02",
+        predictorSourceDate: "2026-01-01",
+        outcomeSourceDate: "2026-01-02",
+      },
+      {
+        x: 1,
+        y: 7,
+        date: "2026-01-03",
+        predictorSourceDate: "2026-01-02",
+        outcomeSourceDate: "2026-01-03",
+      },
+      {
+        x: 4,
+        y: 2,
+        date: "2026-01-04",
+        predictorSourceDate: "2026-01-03",
+        outcomeSourceDate: "2026-01-04",
+      },
+    ]);
+  });
+
+  it("uses pairwise-complete rows and applies outcome-day filters", () => {
+    const records = buildRecords(10);
+    const missingDate = buildDate(4);
+    const analysisValues = buildAnalysisValues(records, buildCheckins(10)).filter(
+      (value) => !(
+        value.analysisDate === missingDate
+        && value.role === "target"
+        && value.featureKey === "metric:recoveryIndex"
+      ),
+    );
+    const buildFilteredResult = (weekdayOnly: boolean, trainingOnly: boolean) => (
+      buildCorrelationResult({
+        records,
+        analysisValues,
+        questions: QUESTIONS,
+        predictor: "garmin:steps",
+        outcome: "metric:recoveryIndex",
+        weekdayOnly,
+        trainingOnly,
+      })
+    );
+
+    const unfiltered = buildFilteredResult(false, false);
+    expect(unfiltered.sampleCount).toBe(8);
+    expect(unfiltered.points.some((point) => point.date === missingDate)).toBe(false);
+
+    const weekdays = buildFilteredResult(true, false);
+    expect(weekdays.points.every((point) => {
+      const record = records.find((candidate) => candidate.date === point.date);
+      return record !== undefined && record.weekday !== 0 && record.weekday !== 6;
+    })).toBe(true);
+
+    const trainingDays = buildFilteredResult(false, true);
+    expect(trainingDays.points.every((point) => {
+      const record = records.find((candidate) => candidate.date === point.date);
+      return record?.isTrainingDay === true;
+    })).toBe(true);
   });
 
   it("aligns day-D predictors with day-D pre-sleep HR outcomes", () => {

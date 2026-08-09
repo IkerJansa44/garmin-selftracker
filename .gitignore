@@ -213,8 +213,11 @@ uv.lock
 # Web frontend
 web/node_modules/
 web/dist/
+web/output/playwright/
 !web/src/lib/
 !web/src/lib/**
+!web/tests/lib/
+!web/tests/lib/**
 
 
 # Data

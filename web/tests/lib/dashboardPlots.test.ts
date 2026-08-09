@@ -6,7 +6,7 @@ import {
   formatOvernightClockLabel,
   normalizeDashboardPlotPreferences,
   type DashboardPlotPreference,
-} from "./dashboardPlots";
+} from "../../src/lib/dashboardPlots";
 
 type PlotKey = `metric:${string}` | `garmin:${string}` | `question:${string}`;
 

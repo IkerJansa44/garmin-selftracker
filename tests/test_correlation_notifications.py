@@ -5,11 +5,17 @@ from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from src.correlation_notifications import (
     CorrelationEmailSettings,
     MeaningfulCorrelation,
+    _build_correlation_pairs,
     _build_email_body,
     _build_email_html,
+    _load_recent_analysis_values,
+    _pearson,
+    _pearson_p_value,
     current_meaningful_correlation_keys,
     notify_new_meaningful_correlations,
 )
@@ -67,6 +73,19 @@ def _insert_correlated_metrics(db_path: Path, *, days: int = 26) -> None:
     connection.close()
 
 
+def _analysis_value(
+    *, role: str, feature_key: str, analysis_date: str, value: float
+) -> dict[str, Any]:
+    return {
+        "role": role,
+        "featureKey": feature_key,
+        "analysisDate": analysis_date,
+        "valueNum": value,
+        "valueText": None,
+        "valueBool": None,
+    }
+
+
 def test_current_meaningful_correlation_keys_detects_numeric_pairs(
     tmp_path: Path,
 ) -> None:
@@ -76,6 +95,113 @@ def test_current_meaningful_correlation_keys_detects_numeric_pairs(
     keys = current_meaningful_correlation_keys(str(db_path))
 
     assert "garmin:steps__metric:restingHr" in keys
+
+
+def test_materialized_values_produce_previous_day_correlation(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "garmin.db"
+    steps = [
+        8,
+        1,
+        14,
+        3,
+        11,
+        5,
+        16,
+        2,
+        13,
+        7,
+        18,
+        4,
+        10,
+        6,
+        15,
+        9,
+        20,
+        12,
+        17,
+        19,
+        22,
+        21,
+        24,
+        23,
+        26,
+        25,
+    ]
+    start = date.today() - timedelta(days=len(steps) - 1)
+    connection = connect_db(str(db_path))
+    init_db(connection)
+    for offset, step_value in enumerate(steps):
+        resting_hr = None if offset == 0 else steps[offset - 1] * 2 + 40
+        connection.execute(
+            """
+            INSERT INTO daily_metrics (
+                metric_date, steps, resting_heart_rate, updated_at
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                (start + timedelta(days=offset)).isoformat(),
+                step_value,
+                resting_hr,
+                "2026-02-21T06:00:00+00:00",
+            ),
+        )
+    connection.commit()
+    connection.close()
+
+    values = _load_recent_analysis_values(str(db_path))
+    pairs = _build_correlation_pairs(values, {}, {})
+    pair = next(item for item in pairs if item.key == "garmin:steps__metric:restingHr")
+
+    assert pair.sample_count == len(steps) - 1
+    assert pair.correlation == 1.0
+
+
+def test_question_analysis_mode_limits_correlation_roles() -> None:
+    dates = [f"2026-01-{day:02d}" for day in range(1, 6)]
+    values: list[dict[str, Any]] = []
+    for index, analysis_date in enumerate(dates, start=1):
+        for role in ("predictor", "target"):
+            values.extend(
+                [
+                    _analysis_value(
+                        role=role,
+                        feature_key="question:caffeine",
+                        analysis_date=analysis_date,
+                        value=float(index),
+                    ),
+                    _analysis_value(
+                        role=role,
+                        feature_key="question:energy",
+                        analysis_date=analysis_date,
+                        value=float(index * 2),
+                    ),
+                ]
+            )
+    questions = {
+        "caffeine": {
+            "inputType": "slider",
+        },
+        "energy": {"inputType": "slider", "analysisMode": "target_same_day"},
+    }
+
+    pairs = _build_correlation_pairs(values, {}, questions)
+
+    assert {pair.key for pair in pairs} == {"question:caffeine__question:energy"}
+
+
+def test_pearson_matches_reference_values_and_rejects_constant_series() -> None:
+    xs = [43, 21, 25, 42, 57, 59]
+    ys = [99, 65, 79, 75, 87, 81]
+
+    assert _pearson(xs, ys) == pytest.approx(0.5298089018901744)
+    assert _pearson(xs, [-value for value in xs]) == pytest.approx(-1.0)
+    assert _pearson([1, 1, 1], [1, 2, 3]) is None
+    assert _pearson_p_value(_pearson(xs, ys), len(xs)) == pytest.approx(
+        0.306922352670643
+    )
 
 
 def test_notify_new_meaningful_correlations_sends_only_new_keys(

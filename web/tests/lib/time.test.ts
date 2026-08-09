@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { caffeineToSleepGapMinutes, mealToSleepGapMinutes, timeToSleepGapMinutes } from "./time";
+import {
+  caffeineToSleepGapMinutes,
+  mealToSleepGapMinutes,
+  timeToSleepGapMinutes,
+} from "../../src/lib/time";
 
 describe("timeToSleepGapMinutes", () => {
   it("handles overnight gap from previous day meal to next day sleep", () => {

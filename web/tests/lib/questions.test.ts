@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { getVisibleChildren, pruneHiddenChildAnswers } from "./questions";
-import { type CheckInQuestion } from "./types";
+import { getVisibleChildren, pruneHiddenChildAnswers } from "../../src/lib/questions";
+import { type CheckInQuestion } from "../../src/lib/types";
 
 const QUESTIONS: CheckInQuestion[] = [
   {
@@ -80,4 +80,3 @@ describe("question tree helpers", () => {
     expect(answers.alcohol_last_time).toBe("20:45");
   });
 });
-

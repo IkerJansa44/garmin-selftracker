@@ -17,8 +17,9 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react()],
     test: {
+      include: ["tests/**/*.test.{ts,tsx}"],
       environment: "jsdom",
-      setupFiles: "./src/test/setup.ts",
+      setupFiles: "./tests/setup.ts",
     },
     server: {
       allowedHosts: [...DEFAULT_ALLOWED_HOSTS, ...parseAllowedHosts(env.ALLOWED_HOSTS ?? "")],

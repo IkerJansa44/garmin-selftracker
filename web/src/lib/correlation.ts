@@ -50,7 +50,7 @@ export interface CorrelationPoint {
 
 export interface CorrelationResult {
   points: CorrelationPoint[];
-  correlation: number;
+  correlation: number | null;
   sampleCount: number;
   regression: { slope: number; intercept: number };
 }
@@ -261,8 +261,8 @@ function calculateRegression(xs: number[], ys: number[]): { slope: number; inter
   };
 }
 
-function pearsonPValue(correlation: number, sampleCount: number): number | null {
-  if (sampleCount < 4) {
+function pearsonPValue(correlation: number | null, sampleCount: number): number | null {
+  if (correlation === null || sampleCount < 4) {
     return null;
   }
   const bounded = clamp(correlation, -0.999999, 0.999999);
@@ -523,7 +523,7 @@ function buildContinuousPair(
   return {
     testType: "continuous",
     pValue,
-    strength: Math.abs(correlation),
+    strength: Math.abs(correlation ?? 0),
     direction,
     correlation,
     regression,
@@ -671,6 +671,9 @@ function applyBenjaminiHochberg(pairs: CorrelationPairResult[]): void {
 }
 
 function classifyPair(pair: CorrelationPairResult): CorrelationClassification {
+  if (pair.pValue === null) {
+    return "insufficient";
+  }
   if (
     pair.sampleCount >= 20
     && pair.strength >= 0.2
@@ -967,7 +970,7 @@ export function buildCorrelationResult({
   if (isSameSignalPair(predictor, outcome)) {
     return {
       points,
-      correlation: 0,
+      correlation: null,
       sampleCount: 0,
       regression: { slope: 0, intercept: 0 },
     };

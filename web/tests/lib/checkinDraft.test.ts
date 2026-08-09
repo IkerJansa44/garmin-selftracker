@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveCheckinDraftAnswers } from "./checkinDraft";
-import { type CheckInDraft, type CheckInEntry, type CheckInQuestion } from "./types";
+import { resolveCheckinDraftAnswers } from "../../src/lib/checkinDraft";
+import {
+  type CheckInDraft,
+  type CheckInEntry,
+  type CheckInQuestion,
+} from "../../src/lib/types";
 
 const QUESTIONS: CheckInQuestion[] = [
   {

@@ -10,8 +10,6 @@ import { ScrollTrigger } from "gsap/ScrollTrigger";
 import clsx from "clsx";
 import {
   AlertCircle,
-  ChevronDown,
-  ChevronUp,
   CirclePlus,
   CircleHelp,
   Check,
@@ -22,15 +20,11 @@ import {
   X,
 } from "lucide-react";
 import {
-  CartesianGrid,
   ComposedChart,
   Line,
   ReferenceLine,
   ResponsiveContainer,
-  Scatter,
-  ScatterChart,
   Tooltip,
-  XAxis,
   YAxis,
 } from "recharts";
 import {
@@ -48,9 +42,12 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { DerivedMetricCard } from "./components/DerivedMetricCard";
-import { CheckinPanel } from "./components/CheckinPanel";
 import { SleepWindowChart } from "./components/SleepWindowChart";
+import { QuestionAnswerInput } from "./components/QuestionAnswerInput";
+import { CheckinFeature, useCheckinFeature } from "./features/checkin/CheckinFeature";
+import { CheckinReminderSettings } from "./features/checkin/CheckinReminderSettings";
+import { CorrelationFeature } from "./features/correlation/CorrelationFeature";
+import { useCorrelationFeature } from "./features/correlation/useCorrelationFeature";
 import {
   DEFAULT_QUESTIONS,
   METRICS,
@@ -59,22 +56,13 @@ import {
 } from "./lib/constants";
 import {
   CAFFEINE_LAST_TIME_QUESTION_ID,
-  DERIVED_GAP_METRIC_KEYS,
   DERIVED_GAP_METRICS,
   DERIVED_ONLY_QUESTION_IDS,
   MEAL_FINISH_QUESTION_ID,
   type DerivedGapMetricKey,
 } from "./lib/derivedMetrics";
-import {
-  defaultDraftAnswers,
-  formatReadableDate,
-  formatTime,
-  mean,
-} from "./lib/mockData";
-import {
-  parseClockTimeToMinutes,
-  timeToSleepGapMinutes,
-} from "./lib/time";
+import { formatReadableDate, formatTime, mean } from "./lib/mockData";
+import { parseClockTimeToMinutes } from "./lib/time";
 import { buildImportProgressDisplay } from "./lib/importProgress";
 import { getZone2PlusMinutes } from "./lib/heartRateZones";
 import {
@@ -86,42 +74,23 @@ import {
   type SleepWindowChartPoint,
   type DashboardPlotChartStyle,
 } from "./lib/dashboardPlots";
-import { resolveCheckinDraftAnswers } from "./lib/checkinDraft";
 import {
-  buildCorrelationCatalog,
-  buildDerivedPredictorSourceOptions,
-  buildPredictorDistribution,
-  calculateQuantileCutPoints,
-  findCorrelationPair,
-  buildOutcomeOptions,
-  buildPredictorOptions,
-  getOptionLabel,
-  type BasePredictorKey,
-  type CorrelationPairResult,
   type OutcomeKey,
   type PredictorKey,
 } from "./lib/correlation";
-import { sleepMetricDateForPredictorDate } from "./lib/dateAlignment";
 import {
   flattenQuestionFields,
-  getVisibleChildren,
-  pruneHiddenChildAnswers,
   type QuestionFieldDefinition,
 } from "./lib/questions";
 import {
-  fetchCheckinReminderSettings,
   fetchCheckIns,
   fetchCorrelationValues,
   fetchDashboardData,
   fetchDashboardPlotSettings,
-  fetchDerivedPredictors,
   fetchQuestionSettings,
   dismissCorrelationNotifications,
   saveCheckIn,
-  saveCheckInDraft,
-  saveCheckinReminderSettings,
   saveDashboardPlotSettings,
-  saveDerivedPredictors,
   saveQuestionSettings,
   startDateRangeImport,
   startRefreshImport,
@@ -134,15 +103,12 @@ import { usePersistentState } from "./lib/storage";
 import {
   type CheckInQuestion,
   type CheckInQuestionChild,
-  type CheckInDraft,
   type CheckInEntry,
-  type CheckinReminderSettings,
   type AnalysisValueRecord,
   type ChildCondition,
   type CoverageState,
   type ChildConditionOperator,
   type DailyRecord,
-  type DerivedPredictorDefinition,
   type ImportState,
   type InputType,
   type MetricKey,
@@ -161,12 +127,8 @@ type QuestionBackfillRequest = {
   toDate: string;
   value: AnswerValue;
 };
-type TopCorrelationMode = "target" | "predictor";
 const DEFAULT_TOP_CORRELATION_OUTCOME: OutcomeKey = "metric:restingHr";
 const VIEW_KEYS = new Set<ViewKey>(["dashboard", "lab", "checkin", "settings"]);
-const CHECKIN_TRANSITION_DISTANCE_PX = 24;
-const CHECKIN_EXIT_DURATION_MS = 100;
-const CHECKIN_ENTER_DURATION_MS = 160;
 type GarminPlotKey =
   | "steps"
   | "calories"
@@ -230,26 +192,6 @@ interface DashboardPlot {
   baselineHint: string;
   domain: [number, number];
   ticks: number[];
-}
-
-interface CorrelationTooltipSection {
-  title: string;
-  sourceDateLabel: string | null;
-  items: Array<{ label: string; value: string }>;
-}
-
-interface ActiveCorrelationTooltip {
-  point: {
-    x: number;
-    y: number;
-    date: string;
-    predictorSourceDate: string;
-    outcomeSourceDate: string;
-  };
-  position: {
-    x: number;
-    y: number;
-  };
 }
 
 function readUrlParams(): URLSearchParams {
@@ -318,9 +260,6 @@ const COVERAGE_META: Record<CoverageState, { label: string; tone: string }> = {
 };
 
 const DEFAULT_RANGE_PRESET = 7;
-const DAY_MINUTES = 24 * 60;
-const TIME_STEP_MINUTES = 15;
-const TIME_SLIDER_MINUTES = { min: 0, max: DAY_MINUTES - TIME_STEP_MINUTES };
 const DEFAULT_DASHBOARD_PLOT_PREFERENCES: DashboardPlotPreference[] = [
   {
     id: "plot_1_metric_recoveryIndex",
@@ -427,7 +366,6 @@ const REMOVED_DEFAULT_QUESTION_IDS = new Set([
 const CAFFEINE_QUESTION_ID = "caffeine_count";
 const ALCOHOL_QUESTION_ID = "alcohol_units";
 const ALCOHOL_LAST_TIME_CHILD_ID = "alcohol_last_time";
-const SLEEP_TIME_QUESTION_ID = "sleep_time";
 const FULLNESS_QUESTION_ID = "nutrition_fullness";
 const ENERGY_TARGET_QUESTION_ID = "felt_energized_during_day";
 const IMPORT_POLL_INTERVAL_MS = 5000;
@@ -435,10 +373,6 @@ const DASHBOARD_REFRESH_INTERVAL_MS = 60000;
 const MAX_IMPORT_RANGE_DAYS = 365;
 const GARMIN_ACCOUNT_INFORMATION_URL =
   "https://connect.garmin.com/app/settings/accountInformation";
-const DEFAULT_CHECKIN_REMINDER_SETTINGS: CheckinReminderSettings = {
-  enabled: true,
-  notifyAfter: "22:30",
-};
 const EMPTY_DERIVED_GAP_PREDICTORS = Object.fromEntries(
   DERIVED_GAP_METRICS.map((metric) => [metric.key, null]),
 ) as Record<DerivedGapMetricKey, number | null>;
@@ -500,27 +434,6 @@ function normalizeDashboardPlotPreferences(
   }));
 }
 
-function normalizeCheckinReminderSettings(raw: unknown): CheckinReminderSettings {
-  if (!raw || typeof raw !== "object") {
-    return DEFAULT_CHECKIN_REMINDER_SETTINGS;
-  }
-  const payload = raw as Partial<CheckinReminderSettings>;
-  if (typeof payload.enabled !== "boolean") {
-    return DEFAULT_CHECKIN_REMINDER_SETTINGS;
-  }
-  if (
-    typeof payload.notifyAfter !== "string"
-    || !/^([01]\d|2[0-3]):([0-5]\d)$/.test(payload.notifyAfter)
-  ) {
-    return DEFAULT_CHECKIN_REMINDER_SETTINGS;
-  }
-  return {
-    enabled: payload.enabled,
-    notifyAfter: payload.notifyAfter,
-    ...(typeof payload.emailBody === "string" ? { emailBody: payload.emailBody } : {}),
-  };
-}
-
 function arePlotPreferencesEqual(
   a: DashboardPlotPreference[],
   b: DashboardPlotPreference[],
@@ -544,14 +457,6 @@ function normalizeRangePreset(raw: unknown, fallback: number): number {
     return fallback;
   }
   return RANGE_PRESETS.includes(raw as (typeof RANGE_PRESETS)[number]) ? raw : fallback;
-}
-
-function getMetricLabel(metric: MetricKey): string {
-  return METRICS.find((definition) => definition.key === metric)?.label ?? metric;
-}
-
-function getMetricColor(metric: MetricKey): string {
-  return METRICS.find((definition) => definition.key === metric)?.color ?? "#cc5833";
 }
 
 function formatMetricValue(metric: MetricKey, value: number | null): string {
@@ -681,59 +586,6 @@ function computeYAxisStats(
   };
 }
 
-function computeNumericDomain(values: number[]): [number, number] | undefined {
-  if (!values.length) {
-    return undefined;
-  }
-  const minimum = Math.min(...values);
-  const maximum = Math.max(...values);
-  if (!Number.isFinite(minimum) || !Number.isFinite(maximum)) {
-    return undefined;
-  }
-  if (minimum === maximum) {
-    const padding = minimum === 0 ? 1 : Math.max(Math.abs(minimum) * 0.05, 0.5);
-    return [minimum - padding, maximum + padding];
-  }
-  return [minimum, maximum];
-}
-
-function computeNiceNumericAxis(
-  values: number[],
-): { domain: [number, number]; ticks: number[] } | undefined {
-  const finiteValues = values.filter(Number.isFinite);
-  if (!finiteValues.length) {
-    return undefined;
-  }
-  const minimum = Math.min(...finiteValues);
-  const maximum = Math.max(...finiteValues);
-  const span = maximum - minimum;
-  if (span === 0) {
-    const padding = minimum === 0 ? 1 : Math.max(Math.abs(minimum) * 0.05, 1);
-    return { domain: [minimum - padding, maximum + padding], ticks: [minimum] };
-  }
-
-  const step = niceAxisStep(span / 4);
-  const domain: [number, number] = [
-    Math.floor(minimum / step) * step,
-    Math.ceil(maximum / step) * step,
-  ];
-  const ticks: number[] = [];
-  for (let value = domain[0], guard = 0; value <= domain[1] && guard < 100; value += step, guard += 1) {
-    ticks.push(Number(value.toFixed(10)));
-  }
-  return { domain, ticks };
-}
-
-function niceAxisStep(rawStep: number): number {
-  if (!Number.isFinite(rawStep) || rawStep <= 0) {
-    return 1;
-  }
-  const magnitude = 10 ** Math.floor(Math.log10(rawStep));
-  const normalized = rawStep / magnitude;
-  const multiplier = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
-  return multiplier * magnitude;
-}
-
 function parseQuestionPlotValue(
   question: QuestionFieldDefinition,
   value: unknown,
@@ -830,206 +682,6 @@ function formatPlotValue(option: DashboardPlotVariableOption, value: number): st
   return `${value.toFixed(1)} ${option.unit}`;
 }
 
-function formatMinutesAsClock(minutes: number): string {
-  const bounded = Math.min(TIME_SLIDER_MINUTES.max, Math.max(TIME_SLIDER_MINUTES.min, minutes));
-  const hours = Math.floor(bounded / 60);
-  const remainingMinutes = bounded % 60;
-  return `${String(hours).padStart(2, "0")}:${String(remainingMinutes).padStart(2, "0")}`;
-}
-
-function stepClockMinutes(minutes: number | null, direction: -1 | 1): number {
-  const current = minutes ?? TIME_SLIDER_MINUTES.min;
-  return (current + direction * TIME_STEP_MINUTES + DAY_MINUTES) % DAY_MINUTES;
-}
-
-function formatMinutesAsHours(minutes: number | null): string {
-  if (minutes === null) {
-    return "--";
-  }
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-  return `${hours}h ${remainingMinutes}m`;
-}
-
-function formatSecondsAsHours(seconds: number | null): string {
-  if (seconds === null || !Number.isFinite(seconds)) {
-    return "--";
-  }
-  return formatMinutesAsHours(Math.round(seconds / 60));
-}
-
-function formatTooltipNumber(value: number): string {
-  return value.toLocaleString(undefined, {
-    maximumFractionDigits: Number.isInteger(value) ? 0 : 2,
-  });
-}
-
-function formatGarminAnalysisValue(key: GarminPlotKey, value: AnalysisValueRecord): string {
-  if (key === "isTrainingDay") {
-    return value.valueBool ? "Yes" : "No";
-  }
-  if (typeof value.valueNum !== "number" || !Number.isFinite(value.valueNum)) {
-    return "--";
-  }
-  if (key === "sleepSeconds") {
-    return formatSecondsAsHours(value.valueNum);
-  }
-  if (key === "runningKilometers") {
-    return `${value.valueNum.toFixed(1)} km`;
-  }
-  const meta = GARMIN_PLOT_META[key];
-  const formatted = formatTooltipNumber(value.valueNum);
-  return meta.unit ? `${formatted} ${meta.unit}` : formatted;
-}
-
-function formatQuestionAnalysisValue(
-  question: QuestionFieldDefinition,
-  value: AnalysisValueRecord,
-): string {
-  if (question.inputType === "boolean") {
-    return value.valueBool === null ? "--" : value.valueBool ? "Yes" : "No";
-  }
-  if (question.inputType === "time") {
-    if (value.valueText) {
-      return value.valueText;
-    }
-    return typeof value.valueNum === "number" && Number.isFinite(value.valueNum)
-      ? formatMinutesAsClock(Math.round(value.valueNum))
-      : "--";
-  }
-  if (question.inputType === "multi-choice") {
-    if (value.valueText) {
-      return question.options?.find((option) => option.id === value.valueText)?.label ?? value.valueText;
-    }
-    if (typeof value.valueNum === "number" && Number.isFinite(value.valueNum)) {
-      const matchingOption = question.options?.find((option) => option.score === value.valueNum);
-      return matchingOption?.label ?? formatTooltipNumber(value.valueNum);
-    }
-    return "--";
-  }
-  if (typeof value.valueNum === "number" && Number.isFinite(value.valueNum)) {
-    return formatTooltipNumber(value.valueNum);
-  }
-  return value.valueText ?? "--";
-}
-
-function getAnalysisValueLabel(
-  featureKey: string,
-  questionFieldsById: Map<string, QuestionFieldDefinition>,
-): string {
-  if (featureKey.startsWith("metric:")) {
-    return getMetricLabel(featureKey.slice(7) as MetricKey);
-  }
-  if (featureKey.startsWith("garmin:")) {
-    const key = featureKey.slice(7) as GarminPlotKey;
-    return GARMIN_PLOT_META[key]?.label ?? featureKey;
-  }
-  if (featureKey.startsWith("question:")) {
-    return questionFieldsById.get(featureKey.slice(9))?.prompt ?? featureKey;
-  }
-  return featureKey;
-}
-
-function formatAnalysisValue(
-  value: AnalysisValueRecord,
-  questionFieldsById: Map<string, QuestionFieldDefinition>,
-): string {
-  if (value.featureKey.startsWith("metric:")) {
-    return formatMetricValue(value.featureKey.slice(7) as MetricKey, value.valueNum);
-  }
-  if (value.featureKey.startsWith("garmin:")) {
-    return formatGarminAnalysisValue(value.featureKey.slice(7) as GarminPlotKey, value);
-  }
-  if (value.featureKey.startsWith("question:")) {
-    const question = questionFieldsById.get(value.featureKey.slice(9));
-    if (!question) {
-      return value.valueText
-        ?? (typeof value.valueNum === "number" && Number.isFinite(value.valueNum)
-          ? formatTooltipNumber(value.valueNum)
-          : value.valueBool === null
-            ? "--"
-            : value.valueBool ? "Yes" : "No");
-    }
-    return formatQuestionAnalysisValue(question, value);
-  }
-  if (typeof value.valueNum === "number" && Number.isFinite(value.valueNum)) {
-    return formatTooltipNumber(value.valueNum);
-  }
-  if (value.valueBool !== null) {
-    return value.valueBool ? "Yes" : "No";
-  }
-  return value.valueText ?? "--";
-}
-
-function summarizeAnalysisSourceDates(values: AnalysisValueRecord[]): string | null {
-  const dates = Array.from(new Set(values.map((value) => value.sourceDate).filter(Boolean)));
-  if (!dates.length) {
-    return null;
-  }
-  if (dates.length === 1) {
-    return formatReadableDate(dates[0]);
-  }
-  return `${formatReadableDate(dates[0])} - ${formatReadableDate(dates[dates.length - 1])}`;
-}
-
-function appendTooltipItem(
-  items: Array<{ label: string; value: string }>,
-  label: string,
-  value: string,
-): Array<{ label: string; value: string }> {
-  if (items.some((item) => item.label === label)) {
-    return items;
-  }
-  return [...items, { label, value }];
-}
-
-function formatCorrelationPredictorValue(
-  point: { x: number },
-  pair: CorrelationPairResult | null,
-  predictorKey: PredictorKey,
-): string {
-  if (pair?.testType === "categorical") {
-    const categoryLabel = pair.categoryLabels?.[Math.round(point.x)];
-    return categoryLabel ?? formatTooltipNumber(point.x);
-  }
-  if (predictorKey === "garmin:sleepSeconds") {
-    return formatHoursAsHoursMinutes(point.x);
-  }
-  if (
-    predictorKey.startsWith("garmin:")
-    && DERIVED_GAP_METRIC_KEYS.has(predictorKey.slice(7) as DerivedGapMetricKey)
-  ) {
-    return formatMinutesAsHours(Math.round(point.x));
-  }
-  return formatTooltipNumber(point.x);
-}
-
-function formatCorrelationOutcomeValue(
-  point: { y: number },
-  outcomeKey: OutcomeKey,
-): string {
-  if (outcomeKey.startsWith("metric:")) {
-    return formatMetricValue(outcomeKey.slice(7) as MetricKey, point.y);
-  }
-  return formatTooltipNumber(point.y);
-}
-
-function formatIsoClockTimeLocal(value: string): string | null {
-  // Strip timezone offset so the browser does not convert to local time.
-  // Garmin timestamps use the device's local time labelled as UTC, so we
-  // display the wall-clock time as-is.
-  const withoutOffset = value.replace(/([+-]\d{2}:\d{2}|Z)$/, "");
-  const parsed = new Date(withoutOffset);
-  if (Number.isNaN(parsed.getTime())) {
-    return null;
-  }
-  return parsed.toLocaleTimeString(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-}
-
 function formatIsoDateLocal(value: Date): string {
   const year = value.getFullYear();
   const month = String(value.getMonth() + 1).padStart(2, "0");
@@ -1088,70 +740,6 @@ function isValidQuestionAnswer(
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function parseThresholdCutPointsInput(rawValue: string): number[] {
-  const values = rawValue
-    .split(",")
-    .map((entry) => Number(entry.trim()))
-    .filter((entry) => Number.isFinite(entry));
-  if (!values.length) {
-    return [];
-  }
-  const sorted = [...values].sort((left, right) => left - right);
-  for (let index = 1; index < sorted.length; index += 1) {
-    if (sorted[index] <= sorted[index - 1]) {
-      return [];
-    }
-  }
-  return sorted;
-}
-
-function buildDensityCurve(values: number[], points = 80): Array<{ x: number; density: number }> {
-  if (values.length < 2) {
-    return [];
-  }
-  const sorted = [...values].sort((left, right) => left - right);
-  const minValue = sorted[0];
-  const maxValue = sorted[sorted.length - 1];
-  const span = maxValue - minValue;
-  if (span === 0) {
-    return [{ x: minValue, density: 1 }];
-  }
-
-  const average = mean(sorted);
-  const variance = sorted.reduce((sum, value) => sum + (value - average) ** 2, 0) / sorted.length;
-  const standardDeviation = Math.sqrt(variance);
-  const silvermanBandwidth = standardDeviation > 0
-    ? 1.06 * standardDeviation * (sorted.length ** (-1 / 5))
-    : span / 10;
-  const bandwidth = Math.max(silvermanBandwidth, span / 100, 1e-6);
-  const start = minValue - span * 0.05;
-  const end = maxValue + span * 0.05;
-  const step = (end - start) / (points - 1);
-  const normalizer = 1 / (sorted.length * bandwidth * Math.sqrt(2 * Math.PI));
-
-  return Array.from({ length: points }, (_, index) => {
-    const x = start + step * index;
-    const sum = sorted.reduce((accumulator, value) => {
-      const z = (x - value) / bandwidth;
-      return accumulator + Math.exp(-0.5 * z * z);
-    }, 0);
-    return { x, density: normalizer * sum };
-  });
-}
-
-function chooseIntegerAxisStep(span: number): number {
-  const allowedSteps = [1, 5, 10, 50, 100, 1000] as const;
-  if (!Number.isFinite(span) || span <= 0) {
-    return 1;
-  }
-  for (const step of allowedSteps) {
-    if (span / step <= 10) {
-      return step;
-    }
-  }
-  return 1000;
-}
-
 function parseIsoDate(value: string): Date | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     return null;
@@ -1167,14 +755,6 @@ function parseIsoDate(value: string): Date | null {
     return null;
   }
   return parsed;
-}
-
-function formatIsoDateWeekday(value: string): string | null {
-  const parsed = parseIsoDate(value);
-  if (!parsed) {
-    return null;
-  }
-  return parsed.toLocaleDateString(undefined, { weekday: "long" });
 }
 
 function formatShortNumericDate(value: string): string {
@@ -1340,17 +920,6 @@ function normalizeSectionName(section: string): string {
   return trimmed || "General";
 }
 
-function sectionedQuestions(questions: CheckInQuestion[]): Record<string, CheckInQuestion[]> {
-  return questions.reduce<Record<string, CheckInQuestion[]>>((accumulator, question) => {
-    const section = normalizeSectionName(question.section);
-    if (!accumulator[section]) {
-      accumulator[section] = [];
-    }
-    accumulator[section].push(question);
-    return accumulator;
-  }, {});
-}
-
 function buildSectionList(questions: CheckInQuestion[]): string[] {
   const sectionsByQuestionOrder: string[] = [];
   const seen = new Set<string>();
@@ -1445,16 +1014,6 @@ function SparklineTooltip({
   );
 }
 
-function describeCorrelationDirection(pair: CorrelationPairResult): string {
-  if (pair.direction === "similar") {
-    return "No clear monotonic direction in this sample.";
-  }
-  if (pair.testType === "categorical") {
-    return `Moving from lower to higher ${pair.predictorLabel} categories is associated with ${pair.direction} ${pair.outcomeLabel}.`;
-  }
-  return `Higher ${pair.predictorLabel} is associated with ${pair.direction} ${pair.outcomeLabel}.`;
-}
-
 function formatCorrelationStat(value: number): string {
   return Number.isFinite(value) ? value.toFixed(2) : "--";
 }
@@ -1462,8 +1021,6 @@ function formatCorrelationStat(value: number): string {
 function App() {
   const appRef = useRef<HTMLDivElement | null>(null);
   const heroRef = useRef<HTMLDivElement | null>(null);
-  const checkinPanelRef = useRef<HTMLDivElement | null>(null);
-  const isCheckinTransitioningRef = useRef(false);
 
   const [activeView, setActiveView] = useState<ViewKey>(readUrlView);
   const [rangePreset, setRangePreset] = usePersistentState<number>(
@@ -1490,16 +1047,6 @@ function App() {
   const [pendingAddPlotChartStyle, setPendingAddPlotChartStyle] = useState<DashboardPlotChartStyle>("line");
   const [pendingAddPlotAggregation, setPendingAddPlotAggregation] = useState<PlotAggregation>("daily");
   const [pendingAddPlotRolling, setPendingAddPlotRolling] = useState(false);
-  const [draftAnswers, setDraftAnswers] = useState<Record<string, string | number | boolean>>(
-    defaultDraftAnswers(),
-  );
-  const draftAnswersRef = useRef(draftAnswers);
-  const draftSaveTimeoutRef = useRef<number | null>(null);
-  const pendingDraftRef = useRef<{
-    date: string;
-    answers: Record<string, string | number | boolean>;
-  } | null>(null);
-  const draftSavePromisesRef = useRef(new Set<Promise<void>>());
   const [isScrolled, setIsScrolled] = useState(false);
   const [questionLibrary, setQuestionLibrary] = useState<CheckInQuestion[]>(DEFAULT_QUESTIONS);
   const [selectedQuestionId, setSelectedQuestionId] = useState("");
@@ -1510,33 +1057,9 @@ function App() {
   const lastSavedQuestionsRef = useRef<string>("[]");
   const selectedQuestionEditorRef = useRef<HTMLDivElement | null>(null);
   const pendingQuestionScrollIdRef = useRef<string | null>(null);
-  const [checkinReminderSettings, setCheckinReminderSettings] = useState<CheckinReminderSettings>(
-    DEFAULT_CHECKIN_REMINDER_SETTINGS,
-  );
-  const [checkinReminderLoadState, setCheckinReminderLoadState] = useState<"loading" | "ready" | "error">("loading");
-  const [checkinReminderError, setCheckinReminderError] = useState<string | null>(null);
-  const [isSavingCheckinReminder, setIsSavingCheckinReminder] = useState(false);
-  const lastSavedCheckinReminderRef = useRef<string>(
-    JSON.stringify(DEFAULT_CHECKIN_REMINDER_SETTINGS),
-  );
-  // Tracks the date for which the draft was last populated from server data, whether
-  // that population happened before the initial checkin fetch completed, and whether
-  // any checkin fetch has ever started (to distinguish "not yet loaded" from "no entries").
-  const draftDateRef = useRef<string | null>(null);
-  const draftWasPreLoadRef = useRef(false);
-  const checkinFetchEverStartedRef = useRef(false);
   const [allRecords, setAllRecords] = useState<DailyRecord[]>([]);
   const [hrZoneBounds, setHrZoneBounds] = useState<number[] | null>(null);
   const [analysisValues, setAnalysisValues] = useState<AnalysisValueRecord[]>([]);
-  const [checkinEntriesByDate, setCheckinEntriesByDate] = useState<Record<string, CheckInEntry>>({});
-  const [checkinDraftsByDate, setCheckinDraftsByDate] = useState<Record<string, CheckInDraft>>({});
-  const [draftSaveState, setDraftSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
-  const [draftSaveDate, setDraftSaveDate] = useState<string | null>(null);
-  const [checkinSyncError, setCheckinSyncError] = useState<string | null>(null);
-  const [isSavingCheckin, setIsSavingCheckin] = useState(false);
-  const [isLoadingCheckins, setIsLoadingCheckins] = useState(false);
-  const [selectedCheckinDate, setSelectedCheckinDate] = useState(() => formatIsoDateLocal(new Date()));
-  const [checkinSaveMessage, setCheckinSaveMessage] = useState<string | null>(null);
   const [questionBackfillMessage, setQuestionBackfillMessage] = useState<string | null>(null);
   const [importSummary, setImportSummary] = useState<{
     state: ImportState;
@@ -1554,21 +1077,6 @@ function App() {
   const [correlationNotifications, setCorrelationNotifications] = useState<CorrelationNotification[]>([]);
   const [predictorKey, setPredictorKey] = useState<PredictorKey>(readUrlPredictorKey);
   const [outcomeKey, setOutcomeKey] = useState<OutcomeKey>(readUrlOutcomeKey);
-  const [topCorrelationMode, setTopCorrelationMode] = useState<TopCorrelationMode>("target");
-  const [activeCorrelationTooltip, setActiveCorrelationTooltip] = useState<ActiveCorrelationTooltip | null>(null);
-  const [showNewVariablePanel, setShowNewVariablePanel] = useState(false);
-  const [derivedPredictors, setDerivedPredictors] = useState<DerivedPredictorDefinition[]>([]);
-  const [derivedLoadState, setDerivedLoadState] = useState<"loading" | "ready" | "error">("loading");
-  const [derivedSyncError, setDerivedSyncError] = useState<string | null>(null);
-  const [isSavingDerived, setIsSavingDerived] = useState(false);
-  const [selectedDerivedSource, setSelectedDerivedSource] = useState<BasePredictorKey>("garmin:steps");
-  const [derivedMode, setDerivedMode] = useState<"threshold" | "quantile">("threshold");
-  const [derivedThresholdInput, setDerivedThresholdInput] = useState("2");
-  const [derivedBins, setDerivedBins] = useState(2);
-  const [derivedName, setDerivedName] = useState("");
-  const [derivedLabelsInput, setDerivedLabelsInput] = useState("");
-  const [editingDerivedId, setEditingDerivedId] = useState<string | null>(null);
-  const [derivedFormError, setDerivedFormError] = useState<string | null>(null);
   const [showImportModal, setShowImportModal] = useState(false);
   const [isImportSubmitting, setIsImportSubmitting] = useState(false);
   const [importFeedback, setImportFeedback] = useState<string | null>(null);
@@ -1583,103 +1091,7 @@ function App() {
     return formatIsoDateLocal(start);
   });
   const [importToDate, setImportToDate] = useState(() => formatIsoDateLocal(new Date()));
-  const correlationChartRef = useRef<HTMLDivElement | null>(null);
-  const correlationTooltipHideTimeoutRef = useRef<number | null>(null);
-
   const sensors = useSensors(useSensor(PointerSensor));
-
-  const clearCorrelationTooltipHideTimeout = useCallback(() => {
-    if (correlationTooltipHideTimeoutRef.current !== null) {
-      window.clearTimeout(correlationTooltipHideTimeoutRef.current);
-      correlationTooltipHideTimeoutRef.current = null;
-    }
-  }, []);
-
-  const scheduleCorrelationTooltipHide = useCallback(() => {
-    clearCorrelationTooltipHideTimeout();
-    correlationTooltipHideTimeoutRef.current = window.setTimeout(() => {
-      correlationTooltipHideTimeoutRef.current = null;
-      setActiveCorrelationTooltip(null);
-    }, 180);
-  }, [clearCorrelationTooltipHideTimeout]);
-
-  const handleCorrelationTooltipEnter = useCallback(() => {
-    clearCorrelationTooltipHideTimeout();
-  }, [clearCorrelationTooltipHideTimeout]);
-
-  const handleCorrelationTooltipLeave = useCallback(() => {
-    scheduleCorrelationTooltipHide();
-  }, [scheduleCorrelationTooltipHide]);
-
-  const handleCorrelationPointEnter = useCallback((entry: {
-    payload?: ActiveCorrelationTooltip["point"];
-    tooltipPosition?: { x?: number; y?: number };
-  }) => {
-    clearCorrelationTooltipHideTimeout();
-    if (
-      !entry.payload
-      || typeof entry.tooltipPosition?.x !== "number"
-      || typeof entry.tooltipPosition?.y !== "number"
-    ) {
-      return;
-    }
-    setActiveCorrelationTooltip({
-      point: entry.payload,
-      position: {
-        x: entry.tooltipPosition.x,
-        y: entry.tooltipPosition.y,
-      },
-    });
-  }, [clearCorrelationTooltipHideTimeout]);
-
-  const handleCorrelationPointLeave = useCallback(() => {
-    scheduleCorrelationTooltipHide();
-  }, [scheduleCorrelationTooltipHide]);
-
-  const persistPendingCheckinDraft = useCallback(() => {
-    const pendingDraft = pendingDraftRef.current;
-    if (!pendingDraft) return;
-    pendingDraftRef.current = null;
-    draftSaveTimeoutRef.current = null;
-    let failed = false;
-    const promise = saveCheckInDraft(pendingDraft.date, pendingDraft.answers)
-      .then(({ draft }) => {
-        setCheckinDraftsByDate((previous) => ({ ...previous, [draft.date]: draft }));
-      })
-      .catch(() => {
-        failed = true;
-      })
-      .finally(() => {
-        draftSavePromisesRef.current.delete(promise);
-        if (draftSavePromisesRef.current.size || pendingDraftRef.current) return;
-        setDraftSaveState(failed ? "error" : "saved");
-      });
-    draftSavePromisesRef.current.add(promise);
-  }, []);
-
-  const scheduleCheckinDraftSave = useCallback(
-    (date: string, answers: Record<string, string | number | boolean>) => {
-      if (pendingDraftRef.current?.date !== date) {
-        if (draftSaveTimeoutRef.current !== null) {
-          window.clearTimeout(draftSaveTimeoutRef.current);
-        }
-        persistPendingCheckinDraft();
-      } else if (draftSaveTimeoutRef.current !== null) {
-        window.clearTimeout(draftSaveTimeoutRef.current);
-      }
-      pendingDraftRef.current = { date, answers };
-      setDraftSaveDate(date);
-      setDraftSaveState("saving");
-      draftSaveTimeoutRef.current = window.setTimeout(persistPendingCheckinDraft, 500);
-    },
-    [persistPendingCheckinDraft],
-  );
-
-  useEffect(() => () => {
-    if (correlationTooltipHideTimeoutRef.current !== null) {
-      window.clearTimeout(correlationTooltipHideTimeoutRef.current);
-    }
-  }, []);
 
   useEffect(() => {
     replaceAppUrl(activeView, predictorKey, outcomeKey);
@@ -1754,49 +1166,6 @@ function App() {
     setActiveImportRange(null);
   }, [importSummary.state]);
 
-  useEffect(() => {
-    if (!allRecords.length) {
-      setCheckinEntriesByDate({});
-      setCheckinDraftsByDate({});
-      return;
-    }
-    const controller = new AbortController();
-    const loadCheckins = async () => {
-      const firstDate = allRecords[0]?.date;
-      const lastDate = [allRecords.at(-1)?.date, formatIsoDateLocal(new Date())]
-        .filter((value): value is string => Boolean(value))
-        .sort()
-        .at(-1);
-      if (!firstDate || !lastDate) {
-        return;
-      }
-      setIsLoadingCheckins(true);
-      setCheckinSyncError(null);
-      try {
-        const payload = await fetchCheckIns(firstDate, lastDate, controller.signal);
-        setCheckinEntriesByDate(
-          Object.fromEntries(payload.entries.map((entry) => [entry.date, entry])),
-        );
-        setCheckinDraftsByDate(
-          Object.fromEntries(payload.drafts.map((draft) => [draft.date, draft])),
-        );
-      } catch (error) {
-        if (controller.signal.aborted) {
-          return;
-        }
-        const message =
-          error instanceof Error ? error.message : "Failed to load check-ins from SQLite.";
-        setCheckinSyncError(message);
-      } finally {
-        if (!controller.signal.aborted) {
-          setIsLoadingCheckins(false);
-        }
-      }
-    };
-    void loadCheckins();
-    return () => controller.abort();
-  }, [allRecords]);
-
   const loadCorrelationValues = useCallback(
     async (signal?: AbortSignal) => {
       if (!allRecords.length) {
@@ -1826,6 +1195,14 @@ function App() {
     void loadCorrelationValues(controller.signal);
     return () => controller.abort();
   }, [loadCorrelationValues]);
+
+  const checkin = useCheckinFeature({
+    records: allRecords,
+    questions: questionLibrary,
+    onSaved: () => loadCorrelationValues(),
+  });
+  const checkinEntriesByDate = checkin.entriesByDate;
+  const setCheckinEntriesByDate = checkin.setEntriesByDate;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1864,49 +1241,6 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const controller = new AbortController();
-
-    const loadDerivedPredictors = async () => {
-      setDerivedLoadState("loading");
-      setDerivedSyncError(null);
-      try {
-        const payload = await fetchDerivedPredictors(controller.signal);
-        setDerivedPredictors(payload.definitions);
-        setDerivedLoadState("ready");
-      } catch (error) {
-        if (controller.signal.aborted) {
-          return;
-        }
-        const message = error instanceof Error
-          ? error.message
-          : "Failed to load derived predictors.";
-        setDerivedSyncError(message);
-        setDerivedLoadState("error");
-      }
-    };
-
-    void loadDerivedPredictors();
-    return () => controller.abort();
-  }, []);
-
-  const persistDerivedPredictors = useCallback(async (definitions: DerivedPredictorDefinition[]) => {
-    setIsSavingDerived(true);
-    setDerivedSyncError(null);
-    try {
-      const payload = await saveDerivedPredictors(definitions);
-      setDerivedPredictors(payload.definitions);
-    } catch (error) {
-      const message = error instanceof Error
-        ? error.message
-        : "Failed to save derived predictors.";
-      setDerivedSyncError(message);
-      throw error;
-    } finally {
-      setIsSavingDerived(false);
-    }
-  }, []);
-
-  useEffect(() => {
     if (pendingQuestionScrollIdRef.current !== selectedQuestionId) {
       return;
     }
@@ -1916,83 +1250,6 @@ function App() {
     });
     pendingQuestionScrollIdRef.current = null;
   }, [questionLibrary, selectedQuestionId]);
-
-  useEffect(() => {
-    const controller = new AbortController();
-
-    const loadCheckinReminder = async () => {
-      setCheckinReminderLoadState("loading");
-      setCheckinReminderError(null);
-      try {
-        const payload = await fetchCheckinReminderSettings(controller.signal);
-        const normalized = normalizeCheckinReminderSettings(payload);
-        setCheckinReminderSettings(normalized);
-        lastSavedCheckinReminderRef.current = JSON.stringify(normalized);
-        setCheckinReminderLoadState("ready");
-      } catch (error) {
-        if (controller.signal.aborted) {
-          return;
-        }
-        const message =
-          error instanceof Error
-            ? error.message
-            : "Failed to load check-in reminder settings from SQLite.";
-        setCheckinReminderError(message);
-        setCheckinReminderLoadState("error");
-      }
-    };
-
-    void loadCheckinReminder();
-    return () => controller.abort();
-  }, []);
-
-  useEffect(() => {
-    if (checkinReminderLoadState !== "ready") {
-      return;
-    }
-
-    const serializedSettings = JSON.stringify(checkinReminderSettings);
-    if (serializedSettings === lastSavedCheckinReminderRef.current) {
-      return;
-    }
-
-    const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => {
-      const saveReminderSettings = async () => {
-        setIsSavingCheckinReminder(true);
-        setCheckinReminderError(null);
-        try {
-          const payload = await saveCheckinReminderSettings(
-            checkinReminderSettings,
-            controller.signal,
-          );
-          const normalized = normalizeCheckinReminderSettings(payload);
-          setCheckinReminderSettings(normalized);
-          lastSavedCheckinReminderRef.current = JSON.stringify(normalized);
-        } catch (error) {
-          if (controller.signal.aborted) {
-            return;
-          }
-          const message =
-            error instanceof Error
-              ? error.message
-              : "Failed to save check-in reminder settings to SQLite.";
-          setCheckinReminderError(message);
-        } finally {
-          if (!controller.signal.aborted) {
-            setIsSavingCheckinReminder(false);
-          }
-        }
-      };
-
-      void saveReminderSettings();
-    }, 350);
-
-    return () => {
-      window.clearTimeout(timeoutId);
-      controller.abort();
-    };
-  }, [checkinReminderLoadState, checkinReminderSettings]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -2074,45 +1331,6 @@ function App() {
   }, [dashboardPlotPreferences, plotSettingsLoadState]);
 
   useEffect(() => {
-    // Track whether a checkin fetch has ever been kicked off (isLoadingCheckins: false → true).
-    if (isLoadingCheckins) checkinFetchEverStartedRef.current = true;
-
-    const dateChanged = draftDateRef.current !== selectedCheckinDate;
-    // Re-populate when the initial fetch completes: fetch had started, is now done,
-    // and the previous population happened before the data arrived.
-    const initialLoadJustCompleted =
-      checkinFetchEverStartedRef.current && !isLoadingCheckins && draftWasPreLoadRef.current;
-
-    if (!dateChanged && !initialLoadJustCompleted) return;
-
-    draftDateRef.current = selectedCheckinDate;
-    // Pre-load = fetch hasn't started yet or is still in-flight.
-    draftWasPreLoadRef.current = !checkinFetchEverStartedRef.current || isLoadingCheckins;
-    setDraftSaveState("idle");
-    setDraftSaveDate(null);
-    const answers = resolveCheckinDraftAnswers(
-      selectedCheckinDate,
-      questionLibrary,
-      checkinEntriesByDate,
-      checkinDraftsByDate,
-    );
-    draftAnswersRef.current = answers;
-    setDraftAnswers(answers);
-  }, [
-    checkinDraftsByDate,
-    checkinEntriesByDate,
-    isLoadingCheckins,
-    questionLibrary,
-    selectedCheckinDate,
-  ]);
-
-  useEffect(() => {
-    const answers = pruneHiddenChildAnswers(questionLibrary, draftAnswersRef.current);
-    draftAnswersRef.current = answers;
-    setDraftAnswers(answers);
-  }, [questionLibrary]);
-
-  useEffect(() => {
     const context = gsap.context(() => {
       gsap.from(".gsap-fade", {
         y: 20,
@@ -2180,56 +1398,6 @@ function App() {
     }
   }, [activeView, pendingAddPlot]);
 
-  const predictorOptions = useMemo(
-    () => buildPredictorOptions(questionLibrary, derivedPredictors),
-    [derivedPredictors, questionLibrary],
-  );
-  const derivedSourceOptions = useMemo(
-    () => buildDerivedPredictorSourceOptions(questionLibrary),
-    [questionLibrary],
-  );
-  const outcomeOptions = useMemo(() => buildOutcomeOptions(questionLibrary), [questionLibrary]);
-  const topCorrelationOutcomeOptions = useMemo(
-    () => outcomeOptions,
-    [outcomeOptions],
-  );
-
-  useEffect(() => {
-    if (!predictorOptions.length || predictorOptions.some((option) => option.key === predictorKey)) {
-      return;
-    }
-    if (
-      (predictorKey.startsWith("question:") && questionLoadState === "loading")
-      || (predictorKey.startsWith("derived:") && derivedLoadState === "loading")
-    ) {
-      return;
-    }
-    setPredictorKey(predictorOptions[0].key as PredictorKey);
-  }, [derivedLoadState, predictorKey, predictorOptions, questionLoadState]);
-
-  useEffect(() => {
-    if (!outcomeOptions.length || outcomeOptions.some((option) => option.key === outcomeKey)) {
-      return;
-    }
-    if (outcomeKey.startsWith("question:") && questionLoadState === "loading") {
-      return;
-    }
-    const fallback = outcomeOptions.some((option) => option.key === DEFAULT_TOP_CORRELATION_OUTCOME)
-      ? DEFAULT_TOP_CORRELATION_OUTCOME
-      : outcomeOptions[0].key as OutcomeKey;
-    setOutcomeKey(fallback);
-  }, [outcomeKey, outcomeOptions, questionLoadState]);
-
-  useEffect(() => {
-    if (!derivedSourceOptions.length) {
-      return;
-    }
-    if (derivedSourceOptions.some((option) => option.key === selectedDerivedSource)) {
-      return;
-    }
-    setSelectedDerivedSource(derivedSourceOptions[0].key as BasePredictorKey);
-  }, [derivedSourceOptions, selectedDerivedSource]);
-
   const fallbackTodayRecord = useMemo<DailyRecord>(
     () => ({
       date: new Date().toISOString().slice(0, 10),
@@ -2293,27 +1461,6 @@ function App() {
     () => new Map(questionFields.map((field) => [field.id, field])),
     [questionFields],
   );
-  const allRecordsByDate = useMemo(
-    () => new Map(allRecords.map((record) => [record.date, record])),
-    [allRecords],
-  );
-  const correlationDetailsByDate = useMemo(() => {
-    const grouped = new Map<string, { predictor: AnalysisValueRecord[]; target: AnalysisValueRecord[] }>();
-    for (const value of analysisValues) {
-      const bucket = grouped.get(value.analysisDate) ?? { predictor: [], target: [] };
-      bucket[value.role === "predictor" ? "predictor" : "target"].push(value);
-      grouped.set(value.analysisDate, bucket);
-    }
-    for (const bucket of grouped.values()) {
-      const sortByLabel = (left: AnalysisValueRecord, right: AnalysisValueRecord) =>
-        getAnalysisValueLabel(left.featureKey, questionFieldsById).localeCompare(
-          getAnalysisValueLabel(right.featureKey, questionFieldsById),
-        );
-      bucket.predictor.sort(sortByLabel);
-      bucket.target.sort(sortByLabel);
-    }
-    return grouped;
-  }, [analysisValues, questionFieldsById]);
   const dashboardPlotOptions = useMemo<DashboardPlotVariableOption[]>(
     () => [
       ...METRICS.map((metric) => ({
@@ -2442,327 +1589,6 @@ function App() {
       plot.option.label.toLowerCase().includes(query) || plot.key.toLowerCase().includes(query));
   }, [dashboardPlots, plotSearchQuery]);
 
-  const correlationRecords = allRecords;
-  const correlationCatalog = useMemo(
-    () =>
-      buildCorrelationCatalog({
-        records: correlationRecords,
-        analysisValues,
-        questions: questionLibrary,
-        derivedPredictors,
-        weekdayOnly: false,
-        trainingOnly: false,
-      }),
-    [
-      analysisValues,
-      correlationRecords,
-      derivedPredictors,
-      questionLibrary,
-    ],
-  );
-  const topCorrelationCatalog = useMemo(
-    () => correlationCatalog.filter((pair) => (
-      topCorrelationOutcomeOptions.some((option) => option.key === pair.outcome)
-    )),
-    [correlationCatalog, topCorrelationOutcomeOptions],
-  );
-  const meaningfulCorrelations = useMemo(
-    () => topCorrelationCatalog.filter((pair) => pair.classification === "meaningful"),
-    [topCorrelationCatalog],
-  );
-  const exploratoryCorrelations = useMemo(
-    () => topCorrelationCatalog.filter((pair) => pair.classification === "exploratory"),
-    [topCorrelationCatalog],
-  );
-  const filteredMeaningfulCorrelations = useMemo(
-    () => meaningfulCorrelations.filter((pair) => (
-      topCorrelationMode === "target"
-        ? pair.outcome === outcomeKey
-        : pair.predictor === predictorKey
-    )),
-    [meaningfulCorrelations, outcomeKey, predictorKey, topCorrelationMode],
-  );
-  const filteredExploratoryCorrelations = useMemo(
-    () => exploratoryCorrelations.filter((pair) => (
-      topCorrelationMode === "target"
-        ? pair.outcome === outcomeKey
-        : pair.predictor === predictorKey
-    )),
-    [exploratoryCorrelations, outcomeKey, predictorKey, topCorrelationMode],
-  );
-  const selectedCorrelationPair = useMemo(
-    () => findCorrelationPair(correlationCatalog, predictorKey, outcomeKey),
-    [correlationCatalog, outcomeKey, predictorKey],
-  );
-  const continuousExplorerXDomain = useMemo<[number, number] | undefined>(() => {
-    if (!selectedCorrelationPair || selectedCorrelationPair.testType !== "continuous") {
-      return undefined;
-    }
-    return computeNumericDomain(selectedCorrelationPair.points.map((point) => point.x));
-  }, [selectedCorrelationPair]);
-  const trendLineData = useMemo(() => {
-    if (
-      !selectedCorrelationPair
-      || selectedCorrelationPair.testType !== "continuous"
-      || !selectedCorrelationPair.regression
-      || selectedCorrelationPair.points.length < 2
-    ) {
-      return [];
-    }
-    const xs = selectedCorrelationPair.points.map((point) => point.x);
-    const minX = Math.min(...xs);
-    const maxX = Math.max(...xs);
-    return [
-      {
-        x: minX,
-        y:
-          selectedCorrelationPair.regression.slope * minX
-          + selectedCorrelationPair.regression.intercept,
-      },
-      {
-        x: maxX,
-        y:
-          selectedCorrelationPair.regression.slope * maxX
-          + selectedCorrelationPair.regression.intercept,
-      },
-    ];
-  }, [selectedCorrelationPair]);
-  const correlationExplorerYAxis = useMemo(() => {
-    if (!selectedCorrelationPair) {
-      return undefined;
-    }
-    return computeNiceNumericAxis([
-      ...selectedCorrelationPair.points.map((point) => point.y),
-      ...trendLineData.map((point) => point.y),
-    ]);
-  }, [selectedCorrelationPair, trendLineData]);
-  const categoricalScatterData = useMemo(() => {
-    if (!selectedCorrelationPair || selectedCorrelationPair.testType !== "categorical") {
-      return [];
-    }
-    return selectedCorrelationPair.points.map((point, index) => ({
-      ...point,
-      xJittered: point.x + ((((index * 37) % 100) / 100) - 0.5) * 0.35,
-    }));
-  }, [selectedCorrelationPair]);
-  const categoricalMeanData = useMemo(() => {
-    if (
-      !selectedCorrelationPair
-      || selectedCorrelationPair.testType !== "categorical"
-      || !selectedCorrelationPair.categoryMeans
-    ) {
-      return [];
-    }
-    return selectedCorrelationPair.categoryMeans
-      .map((groupMean, index) => (
-        groupMean === null ? null : { x: index, xJittered: index, y: groupMean }
-      ))
-      .filter((entry): entry is { x: number; xJittered: number; y: number } => entry !== null);
-  }, [selectedCorrelationPair]);
-  const activeCorrelationTooltipContent = useMemo(() => {
-    if (!activeCorrelationTooltip) {
-      return null;
-    }
-    const details = correlationDetailsByDate.get(activeCorrelationTooltip.point.date);
-    const hoveredRecord = allRecordsByDate.get(activeCorrelationTooltip.point.date);
-    let predictorItems = (details?.predictor ?? []).map((value) => ({
-      label: getAnalysisValueLabel(value.featureKey, questionFieldsById),
-      value: formatAnalysisValue(value, questionFieldsById),
-    }));
-    if (hoveredRecord) {
-      for (const metric of DERIVED_GAP_METRICS) {
-        const value = hoveredRecord.predictors[metric.key];
-        if (value === null || value === undefined) {
-          continue;
-        }
-        predictorItems = appendTooltipItem(
-          predictorItems,
-          metric.tooltipLabel,
-          formatMinutesAsHours(value),
-        );
-      }
-    }
-    const sections: CorrelationTooltipSection[] = [
-      {
-        title: "Predictor context",
-        sourceDateLabel: summarizeAnalysisSourceDates(details?.predictor ?? []),
-        items: predictorItems,
-      },
-      {
-        title: "Outcome context",
-        sourceDateLabel: summarizeAnalysisSourceDates(details?.target ?? []),
-        items: (details?.target ?? []).map((value) => ({
-          label: getAnalysisValueLabel(value.featureKey, questionFieldsById),
-          value: formatAnalysisValue(value, questionFieldsById),
-        })),
-      },
-    ].filter((section) => section.items.length);
-    return {
-      predictorLabel: getOptionLabel(predictorOptions, predictorKey, predictorKey),
-      predictorValue: formatCorrelationPredictorValue(
-        activeCorrelationTooltip.point,
-        selectedCorrelationPair,
-        predictorKey,
-      ),
-      outcomeLabel: getOptionLabel(outcomeOptions, outcomeKey, outcomeKey),
-      outcomeValue: formatCorrelationOutcomeValue(activeCorrelationTooltip.point, outcomeKey),
-      predictorSourceDate: activeCorrelationTooltip.point.predictorSourceDate,
-      outcomeSourceDate: activeCorrelationTooltip.point.outcomeSourceDate,
-      date: activeCorrelationTooltip.point.date,
-      sections,
-    };
-  }, [
-    activeCorrelationTooltip,
-    allRecordsByDate,
-    correlationDetailsByDate,
-    outcomeKey,
-    outcomeOptions,
-    predictorKey,
-    predictorOptions,
-    questionFieldsById,
-    selectedCorrelationPair,
-  ]);
-  const activeCorrelationTooltipStyle = useMemo(() => {
-    if (!activeCorrelationTooltip) {
-      return null;
-    }
-    const chartWidth = correlationChartRef.current?.clientWidth ?? 0;
-    const chartHeight = correlationChartRef.current?.clientHeight ?? 0;
-    const tooltipWidth = 384;
-    const tooltipHeight = 416;
-    const offset = 14;
-    let left = activeCorrelationTooltip.position.x + offset;
-    let top = activeCorrelationTooltip.position.y + offset;
-    if (chartWidth && left + tooltipWidth > chartWidth - 8) {
-      left = Math.max(8, activeCorrelationTooltip.position.x - tooltipWidth - offset);
-    }
-    if (chartHeight && top + tooltipHeight > chartHeight - 8) {
-      top = Math.max(8, chartHeight - tooltipHeight - 8);
-    }
-    return {
-      left,
-      top,
-    };
-  }, [activeCorrelationTooltip]);
-  useEffect(() => {
-    clearCorrelationTooltipHideTimeout();
-    setActiveCorrelationTooltip(null);
-  }, [clearCorrelationTooltipHideTimeout, outcomeKey, predictorKey, selectedCorrelationPair]);
-  const derivedSourceValues = useMemo(
-    () =>
-      buildPredictorDistribution({
-        records: correlationRecords,
-        analysisValues,
-        questions: questionLibrary,
-        predictor: selectedDerivedSource,
-        weekdayOnly: false,
-        trainingOnly: false,
-      }),
-    [
-      analysisValues,
-      correlationRecords,
-      questionLibrary,
-      selectedDerivedSource,
-    ],
-  );
-  const derivedSourceDensity = useMemo(
-    () => buildDensityCurve(derivedSourceValues),
-    [derivedSourceValues],
-  );
-  const previewCutPoints = useMemo(
-    () => (
-      derivedMode === "threshold"
-        ? parseThresholdCutPointsInput(derivedThresholdInput)
-        : calculateQuantileCutPoints(derivedSourceValues, derivedBins)
-    ),
-    [derivedBins, derivedMode, derivedSourceValues, derivedThresholdInput],
-  );
-  const derivedSourceSummary = useMemo(() => {
-    if (!derivedSourceValues.length) {
-      return { count: 0, min: null, median: null, max: null };
-    }
-    const sorted = [...derivedSourceValues].sort((left, right) => left - right);
-    const center = Math.floor(sorted.length / 2);
-    const median = sorted.length % 2 === 0
-      ? (sorted[center - 1] + sorted[center]) / 2
-      : sorted[center];
-    return {
-      count: sorted.length,
-      min: sorted[0],
-      median,
-      max: sorted[sorted.length - 1],
-    };
-  }, [derivedSourceValues]);
-  const inRangePreviewCutPoints = useMemo(() => {
-    const { min, max } = derivedSourceSummary;
-    if (min === null || max === null) {
-      return [];
-    }
-    return previewCutPoints.filter((value) => value >= min && value <= max);
-  }, [derivedSourceSummary.max, derivedSourceSummary.min, previewCutPoints]);
-  const outOfRangePreviewCutPoints = useMemo(() => {
-    const { min, max } = derivedSourceSummary;
-    if (min === null || max === null) {
-      return previewCutPoints;
-    }
-    return previewCutPoints.filter((value) => value < min || value > max);
-  }, [derivedSourceSummary.max, derivedSourceSummary.min, previewCutPoints]);
-  const densityDomain = useMemo<[number, number] | null>(() => {
-    if (!derivedSourceDensity.length) {
-      return null;
-    }
-    const allX = derivedSourceDensity.map((point) => point.x);
-    const minX = Math.min(...allX);
-    const maxX = Math.max(...allX);
-    if (!Number.isFinite(minX) || !Number.isFinite(maxX)) {
-      return null;
-    }
-    if (minX === maxX) {
-      return [minX - 1, maxX + 1];
-    }
-    const padding = (maxX - minX) * 0.05;
-    return [minX - padding, maxX + padding];
-  }, [derivedSourceDensity]);
-  const densityAxisStep = useMemo(() => {
-    if (!densityDomain) {
-      return 1;
-    }
-    const [minX, maxX] = densityDomain;
-    return chooseIntegerAxisStep(maxX - minX);
-  }, [densityDomain]);
-  const densityAxisTicks = useMemo(() => {
-    if (!densityDomain) {
-      return [];
-    }
-    const [minX, maxX] = densityDomain;
-    const start = Math.floor(minX / densityAxisStep) * densityAxisStep;
-    const end = Math.ceil(maxX / densityAxisStep) * densityAxisStep;
-    const ticks: number[] = [];
-    for (
-      let value = start, guard = 0;
-      value <= end && guard < 500;
-      value += densityAxisStep, guard += 1
-    ) {
-      ticks.push(Math.round(value));
-    }
-    return ticks;
-  }, [densityAxisStep, densityDomain]);
-  const displayedCorrelationCards = filteredMeaningfulCorrelations.length
-    ? filteredMeaningfulCorrelations
-    : filteredExploratoryCorrelations;
-  const isExploratoryFallback =
-    filteredMeaningfulCorrelations.length === 0 && filteredExploratoryCorrelations.length > 0;
-
-  const includedQuestions = useMemo(
-    () => questionLibrary.filter((question) => question.defaultIncluded),
-    [questionLibrary],
-  );
-
-  const groupedQuestions = useMemo(() => sectionedQuestions(includedQuestions), [includedQuestions]);
-  const visibleSectionOrder = useMemo(
-    () => buildSectionList(includedQuestions),
-    [includedQuestions],
-  );
   const editableSectionOptions = useMemo(
     () => {
       const sections = buildSectionList(questionLibrary);
@@ -2798,87 +1624,6 @@ function App() {
   }, [questionLibrary]);
   const isQuestionDirty =
     questionLoadState === "ready" && serializedQuestionLibrary !== lastSavedQuestionsRef.current;
-  const selectedCheckinRecord = useMemo(
-    () => allRecords.find((record) => record.date === selectedCheckinDate) ?? null,
-    [allRecords, selectedCheckinDate],
-  );
-  const selectedCheckinEntry = checkinEntriesByDate[selectedCheckinDate];
-  const selectedCheckinDraft = checkinDraftsByDate[selectedCheckinDate];
-  const selectedDraftSaveState = draftSaveDate === selectedCheckinDate ? draftSaveState : "idle";
-  const selectedCheckinWeekday = useMemo(
-    () => formatIsoDateWeekday(selectedCheckinDate),
-    [selectedCheckinDate],
-  );
-  const isSelectedDateSaved = Boolean(selectedCheckinEntry);
-  const isCheckinDirty = useMemo(() => {
-    if (!selectedCheckinEntry) return false;
-    const defaults = defaultDraftAnswers(questionLibrary);
-    const savedState = { ...defaults, ...selectedCheckinEntry.answers };
-    const sortEntries = (obj: Record<string, unknown>) =>
-      JSON.stringify(Object.fromEntries(Object.entries(obj).sort(([a], [b]) => a.localeCompare(b))));
-    return sortEntries(draftAnswers) !== sortEntries(savedState);
-  }, [draftAnswers, selectedCheckinEntry, questionLibrary]);
-  const selectedPredictorSourceDate = selectedCheckinRecord?.date ?? selectedCheckinDate;
-  const selectedSleepMetricDate = sleepMetricDateForPredictorDate(selectedPredictorSourceDate);
-  const selectedSleepRecord = useMemo(
-    () => allRecords.find((record) => record.date === selectedSleepMetricDate) ?? null,
-    [allRecords, selectedSleepMetricDate],
-  );
-  const selectedFellAsleepTime = useMemo(() => {
-    if (selectedSleepRecord?.fellAsleepAtIso) {
-      const formatted = formatIsoClockTimeLocal(selectedSleepRecord.fellAsleepAtIso);
-      if (formatted) {
-        return formatted;
-      }
-    }
-    if (selectedSleepRecord?.fellAsleepAt) {
-      return selectedSleepRecord.fellAsleepAt;
-    }
-    const legacySleepTime = draftAnswers[SLEEP_TIME_QUESTION_ID];
-    return typeof legacySleepTime === "string" && legacySleepTime ? legacySleepTime : null;
-  }, [draftAnswers, selectedSleepRecord]);
-  const selectedWokeUpTime = useMemo(() => {
-    if (selectedSleepRecord?.wokeUpAtIso) {
-      const formatted = formatIsoClockTimeLocal(selectedSleepRecord.wokeUpAtIso);
-      if (formatted) return formatted;
-    }
-    return selectedSleepRecord?.wokeUpAt ?? null;
-  }, [selectedSleepRecord]);
-  const selectedSleepDuration = selectedSleepRecord?.predictors.sleepSeconds ?? null;
-  const selectedSteps = selectedCheckinRecord?.predictors.steps ?? null;
-  const selectedActivityLabel = useMemo(() => {
-    if (!selectedCheckinRecord) {
-      return "--";
-    }
-    if (selectedCheckinRecord.importGap) {
-      return "Unknown";
-    }
-    return selectedCheckinRecord.predictors.isTrainingDay
-      ? "Activity detected"
-      : "No activity logged";
-  }, [selectedCheckinRecord]);
-  const derivedGapMetricCards = useMemo(
-    () =>
-      DERIVED_GAP_METRICS.map((metric) => {
-        const answer = draftAnswers[metric.questionId];
-        const hasAnswer = typeof answer === "string" && parseClockTimeToMinutes(answer) !== null;
-        const value = typeof answer === "string" && typeof selectedFellAsleepTime === "string"
-          ? timeToSleepGapMinutes(answer, selectedFellAsleepTime)
-          : null;
-        return {
-          key: metric.key,
-          label: metric.detailLabel,
-          value: value === null ? "Unknown" : formatMinutesAsHours(value),
-          helperText: !hasAnswer
-            ? metric.missingAnswerHint
-            : selectedFellAsleepTime
-              ? metric.computedHint
-              : "Updates after Garmin records sleep start time for this date.",
-        };
-      }),
-    [draftAnswers, selectedFellAsleepTime],
-  );
-
   const todayDateLabel = new Date().toLocaleDateString(undefined, {
     weekday: "long",
     month: "long",
@@ -2970,40 +1715,6 @@ function App() {
     window.open(GARMIN_ACCOUNT_INFORMATION_URL, "_blank", "noopener,noreferrer");
   };
 
-  const handleQuickSave = async () => {
-    if (draftSaveTimeoutRef.current !== null) {
-      window.clearTimeout(draftSaveTimeoutRef.current);
-      draftSaveTimeoutRef.current = null;
-    }
-    pendingDraftRef.current = null;
-    setIsSavingCheckin(true);
-    setCheckinSaveMessage(null);
-    setCheckinSyncError(null);
-    try {
-      await Promise.all(draftSavePromisesRef.current);
-      const payload = await saveCheckIn(selectedCheckinDate, draftAnswersRef.current);
-      setCheckinEntriesByDate((previous) => ({
-        ...previous,
-        [payload.entry.date]: payload.entry,
-      }));
-      setCheckinDraftsByDate((previous) => {
-        const next = { ...previous };
-        delete next[payload.entry.date];
-        return next;
-      });
-      setDraftSaveState("idle");
-      setDraftSaveDate(null);
-      await loadCorrelationValues();
-      setCheckinSaveMessage(`Saved check-in for ${formatReadableDate(payload.entry.date)}.`);
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to save check-in to SQLite.";
-      setCheckinSyncError(message);
-    } finally {
-      setIsSavingCheckin(false);
-    }
-  };
-
   const handleSelectDashboardPlotToAdd = (option: DashboardPlotVariableOption) => {
     setPendingAddPlot(option);
     setPendingAddPlotStep("direction");
@@ -3012,71 +1723,6 @@ function App() {
     setPendingAddPlotAggregation("daily");
     setPendingAddPlotRolling(false);
     setShowAddPlotMenu(false);
-  };
-
-  const handleCheckinDateStep = (delta: number): boolean => {
-    const parsed = parseIsoDate(selectedCheckinDate);
-    if (!parsed) return false;
-    const next = new Date(parsed.getTime() + delta * 86_400_000);
-    const nextStr = formatIsoDateLocal(next);
-    if (nextStr > maxImportDate) return false;
-    setSelectedCheckinDate(nextStr);
-    return true;
-  };
-
-  const handleAnimatedCheckinDateStep = async (delta: number) => {
-    if (isCheckinTransitioningRef.current) return;
-    const panel = checkinPanelRef.current;
-    if (
-      !panel ||
-      typeof panel.animate !== "function" ||
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches
-    ) {
-      handleCheckinDateStep(delta);
-      return;
-    }
-
-    isCheckinTransitioningRef.current = true;
-    const exitOffset = -delta * CHECKIN_TRANSITION_DISTANCE_PX;
-    const enterOffset = delta * CHECKIN_TRANSITION_DISTANCE_PX;
-    let exitAnimation: Animation | null = null;
-    let enterAnimation: Animation | null = null;
-    let dateChanged = false;
-    try {
-      exitAnimation = panel.animate(
-        [
-          { transform: "translateX(0)", opacity: 1 },
-          { transform: `translateX(${exitOffset}px)`, opacity: 0.72 },
-        ],
-        {
-          duration: CHECKIN_EXIT_DURATION_MS,
-          easing: "cubic-bezier(0.4, 0, 1, 1)",
-          fill: "forwards",
-        },
-      );
-      await exitAnimation.finished;
-      dateChanged = handleCheckinDateStep(delta);
-      if (!dateChanged) return;
-      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-      enterAnimation = panel.animate(
-        [
-          { transform: `translateX(${enterOffset}px)`, opacity: 0.72 },
-          { transform: "translateX(0)", opacity: 1 },
-        ],
-        {
-          duration: CHECKIN_ENTER_DURATION_MS,
-          easing: "cubic-bezier(0, 0, 0.2, 1)",
-        },
-      );
-      exitAnimation.cancel();
-      await enterAnimation.finished;
-    } catch {
-      if (!dateChanged) handleCheckinDateStep(delta);
-    } finally {
-      exitAnimation?.cancel();
-      enterAnimation?.cancel();
-      isCheckinTransitioningRef.current = false;
-    }
   };
 
   const handleAddDashboardPlot = (
@@ -3132,113 +1778,6 @@ function App() {
       }
       return arrayMove(previous, oldIndex, newIndex);
     });
-  };
-
-  const formatDerivedBoundary = (value: number): string => {
-    if (!Number.isFinite(value)) {
-      return String(value);
-    }
-    if (Math.abs(value) >= 1000) {
-      return value.toFixed(0);
-    }
-    if (Math.abs(value) >= 100) {
-      return value.toFixed(1);
-    }
-    return value.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
-  };
-
-  const buildDefaultDerivedLabels = (cutPoints: number[]): string[] => {
-    if (!cutPoints.length) {
-      return [];
-    }
-    const labels: string[] = [];
-    labels.push(`< ${formatDerivedBoundary(cutPoints[0])}`);
-    for (let index = 1; index < cutPoints.length; index += 1) {
-      labels.push(`${formatDerivedBoundary(cutPoints[index - 1])} to < ${formatDerivedBoundary(cutPoints[index])}`);
-    }
-    labels.push(`>= ${formatDerivedBoundary(cutPoints[cutPoints.length - 1])}`);
-    return labels;
-  };
-
-  const resetDerivedForm = () => {
-    setEditingDerivedId(null);
-    setDerivedName("");
-    setDerivedThresholdInput("2");
-    setDerivedLabelsInput("");
-    setDerivedBins(2);
-    setDerivedMode("threshold");
-    setDerivedFormError(null);
-  };
-
-  const handleSaveDerivedDefinition = async () => {
-    const trimmedName = derivedName.trim();
-    if (!trimmedName) {
-      setDerivedFormError("Name is required.");
-      return;
-    }
-
-    const cutPoints = derivedMode === "threshold"
-      ? parseThresholdCutPointsInput(derivedThresholdInput)
-      : calculateQuantileCutPoints(derivedSourceValues, derivedBins);
-    if (!cutPoints.length) {
-      setDerivedFormError("Unable to compute valid cut points for this source.");
-      return;
-    }
-
-    const rawLabels = derivedLabelsInput
-      .split(",")
-      .map((entry) => entry.trim())
-      .filter(Boolean);
-    const labels = rawLabels.length ? rawLabels : buildDefaultDerivedLabels(cutPoints);
-    if (labels.length !== cutPoints.length + 1) {
-      setDerivedFormError(`Expected ${cutPoints.length + 1} labels for ${cutPoints.length + 1} bins.`);
-      return;
-    }
-
-    const nextDefinition: DerivedPredictorDefinition = {
-      id: editingDerivedId ?? `derived_${Date.now()}`,
-      name: trimmedName,
-      sourceKey: selectedDerivedSource,
-      mode: derivedMode,
-      cutPoints,
-      labels,
-    };
-    const nextDefinitions = editingDerivedId
-      ? derivedPredictors.map((definition) => (
-        definition.id === editingDerivedId ? nextDefinition : definition
-      ))
-      : [...derivedPredictors, nextDefinition];
-
-    setDerivedFormError(null);
-    try {
-      await persistDerivedPredictors(nextDefinitions);
-      resetDerivedForm();
-    } catch {
-      // Error is already surfaced through derivedSyncError.
-    }
-  };
-
-  const handleEditDerivedDefinition = (definition: DerivedPredictorDefinition) => {
-    setEditingDerivedId(definition.id);
-    setDerivedName(definition.name);
-    setSelectedDerivedSource(definition.sourceKey as BasePredictorKey);
-    setDerivedMode(definition.mode);
-    setDerivedThresholdInput(definition.cutPoints.join(", "));
-    setDerivedBins(Math.max(2, Math.min(5, definition.labels.length)));
-    setDerivedLabelsInput(definition.labels.join(", "));
-    setDerivedFormError(null);
-  };
-
-  const handleDeleteDerivedDefinition = async (definitionId: string) => {
-    const nextDefinitions = derivedPredictors.filter((definition) => definition.id !== definitionId);
-    try {
-      await persistDerivedPredictors(nextDefinitions);
-      if (editingDerivedId === definitionId) {
-        resetDerivedForm();
-      }
-    } catch {
-      // Error is already surfaced through derivedSyncError.
-    }
   };
 
   const handleAddQuestion = () => {
@@ -3378,36 +1917,6 @@ function App() {
     { key: "settings", label: "Settings" },
   ];
 
-  const updateDraftAnswer = useCallback(
-    (fieldId: string, nextValue: string | number | boolean) => {
-      const answers = pruneHiddenChildAnswers(
-        questionLibrary,
-        { ...draftAnswersRef.current, [fieldId]: nextValue },
-      );
-      draftAnswersRef.current = answers;
-      setDraftAnswers(answers);
-      scheduleCheckinDraftSave(selectedCheckinDate, answers);
-    },
-    [questionLibrary, scheduleCheckinDraftSave, selectedCheckinDate],
-  );
-
-  const renderQuestionInput = (question: CheckInQuestion | CheckInQuestionChild) => (
-    <QuestionAnswerInput
-      panelClassName="bg-subsurface"
-      question={question}
-      value={draftAnswers[question.id]}
-      onChange={(nextValue) => updateDraftAnswer(question.id, nextValue)}
-      onClear={() => {
-        const answers = { ...draftAnswersRef.current };
-        delete answers[question.id];
-        const prunedAnswers = pruneHiddenChildAnswers(questionLibrary, answers);
-        draftAnswersRef.current = prunedAnswers;
-        setDraftAnswers(prunedAnswers);
-        scheduleCheckinDraftSave(selectedCheckinDate, prunedAnswers);
-      }}
-    />
-  );
-
   const dismissCorrelationNotificationIds = useCallback(async (ids: string[]) => {
     setCorrelationNotifications((current) =>
       current.filter((notification) => !ids.includes(notification.id)),
@@ -3429,6 +1938,16 @@ function App() {
     void dismissCorrelationNotificationIds([notification.id]);
   }, [dismissCorrelationNotificationIds]);
 
+  const correlationController = useCorrelationFeature({
+    records: allRecords,
+    analysisValues,
+    questions: questionLibrary,
+    questionLoadState,
+    predictorKey,
+    outcomeKey,
+    setPredictorKey,
+    setOutcomeKey,
+  });
   return (
     <div ref={appRef} className="min-h-screen px-4 pb-10 pt-4 text-ink sm:px-6 sm:pt-32 lg:px-9">
       {correlationNotifications.length > 0 && (
@@ -3932,793 +2451,12 @@ function App() {
           </section>
         )}
 
-        {activeView === "lab" && (
-          <section className="gsap-fade space-y-5">
-            <article className="panel p-6 sm:p-8">
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div>
-                  <h2 className="text-xl font-semibold tracking-tight">Correlation Lab</h2>
-                  <p className="mt-1 text-sm text-muted">
-                    Univariate associations only. Predictors can correlate with each other, so results are directional signals, not causality.
-                  </p>
-                </div>
-                <button
-                  className="focusable min-h-11 rounded-capsule bg-accent px-5 text-sm font-semibold text-white shadow-soft"
-                  type="button"
-                  onClick={() => setShowNewVariablePanel((previous) => !previous)}
-                >
-                  + New Variable
-                </button>
-              </div>
-            </article>
-
-            {showNewVariablePanel && (
-              <article className="panel p-6 sm:p-8">
-              <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h3 className="text-lg font-semibold tracking-tight">Derived Predictors</h3>
-                  <p className="text-sm text-muted">
-                    Build threshold or quantile bins from continuous predictors. Definitions are persisted in SQLite settings.
-                  </p>
-                </div>
-                {isSavingDerived && (
-                  <span className="inline-flex items-center gap-2 text-sm text-muted">
-                    <LoaderCircle className="size-4 animate-spin" />
-                    Saving...
-                  </span>
-                )}
-              </header>
-              {derivedSyncError && (
-                <p className="mb-3 rounded-2xl bg-[color-mix(in_srgb,var(--error)_14%,white)] px-3 py-2 text-sm text-error">
-                  {derivedSyncError}
-                </p>
-              )}
-              <div className="grid gap-4 lg:grid-cols-[1.1fr_1fr]">
-                <div className="space-y-3 rounded-[22px] bg-subsurface p-4">
-                  <label className="space-y-2 text-sm">
-                    <span className="block text-xs uppercase tracking-[0.16em] text-muted">Source Predictor</span>
-                    <select
-                      className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
-                      value={selectedDerivedSource}
-                      onChange={(event) => setSelectedDerivedSource(event.target.value as BasePredictorKey)}
-                    >
-                      {derivedSourceOptions.map((option) => (
-                        <option key={option.key} value={option.key}>{option.label}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <label className="space-y-2 text-sm">
-                      <span className="block text-xs uppercase tracking-[0.16em] text-muted">Mode</span>
-                      <select
-                        className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
-                        value={derivedMode}
-                        onChange={(event) => setDerivedMode(event.target.value as "threshold" | "quantile")}
-                      >
-                        <option value="threshold">Threshold</option>
-                        <option value="quantile">Quantile</option>
-                      </select>
-                    </label>
-                    {derivedMode === "quantile" ? (
-                      <label className="space-y-2 text-sm">
-                        <span className="block text-xs uppercase tracking-[0.16em] text-muted">Bins (2-5)</span>
-                        <input
-                          className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
-                          max={5}
-                          min={2}
-                          type="number"
-                          value={derivedBins}
-                          onChange={(event) => setDerivedBins(Math.max(2, Math.min(5, Number(event.target.value) || 2)))}
-                        />
-                      </label>
-                    ) : (
-                      <label className="space-y-2 text-sm">
-                        <span className="block text-xs uppercase tracking-[0.16em] text-muted">Cut Points</span>
-                        <input
-                          className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
-                          placeholder="e.g. 2, 4"
-                          type="text"
-                          value={derivedThresholdInput}
-                          onChange={(event) => setDerivedThresholdInput(event.target.value)}
-                        />
-                      </label>
-                    )}
-                  </div>
-                  <label className="space-y-2 text-sm">
-                    <span className="block text-xs uppercase tracking-[0.16em] text-muted">Name</span>
-                    <input
-                      className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
-                      placeholder="e.g. Caffeine High/Low"
-                      type="text"
-                      value={derivedName}
-                      onChange={(event) => setDerivedName(event.target.value)}
-                    />
-                  </label>
-                  <label className="space-y-2 text-sm">
-                    <span className="block text-xs uppercase tracking-[0.16em] text-muted">Labels (optional)</span>
-                    <input
-                      className="focusable min-h-11 w-full rounded-2xl bg-panel px-3"
-                      placeholder="Comma-separated labels"
-                      type="text"
-                      value={derivedLabelsInput}
-                      onChange={(event) => setDerivedLabelsInput(event.target.value)}
-                    />
-                  </label>
-                  {derivedFormError && (
-                    <p className="rounded-2xl bg-[color-mix(in_srgb,var(--error)_14%,white)] px-3 py-2 text-sm text-error">
-                      {derivedFormError}
-                    </p>
-                  )}
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      className="focusable min-h-11 rounded-capsule bg-accent px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
-                      disabled={derivedLoadState !== "ready" || !derivedSourceValues.length || isSavingDerived}
-                      type="button"
-                      onClick={() => void handleSaveDerivedDefinition()}
-                    >
-                      {editingDerivedId ? "Update definition" : "Create definition"}
-                    </button>
-                    <button
-                      className="focusable min-h-11 rounded-capsule bg-panel px-4 text-sm font-semibold shadow-soft"
-                      type="button"
-                      onClick={resetDerivedForm}
-                    >
-                      Reset
-                    </button>
-                  </div>
-                </div>
-
-                <div className="space-y-3 rounded-[22px] bg-subsurface p-4">
-                  <h4 className="text-sm font-semibold uppercase tracking-[0.16em] text-muted">Distribution Preview</h4>
-                  <p className="metric-number text-xs text-muted">
-                    N={derivedSourceSummary.count}
-                    {derivedSourceSummary.min !== null && (
-                      <> · min={derivedSourceSummary.min.toFixed(1)} · median={derivedSourceSummary.median?.toFixed(1)} · max={derivedSourceSummary.max?.toFixed(1)}</>
-                    )}
-                  </p>
-                  {derivedSourceDensity.length ? (
-                    <div className="h-44 rounded-2xl bg-panel p-2">
-                      <ResponsiveContainer>
-                        <ComposedChart data={derivedSourceDensity}>
-                          <CartesianGrid stroke="rgba(18,18,18,0.06)" strokeDasharray="3 6" />
-                          <XAxis
-                            axisLine={false}
-                            dataKey="x"
-                            domain={
-                              densityAxisTicks.length >= 2
-                                ? [densityAxisTicks[0], densityAxisTicks[densityAxisTicks.length - 1]]
-                                : densityDomain ?? ["auto", "auto"]
-                            }
-                            interval={0}
-                            scale="linear"
-                            ticks={densityAxisTicks}
-                            tick={{ fontSize: 11 }}
-                            tickFormatter={(value: number) => String(Math.round(value))}
-                            tickLine={false}
-                            type="number"
-                          />
-                          <YAxis axisLine={false} dataKey="density" hide tickLine={false} type="number" />
-                          <Tooltip
-                            cursor={{ strokeDasharray: "3 4" }}
-                            formatter={(value, key) => [
-                              key === "density" ? Number(value).toFixed(4) : Number(value).toFixed(2),
-                              key,
-                            ]}
-                            labelFormatter={(label) => `x=${Number(label).toFixed(2)}`}
-                          />
-                          <Line
-                            dataKey="density"
-                            dot={false}
-                            stroke="#CC5833"
-                            strokeWidth={2}
-                            type="monotone"
-                          />
-                          {inRangePreviewCutPoints.map((cutPoint, index) => (
-                            <ReferenceLine
-                              key={`${cutPoint}-${index}`}
-                              ifOverflow="extendDomain"
-                              label={{ value: `C${index + 1}`, fill: "#cc5833", fontSize: 10 }}
-                              stroke="#CC5833"
-                              strokeDasharray="4 4"
-                              x={cutPoint}
-                            />
-                          ))}
-                        </ComposedChart>
-                      </ResponsiveContainer>
-                    </div>
-                  ) : (
-                    <p className="text-sm text-muted">No values available for this source.</p>
-                  )}
-                  <p className="metric-number text-xs text-muted">
-                    Cut points: {previewCutPoints.length ? previewCutPoints.map((value) => value.toFixed(2)).join(", ") : "--"}
-                  </p>
-                  {outOfRangePreviewCutPoints.length > 0 && (
-                    <p className="metric-number text-xs text-warning">
-                      Out of range: {outOfRangePreviewCutPoints.map((value) => value.toFixed(2)).join(", ")}
-                    </p>
-                  )}
-
-                  <div className="pt-2">
-                    <h4 className="mb-2 text-sm font-semibold uppercase tracking-[0.16em] text-muted">Saved Definitions</h4>
-                    <div className="space-y-2">
-                      {derivedPredictors.length ? derivedPredictors.map((definition) => (
-                        <div key={definition.id} className="rounded-2xl bg-panel p-3">
-                          <p className="text-sm font-semibold">{definition.name}</p>
-                          <p className="mt-1 text-xs text-muted">
-                            {getOptionLabel(derivedSourceOptions, definition.sourceKey, definition.sourceKey)}
-                            {" · "}
-                            {definition.mode}
-                            {" · "}
-                            {definition.labels.length} bins
-                          </p>
-                          <div className="mt-2 flex gap-2">
-                            <button
-                              className="focusable rounded-capsule bg-subsurface px-3 py-1 text-xs font-semibold"
-                              type="button"
-                              onClick={() => handleEditDerivedDefinition(definition)}
-                            >
-                              Edit
-                            </button>
-                            <button
-                              className="focusable rounded-capsule bg-[color-mix(in_srgb,var(--error)_14%,white)] px-3 py-1 text-xs font-semibold text-error"
-                              type="button"
-                              onClick={() => void handleDeleteDerivedDefinition(definition.id)}
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        </div>
-                      )) : (
-                        <p className="text-sm text-muted">No derived predictors yet.</p>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-              </article>
-            )}
-
-            <article className="panel p-6 sm:p-8">
-              <header className="mb-4 flex flex-wrap items-end justify-between gap-4">
-                <div>
-                  <h3 className="text-lg font-semibold tracking-tight">Top Correlations</h3>
-                  <p className="text-sm text-muted">
-                    Predictor values are aligned to the previous day. Outcomes are measured on the selected day.
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-end gap-3">
-                  <div className="flex rounded-capsule bg-subsurface p-1">
-                    {(["target", "predictor"] as const).map((mode) => (
-                      <button
-                        key={mode}
-                        className={clsx(
-                          "focusable min-h-10 rounded-capsule px-4 text-sm font-semibold transition",
-                          topCorrelationMode === mode ? "bg-accent text-white" : "text-muted hover:text-ink",
-                        )}
-                        type="button"
-                        onClick={() => setTopCorrelationMode(mode)}
-                      >
-                        {mode === "target" ? "By target" : "By predictor"}
-                      </button>
-                    ))}
-                  </div>
-                  <label className="space-y-1 text-sm">
-                    <span className="block text-xs uppercase tracking-[0.16em] text-muted">
-                      {topCorrelationMode === "target" ? "Target variable" : "Predictor variable"}
-                    </span>
-                    {topCorrelationMode === "target" ? (
-                      <select
-                        className="focusable min-h-11 rounded-2xl bg-subsurface px-3"
-                        value={outcomeKey}
-                        onChange={(event) => setOutcomeKey(event.target.value as OutcomeKey)}
-                      >
-                        {topCorrelationOutcomeOptions.map((option) => (
-                          <option key={option.key} value={option.key}>{option.label}</option>
-                        ))}
-                      </select>
-                    ) : (
-                      <select
-                        className="focusable min-h-11 rounded-2xl bg-subsurface px-3"
-                        value={predictorKey}
-                        onChange={(event) => setPredictorKey(event.target.value as PredictorKey)}
-                      >
-                        {predictorOptions.map((option) => (
-                          <option key={option.key} value={option.key}>{option.label}</option>
-                        ))}
-                      </select>
-                    )}
-                  </label>
-                </div>
-              </header>
-              {isExploratoryFallback && (
-                <p className="mb-3 rounded-2xl bg-[color-mix(in_srgb,var(--warning)_16%,white)] px-4 py-3 text-sm text-warning">
-                  No meaningful correlations yet. Showing exploratory correlations from full history.
-                </p>
-              )}
-              {!displayedCorrelationCards.length ? (
-                <p className="rounded-2xl bg-subsurface px-4 py-3 text-sm text-muted">
-                  Insufficient data for the selected target. Keep tracking to unlock meaningful and exploratory results.
-                </p>
-              ) : (
-                <div className="grid gap-3 md:grid-cols-2">
-                  {displayedCorrelationCards.map((pair) => (
-                    <button
-                      key={pair.key}
-                      type="button"
-                      className={clsx(
-                        "focusable rounded-[22px] bg-subsurface p-4 text-left transition",
-                        pair.predictor === predictorKey && pair.outcome === outcomeKey
-                          ? "ring-2 ring-accent"
-                          : "hover:bg-[color-mix(in_srgb,var(--surface)_72%,white)]",
-                      )}
-                      onClick={() => {
-                        setPredictorKey(pair.predictor);
-                        setOutcomeKey(pair.outcome);
-                      }}
-                    >
-                      <div className="mb-2 flex items-center justify-between gap-2">
-                        <h4 className="text-sm font-semibold tracking-tight">{pair.predictorLabel} vs {pair.outcomeLabel}</h4>
-                        <span
-                          className={clsx(
-                            "rounded-capsule px-3 py-1 text-xs font-semibold",
-                            pair.classification === "meaningful"
-                              ? "bg-[color-mix(in_srgb,var(--success)_14%,white)] text-success"
-                              : "bg-[color-mix(in_srgb,var(--warning)_16%,white)] text-warning",
-                          )}
-                        >
-                          {pair.classification === "meaningful" ? "Meaningful" : "Exploratory"}
-                        </span>
-                      </div>
-                      <p className="text-sm text-muted">{describeCorrelationDirection(pair)}</p>
-                      <p className="metric-number mt-2 text-xs text-muted">
-                        {pair.testType === "continuous"
-                          ? `r=${(pair.correlation ?? 0).toFixed(2)} · slope=${pair.regression?.slope.toFixed(3) ?? "--"} · p=${pair.pValue?.toExponential(2) ?? "--"} · q=${pair.qValue?.toExponential(2) ?? "--"} · N=${pair.sampleCount}`
-                          : `eta²=${(pair.etaSquared ?? 0).toFixed(3)} · F=${pair.fStatistic?.toFixed(2) ?? "--"} · p=${pair.pValue?.toExponential(2) ?? "--"} · q=${pair.qValue?.toExponential(2) ?? "--"} · N=${pair.sampleCount}`}
-                      </p>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </article>
-
-            <article className="panel p-6 sm:p-8">
-              <header className="mb-4 flex flex-wrap items-end justify-between gap-4">
-                <div>
-                  <h3 className="text-lg font-semibold tracking-tight">Explorer</h3>
-                  <p className="text-sm text-muted">Inspect any predictor/outcome pair visually.</p>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="space-y-1 text-sm">
-                    <span className="block text-xs uppercase tracking-[0.16em] text-muted">Predictor (X)</span>
-                    <select
-                      className="focusable min-h-11 rounded-2xl bg-subsurface px-3"
-                      value={predictorKey}
-                      onChange={(event) => setPredictorKey(event.target.value as PredictorKey)}
-                    >
-                      {predictorOptions.map((option) => (
-                        <option key={option.key} value={option.key}>{option.label}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="space-y-1 text-sm">
-                    <span className="block text-xs uppercase tracking-[0.16em] text-muted">Outcome (Y)</span>
-                    <select
-                      className="focusable min-h-11 rounded-2xl bg-subsurface px-3"
-                      value={outcomeKey}
-                      onChange={(event) => setOutcomeKey(event.target.value as OutcomeKey)}
-                    >
-                      {outcomeOptions.map((option) => (
-                        <option key={option.key} value={option.key}>{option.label}</option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-              </header>
-              {selectedCorrelationPair ? (
-                <>
-                  <p className="metric-number mb-4 text-sm text-muted">
-                    {selectedCorrelationPair.testType === "continuous"
-                      ? `r=${(selectedCorrelationPair.correlation ?? 0).toFixed(3)} · slope=${selectedCorrelationPair.regression?.slope.toFixed(3) ?? "--"} · p=${selectedCorrelationPair.pValue?.toExponential(2) ?? "--"} · q=${selectedCorrelationPair.qValue?.toExponential(2) ?? "--"} · N=${selectedCorrelationPair.sampleCount}`
-                      : `eta²=${(selectedCorrelationPair.etaSquared ?? 0).toFixed(3)} · F=${selectedCorrelationPair.fStatistic?.toFixed(2) ?? "--"} · p=${selectedCorrelationPair.pValue?.toExponential(2) ?? "--"} · q=${selectedCorrelationPair.qValue?.toExponential(2) ?? "--"} · N=${selectedCorrelationPair.sampleCount}`}
-                  </p>
-                  <div ref={correlationChartRef} className="relative h-[420px]">
-                    <ResponsiveContainer>
-                      <ScatterChart>
-                        <CartesianGrid stroke="rgba(18,18,18,0.06)" strokeDasharray="3 6" />
-                        <XAxis
-                          axisLine={false}
-                          dataKey={selectedCorrelationPair.testType === "categorical" ? "xJittered" : "x"}
-                          domain={selectedCorrelationPair.testType === "categorical"
-                            ? [-0.5, Math.max(0, (selectedCorrelationPair.categoryLabels?.length ?? 1) - 0.5)]
-                            : continuousExplorerXDomain}
-                          label={{
-                            value: getOptionLabel(predictorOptions, predictorKey, predictorKey),
-                            position: "insideBottom",
-                            offset: -2,
-                            style: { fill: "rgba(18,18,18,0.62)", fontSize: 12 },
-                          }}
-                          name={getOptionLabel(predictorOptions, predictorKey, predictorKey)}
-                          tick={{ fontSize: 12 }}
-                          tickFormatter={(value: number) => {
-                            if (selectedCorrelationPair.testType !== "categorical") {
-                              return String(Math.round(value * 10) / 10);
-                            }
-                            const labels = selectedCorrelationPair.categoryLabels ?? [];
-                            const index = Math.round(value);
-                            return labels[index] ?? String(index);
-                          }}
-                          tickLine={false}
-                          type="number"
-                        />
-                        <YAxis
-                          axisLine={false}
-                          dataKey="y"
-                          domain={correlationExplorerYAxis?.domain}
-                          label={{
-                            value: getOptionLabel(outcomeOptions, outcomeKey, outcomeKey),
-                            angle: -90,
-                            position: "insideLeft",
-                            style: { fill: "rgba(18,18,18,0.62)", fontSize: 12, textAnchor: "middle" },
-                          }}
-                          name={getOptionLabel(outcomeOptions, outcomeKey, outcomeKey)}
-                          tick={{ fontSize: 12 }}
-                          tickFormatter={(value: number) => formatTooltipNumber(value)}
-                          tickLine={false}
-                          ticks={correlationExplorerYAxis?.ticks}
-                          type="number"
-                        />
-                        <Scatter
-                          data={selectedCorrelationPair.testType === "categorical"
-                            ? categoricalScatterData
-                            : selectedCorrelationPair.points}
-                          fill={outcomeKey.startsWith("metric:")
-                            ? getMetricColor(outcomeKey.slice("metric:".length) as MetricKey)
-                            : "#3f6686"}
-                          onMouseEnter={handleCorrelationPointEnter}
-                          onMouseLeave={handleCorrelationPointLeave}
-                        />
-                        {selectedCorrelationPair.testType === "categorical" && (
-                          <Scatter data={categoricalMeanData} fill="#CC5833" name="Group means" />
-                        )}
-                        {selectedCorrelationPair.testType === "continuous" && (
-                          <Scatter
-                            data={trendLineData}
-                            fill="transparent"
-                            legendType="none"
-                            line={{ stroke: "#CC5833", strokeWidth: 2 }}
-                            name="Trend"
-                            shape={() => null}
-                          />
-                        )}
-                      </ScatterChart>
-                    </ResponsiveContainer>
-                    {activeCorrelationTooltipContent && activeCorrelationTooltipStyle && (
-                      <div
-                        className="absolute z-20 max-h-[26rem] w-[24rem] overflow-y-scroll rounded-lg border border-black/10 bg-white/95 px-3 py-2 shadow-sm"
-                        style={activeCorrelationTooltipStyle}
-                        onMouseEnter={handleCorrelationTooltipEnter}
-                        onMouseLeave={handleCorrelationTooltipLeave}
-                      >
-                        <p className="mb-1 text-xs text-muted">
-                          Predictor: {formatReadableDate(activeCorrelationTooltipContent.predictorSourceDate)} | Outcome: {formatReadableDate(activeCorrelationTooltipContent.outcomeSourceDate)}
-                        </p>
-                        <div className="space-y-1">
-                          <p className="text-sm text-ink">
-                            {activeCorrelationTooltipContent.predictorLabel}: {activeCorrelationTooltipContent.predictorValue}
-                          </p>
-                          <p className="text-sm text-ink">
-                            {activeCorrelationTooltipContent.outcomeLabel}: {activeCorrelationTooltipContent.outcomeValue}
-                          </p>
-                        </div>
-                        {!!activeCorrelationTooltipContent.sections.length && (
-                          <div className="mt-3 space-y-3 border-t border-black/10 pt-3">
-                            {activeCorrelationTooltipContent.sections.map((section) => (
-                              <div key={section.title}>
-                                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted">
-                                  {section.title}
-                                  {section.sourceDateLabel ? ` · ${section.sourceDateLabel}` : ""}
-                                </p>
-                                <div className="mt-1 space-y-1">
-                                  {section.items.map((item) => (
-                                    <p key={`${section.title}:${item.label}`} className="text-xs text-ink">
-                                      <span className="font-medium">{item.label}:</span> {item.value}
-                                    </p>
-                                  ))}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <p className="rounded-2xl bg-subsurface px-4 py-3 text-sm text-muted">
-                  Select a valid predictor/outcome pair to explore.
-                </p>
-              )}
-            </article>
-          </section>
-        )}
-
-        {activeView === "checkin" && (
-          <section className="gsap-fade">
-            <CheckinPanel
-              panelRef={checkinPanelRef}
-              isSaved={isSelectedDateSaved}
-              isDirty={isCheckinDirty}
-              onNext={
-                selectedCheckinDate < maxImportDate
-                  ? () => void handleAnimatedCheckinDateStep(1)
-                  : undefined
-              }
-              onPrevious={() => void handleAnimatedCheckinDateStep(-1)}
-            >
-              <div className="mb-6 flex items-end gap-8">
-                <div>
-                  <h2 className="text-2xl font-semibold tracking-tight">Daily Check-In</h2>
-                  <p className="mt-1 text-sm text-muted">Date-linked entries saved in SQLite.</p>
-                </div>
-                <div className="space-y-1 text-sm">
-                  <span className="block text-xs uppercase tracking-[0.14em] text-muted">Entry date</span>
-                  <div className="flex items-center gap-1">
-                    <button
-                      aria-label="Previous day"
-                      className="focusable flex min-h-11 w-9 items-center justify-center rounded-2xl bg-subsurface transition hover:bg-surface-hover"
-                      type="button"
-                      onClick={() => void handleAnimatedCheckinDateStep(-1)}
-                    >
-                      ‹
-                    </button>
-                    <input
-                      className="focusable min-h-11 rounded-2xl bg-subsurface px-3"
-                      max={maxImportDate}
-                      type="date"
-                      value={selectedCheckinDate}
-                      onChange={(event) => setSelectedCheckinDate(event.target.value)}
-                    />
-                    <button
-                      aria-label="Next day"
-                      className="focusable flex min-h-11 w-9 items-center justify-center rounded-2xl bg-subsurface transition hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-40"
-                      disabled={selectedCheckinDate >= maxImportDate}
-                      type="button"
-                      onClick={() => void handleAnimatedCheckinDateStep(1)}
-                    >
-                      ›
-                    </button>
-                  </div>
-                </div>
-              </div>
-              <div className="mb-4 rounded-2xl bg-subsurface px-4 py-3 text-sm">
-                {selectedCheckinWeekday && (
-                  <p className="text-sm font-semibold uppercase tracking-[0.16em] text-muted">
-                    {selectedCheckinWeekday}
-                  </p>
-                )}
-                {(isLoadingCheckins ||
-                  checkinSyncError ||
-                  selectedDraftSaveState !== "idle" ||
-                  selectedCheckinDraft ||
-                  (selectedCheckinEntry && isCheckinDirty)) && (
-                  <p className={clsx("text-muted", selectedCheckinWeekday && "mt-1")}>
-                    {isLoadingCheckins
-                      ? "Loading check-ins..."
-                      : checkinSyncError
-                        ? `SQLite sync failed: ${checkinSyncError}`
-                        : selectedDraftSaveState === "saving"
-                          ? "Saving draft to SQLite..."
-                          : selectedDraftSaveState === "error"
-                            ? "Draft could not be saved to SQLite."
-                            : selectedCheckinDraft || selectedDraftSaveState === "saved"
-                              ? "Draft saved to SQLite · not yet checked in."
-                              : "Unsaved modifications."}
-                  </p>
-                )}
-                {checkinSaveMessage && <p className="mt-1 text-success">{checkinSaveMessage}</p>}
-              </div>
-
-              <div className="space-y-5">
-                {visibleSectionOrder.map((section) => {
-                  const questions = groupedQuestions[section];
-                  if (!questions?.length) {
-                    return null;
-                  }
-                  return (
-                    <div key={section} className="rounded-[22px] bg-subsurface p-4">
-                      <h3 className="mb-3 text-sm font-semibold uppercase tracking-[0.16em] text-muted">{section}</h3>
-                      <div className="grid items-start gap-4 md:grid-cols-2">
-                        {questions.map((question) => (
-                          <div key={question.id} className="rounded-2xl bg-panel p-4 shadow-soft">
-                            <p className="mb-1 text-sm font-medium">{question.prompt}</p>
-                            {renderQuestionInput(question)}
-                            {getVisibleChildren(question, draftAnswers).map((child) => (
-                              <div key={child.id} className="mt-4 border-t border-[rgba(18,18,18,0.08)] pt-4">
-                                <p className="mb-3 text-sm font-medium">{child.prompt}</p>
-                                {renderQuestionInput(child)}
-                              </div>
-                            ))}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              <div className="mt-6 flex justify-end">
-                <button
-                  className="focusable min-h-11 rounded-capsule bg-accent px-6 text-sm font-semibold text-white shadow-soft disabled:cursor-not-allowed disabled:opacity-65"
-                  disabled={isSavingCheckin}
-                  type="button"
-                  onClick={() => void handleQuickSave()}
-                >
-                  {isSavingCheckin ? "Saving..." : "Save Check-In"}
-                </button>
-              </div>
-
-              <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                <div className="rounded-[22px] bg-subsurface p-4">
-                  <p className="text-xs uppercase tracking-[0.16em] text-muted">Predictor</p>
-                  <p className="mt-2 text-sm text-muted">Steps (Garmin)</p>
-                  <p className="metric-number mt-1 text-2xl font-semibold text-ink">
-                    {selectedSteps === null ? "--" : selectedSteps.toLocaleString()}
-                  </p>
-                  <p className="mt-1 text-xs text-muted">
-                    Source date: {selectedPredictorSourceDate}
-                  </p>
-                </div>
-                <div className="rounded-[22px] bg-subsurface p-4">
-                  <p className="text-xs uppercase tracking-[0.16em] text-muted">Predictor</p>
-                  <p className="mt-2 text-sm text-muted">Activity (Garmin)</p>
-                  <p className="metric-number mt-1 text-2xl font-semibold text-ink">
-                    {selectedActivityLabel}
-                  </p>
-                  <p className="mt-1 text-xs text-muted">
-                    Source date: {selectedPredictorSourceDate}
-                  </p>
-                </div>
-                <div className="rounded-[22px] bg-subsurface p-4">
-                  <p className="text-xs uppercase tracking-[0.16em] text-muted">Predictor</p>
-                  <p className="mt-2 text-sm text-muted">Fell asleep at (Garmin)</p>
-                  <p className="metric-number mt-1 text-2xl font-semibold text-ink">
-                    {selectedFellAsleepTime ?? "--:--"}
-                  </p>
-                  <p className="mt-1 text-xs text-muted">
-                    Source date: {selectedPredictorSourceDate}
-                  </p>
-                </div>
-                <div className="rounded-[22px] bg-subsurface p-4">
-                  <p className="text-xs uppercase tracking-[0.16em] text-muted">Predictor</p>
-                  <p className="mt-2 text-sm text-muted">Woke up at (Garmin)</p>
-                  <p className="metric-number mt-1 text-2xl font-semibold text-ink">
-                    {selectedWokeUpTime ?? "--:--"}
-                  </p>
-                  <p className="mt-1 text-xs text-muted">
-                    Source date: {selectedPredictorSourceDate}
-                  </p>
-                </div>
-                <div className="rounded-[22px] bg-subsurface p-4">
-                  <p className="text-xs uppercase tracking-[0.16em] text-muted">Predictor</p>
-                  <p className="mt-2 text-sm text-muted">Sleep Duration (Garmin)</p>
-                  <p className="metric-number mt-1 text-2xl font-semibold text-ink">
-                    {formatSecondsAsHours(selectedSleepDuration)}
-                  </p>
-                  <p className="mt-1 text-xs text-muted">
-                    Source date: {selectedPredictorSourceDate}
-                  </p>
-                </div>
-              </div>
-
-              {derivedGapMetricCards.map((metric) => (
-                <DerivedMetricCard
-                  key={metric.key}
-                  label={metric.label}
-                  value={metric.value}
-                  helperText={metric.helperText}
-                />
-              ))}
-
-            </CheckinPanel>
-          </section>
-        )}
-
+        {activeView === "lab" && <CorrelationFeature controller={correlationController} />}
+        {activeView === "checkin" && <CheckinFeature controller={checkin} />}
         {activeView === "settings" && (
           <section className="panel gsap-fade p-6 sm:p-8">
             <div className="space-y-5">
-              <article className="rounded-[24px] bg-subsurface p-5">
-                <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-lg font-semibold">Check-In Reminder</h3>
-                    <p
-                      className={clsx(
-                        "mt-1 text-sm",
-                        checkinReminderError ? "text-error" : "text-muted",
-                      )}
-                    >
-                      {checkinReminderLoadState === "loading"
-                        ? "Loading from SQLite..."
-                        : isSavingCheckinReminder
-                          ? "Saving to SQLite..."
-                          : checkinReminderError
-                            ? `SQLite sync failed: ${checkinReminderError}`
-                            : "Synced with SQLite."}
-                    </p>
-                  </div>
-                  <p
-                    className={clsx(
-                      "rounded-capsule px-3 py-2 text-xs font-semibold",
-                      checkinReminderSettings.enabled
-                        ? "text-success bg-[color-mix(in_srgb,var(--success)_14%,white)]"
-                        : "text-muted bg-panel",
-                    )}
-                  >
-                    {checkinReminderSettings.enabled
-                      ? `Active · reminder after ${checkinReminderSettings.notifyAfter}`
-                      : "Inactive · reminder disabled"}
-                  </p>
-                </div>
-
-                <div className="grid gap-4 md:grid-cols-2">
-                  <label className="flex items-center justify-between rounded-2xl bg-panel p-4 text-sm font-medium">
-                    Enable email reminder
-                    <input
-                      checked={checkinReminderSettings.enabled}
-                      type="checkbox"
-                      onChange={(event) =>
-                        setCheckinReminderSettings((previous) => ({
-                          ...previous,
-                          enabled: event.target.checked,
-                        }))
-                      }
-                    />
-                  </label>
-                  <label className="min-w-0 space-y-2 overflow-hidden rounded-2xl bg-panel p-4 text-sm">
-                    <span className="block text-xs uppercase tracking-[0.14em] text-muted">
-                      Notify after
-                    </span>
-                    <input
-                      className="focusable block min-h-11 w-full min-w-0 max-w-full appearance-none rounded-2xl bg-subsurface px-3 text-center disabled:cursor-not-allowed disabled:opacity-60"
-                      disabled={!checkinReminderSettings.enabled}
-                      step={60}
-                      type="time"
-                      value={checkinReminderSettings.notifyAfter}
-                      onChange={(event) => {
-                        const nextNotifyAfter = event.target.value;
-                        setCheckinReminderSettings((previous) => ({
-                          ...previous,
-                          notifyAfter: nextNotifyAfter,
-                          ...(previous.emailBody
-                            ? {
-                                emailBody: previous.emailBody.replaceAll(
-                                  previous.notifyAfter,
-                                  nextNotifyAfter,
-                                ),
-                              }
-                            : {}),
-                        }));
-                      }}
-                    />
-                  </label>
-                </div>
-                {checkinReminderSettings.enabled && checkinReminderSettings.emailBody && (
-                  <div className="mt-4 rounded-2xl bg-panel p-4">
-                    <p className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-muted">
-                      Email text
-                    </p>
-                    <textarea
-                      className="focusable min-h-80 w-full resize-y rounded-2xl bg-subsurface p-4 text-sm leading-6 text-foreground"
-                      value={checkinReminderSettings.emailBody}
-                      onChange={(event) =>
-                        setCheckinReminderSettings((previous) => ({
-                          ...previous,
-                          emailBody: event.target.value,
-                        }))
-                      }
-                    />
-                  </div>
-                )}
-              </article>
+              <CheckinReminderSettings />
 
               <article className="rounded-[24px] bg-subsurface p-5">
                 <div className="mb-4">
@@ -5259,144 +2997,6 @@ const CONDITION_OPERATOR_META: Array<{
   { value: "at_least", label: "at least", requiresValue: true },
   { value: "non_empty", label: "non-empty", requiresValue: false },
 ];
-
-function QuestionAnswerInput({
-  panelClassName,
-  question,
-  value,
-  onChange,
-  onClear,
-}: {
-  panelClassName: string;
-  question: CheckInQuestion | CheckInQuestionChild;
-  value: AnswerValue | undefined;
-  onChange: (value: AnswerValue) => void;
-  onClear?: () => void;
-}) {
-  if (question.inputType === "slider") {
-    return (
-      <div className="space-y-2">
-        <input
-          className="focusable h-11 w-full cursor-pointer accent-accent"
-          min={question.min ?? 0}
-          max={question.max ?? 10}
-          step={question.step ?? 1}
-          type="range"
-          value={typeof value === "number" ? value : question.min ?? 0}
-          onChange={(event) => onChange(Number(event.target.value))}
-        />
-        <div className="metric-number text-sm text-muted">{String(value ?? question.min ?? 0)}</div>
-      </div>
-    );
-  }
-
-  if (question.inputType === "multi-choice") {
-    return (
-      <div className="flex flex-wrap gap-2">
-        {(question.options ?? []).map((option) => {
-          const selected = value === option.id;
-          return (
-            <button
-              key={option.id}
-              className={clsx(
-                "focusable min-h-11 rounded-capsule px-4 py-2 text-sm shadow-soft transition",
-                selected ? "bg-accent text-white" : `${panelClassName} text-ink`,
-              )}
-              type="button"
-              onClick={() => onChange(option.id)}
-            >
-              {option.label}
-            </button>
-          );
-        })}
-      </div>
-    );
-  }
-
-  if (question.inputType === "boolean") {
-    return (
-      <div className="flex gap-3">
-        {[true, false].map((candidate) => (
-          <button
-            key={String(candidate)}
-            className={clsx(
-              "focusable min-h-11 rounded-capsule px-5 py-2 text-sm shadow-soft transition",
-              value === candidate ? "bg-accent text-white" : `${panelClassName} text-ink`,
-            )}
-            type="button"
-            onClick={() => {
-              if (value === candidate && onClear) {
-                onClear();
-                return;
-              }
-              onChange(candidate);
-            }}
-          >
-            {candidate ? "Yes" : "No"}
-          </button>
-        ))}
-      </div>
-    );
-  }
-
-  if (question.inputType === "time") {
-    const parsedMinutes = typeof value === "string" ? parseClockTimeToMinutes(value) : null;
-    const sliderMinutes = parsedMinutes ?? TIME_SLIDER_MINUTES.min;
-    const clockValue = parsedMinutes === null ? "--:--" : formatMinutesAsClock(parsedMinutes);
-    const stepTime = (direction: -1 | 1) => {
-      onChange(formatMinutesAsClock(stepClockMinutes(parsedMinutes, direction)));
-    };
-    return (
-      <div className="space-y-2">
-        <input
-          className="focusable h-11 w-full cursor-pointer accent-accent"
-          min={TIME_SLIDER_MINUTES.min}
-          max={TIME_SLIDER_MINUTES.max}
-          step={TIME_STEP_MINUTES}
-          type="range"
-          value={sliderMinutes}
-          onChange={(event) => onChange(formatMinutesAsClock(Number(event.target.value)))}
-        />
-        <div className="flex items-center justify-between gap-3">
-          <div className="metric-number text-sm text-muted">{clockValue}</div>
-          <div className="flex gap-2">
-            <button
-              aria-label={`Move ${question.prompt} down ${TIME_STEP_MINUTES} minutes`}
-              className={clsx(
-                "focusable flex size-9 items-center justify-center rounded-2xl text-muted transition hover:bg-surface-hover hover:text-ink",
-                panelClassName,
-              )}
-              type="button"
-              onClick={() => stepTime(-1)}
-            >
-              <ChevronDown className="size-4" aria-hidden="true" />
-            </button>
-            <button
-              aria-label={`Move ${question.prompt} up ${TIME_STEP_MINUTES} minutes`}
-              className={clsx(
-                "focusable flex size-9 items-center justify-center rounded-2xl text-muted transition hover:bg-surface-hover hover:text-ink",
-                panelClassName,
-              )}
-              type="button"
-              onClick={() => stepTime(1)}
-            >
-              <ChevronUp className="size-4" aria-hidden="true" />
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <textarea
-      className={clsx("focusable min-h-24 w-full rounded-2xl p-3", panelClassName)}
-      placeholder="Optional note"
-      value={typeof value === "string" ? value : ""}
-      onChange={(event) => onChange(event.target.value)}
-    />
-  );
-}
 
 function QuestionEditor({
   availableSections,

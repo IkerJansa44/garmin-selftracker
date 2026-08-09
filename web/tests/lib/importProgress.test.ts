@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { buildImportProgressDisplay, parseImportProgressMessage } from "./importProgress";
+import {
+  buildImportProgressDisplay,
+  parseImportProgressMessage,
+} from "../../src/lib/importProgress";
 
 describe("parseImportProgressMessage", () => {
   it("extracts completed days, total days, and ETA", () => {

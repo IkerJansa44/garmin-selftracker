@@ -2,7 +2,10 @@ import { useState } from "react";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
-import { CheckinPanel, resolveSwipeDirection } from "./CheckinPanel";
+import {
+  CheckinPanel,
+  resolveSwipeDirection,
+} from "../../src/features/checkin/CheckinPanel";
 
 describe("CheckinPanel", () => {
   it("turns green when the check-in becomes saved", async () => {
