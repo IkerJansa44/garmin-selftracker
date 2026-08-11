@@ -49,6 +49,7 @@ export interface DashboardPlotPoint {
 export interface DashboardRatioPlotPoint extends DashboardPlotPoint {
   numerator: number | null;
   denominator: number | null;
+  distance: number | null;
 }
 
 const CLOCK_STEP_MINUTES = 15;
@@ -316,7 +317,7 @@ export function aggregateDashboardRatioPoints(
   aggregation: PlotAggregation,
   rolling: boolean,
 ): DashboardRatioPlotPoint[] {
-  const aggregateComponent = (key: "numerator" | "denominator") =>
+  const aggregateComponent = (key: "numerator" | "denominator" | "distance") =>
     aggregateDashboardPlotPoints(
       rawPoints.map((point) => ({ date: point.date, value: point[key] })),
       aggregation,
@@ -325,6 +326,7 @@ export function aggregateDashboardRatioPoints(
     );
   const numerators = aggregateComponent("numerator");
   const denominators = aggregateComponent("denominator");
+  const distances = aggregateComponent("distance");
 
   return numerators.map((point, index) => {
     const numerator = point.value;
@@ -333,11 +335,22 @@ export function aggregateDashboardRatioPoints(
       date: point.date,
       numerator,
       denominator,
+      distance: distances[index]?.value ?? null,
       value: numerator !== null && denominator !== null && denominator > 0
         ? numerator / denominator
         : null,
     };
   });
+}
+
+export function formatRunningPace(speedKmh: number): string {
+  if (!Number.isFinite(speedKmh) || speedKmh <= 0) {
+    return "--";
+  }
+  const totalSeconds = Math.round(3600 / speedKmh);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")} min/km`;
 }
 
 export function formatOvernightClockLabel(minutes: number): string {

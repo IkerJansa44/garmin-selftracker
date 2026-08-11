@@ -4,6 +4,7 @@ import {
   aggregateDashboardPlotPoints,
   aggregateDashboardRatioPoints,
   buildSleepWindowChartStats,
+  formatRunningPace,
   formatOvernightClockLabel,
   normalizeDashboardPlotPreferences,
   type DashboardPlotPreference,
@@ -105,16 +106,24 @@ describe("aggregateDashboardPlotPoints", () => {
 describe("aggregateDashboardRatioPoints", () => {
   it("recalculates aggregated ratios from averaged components", () => {
     const points = [
-      { date: "2026-04-20", value: 10, numerator: 150, denominator: 15 },
-      { date: "2026-04-21", value: 8, numerator: 160, denominator: 20 },
-      { date: "2026-04-22", value: 10, numerator: 170, denominator: 17 },
+      { date: "2026-04-20", value: 10, numerator: 150, denominator: 15, distance: 8 },
+      { date: "2026-04-21", value: 8, numerator: 160, denominator: 20, distance: 10 },
+      { date: "2026-04-22", value: 10, numerator: 170, denominator: 17, distance: 12 },
     ];
 
     const [aggregated] = aggregateDashboardRatioPoints(points, "3days", false);
 
     expect(aggregated.numerator).toBe(160);
     expect(aggregated.denominator).toBeCloseTo(52 / 3);
+    expect(aggregated.distance).toBe(10);
     expect(aggregated.value).toBeCloseTo(160 / (52 / 3));
+  });
+});
+
+describe("formatRunningPace", () => {
+  it("converts kilometers per hour to minutes per kilometer", () => {
+    expect(formatRunningPace(15)).toBe("4:00 min/km");
+    expect(formatRunningPace(0)).toBe("--");
   });
 });
 

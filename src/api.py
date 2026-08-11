@@ -1582,6 +1582,7 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
             SELECT
                 substr(start_time_local, 1, 10) AS activity_date,
                 average_hr,
+                distance_meters,
                 COALESCE(
                     NULLIF(json_extract(raw_json, '$.averageSpeed'), 0),
                     distance_meters / NULLIF(duration_seconds, 0)
@@ -1594,7 +1595,8 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
         SELECT
             activity_date,
             AVG(average_hr) AS average_hr,
-            AVG(average_speed_kmh) AS average_speed_kmh
+            AVG(average_speed_kmh) AS average_speed_kmh,
+            AVG(distance_meters) / 1000.0 AS average_distance_km
         FROM runs
         WHERE average_hr IS NOT NULL AND average_speed_kmh > 0
         GROUP BY activity_date
@@ -1605,6 +1607,7 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
         str(row["activity_date"]): {
             "average_hr": float(row["average_hr"]),
             "average_speed_kmh": float(row["average_speed_kmh"]),
+            "average_distance_km": _as_float(row["average_distance_km"]),
         }
         for row in running_ratio_rows
         if row["activity_date"]
@@ -1713,6 +1716,11 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
             ),
             "runningAverageSpeedKmh": (
                 running_ratio_by_date.get(date_key, {}).get("average_speed_kmh")
+                if row
+                else None
+            ),
+            "runningAverageDistanceKm": (
+                running_ratio_by_date.get(date_key, {}).get("average_distance_km")
                 if row
                 else None
             ),

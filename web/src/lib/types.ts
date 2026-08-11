@@ -51,6 +51,7 @@ export interface DailyRecord {
     runningKilometers?: number | null;
     runningAverageHr?: number | null;
     runningAverageSpeedKmh?: number | null;
+    runningAverageDistanceKm?: number | null;
     hrToSpeedRatio?: number | null;
     strengthVolume?: number | null;
     strengthSets?: number | null;

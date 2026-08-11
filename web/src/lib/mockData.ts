@@ -259,6 +259,7 @@ export function generateMockRecords(totalDays = TOTAL_DAYS): DailyRecord[] {
             : 0,
         runningAverageHr: null,
         runningAverageSpeedKmh: null,
+        runningAverageDistanceKm: null,
         hrToSpeedRatio: null,
         strengthVolume: importGap ? null : 0,
         strengthSets: importGap ? null : 0,

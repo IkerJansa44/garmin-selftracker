@@ -1253,15 +1253,17 @@ def test_load_dashboard_payload_includes_hr_to_speed_ratio(tmp_path: Path) -> No
                 activity_type,
                 start_time_local,
                 average_hr,
+                distance_meters,
                 raw_json,
                 updated_at
             )
-            VALUES (?, 'Running', 'running', ?, ?, ?, ?)
+            VALUES (?, 'Running', 'running', ?, ?, ?, ?, ?)
             """,
             (
                 activity_id,
                 f"{today.isoformat()} 08:00:00",
                 average_hr,
+                8000 + activity_id * 1000,
                 json.dumps({"averageSpeed": speed_mps}),
                 "2026-02-21T06:00:00+00:00",
             ),
@@ -1274,6 +1276,7 @@ def test_load_dashboard_payload_includes_hr_to_speed_ratio(tmp_path: Path) -> No
 
     assert predictors["runningAverageHr"] == 155
     assert predictors["runningAverageSpeedKmh"] == 16.2
+    assert predictors["runningAverageDistanceKm"] == 9.5
     assert predictors["hrToSpeedRatio"] == pytest.approx(155 / 16.2)
 
 

@@ -76,6 +76,7 @@ import {
   aggregateDashboardRatioPoints,
   buildSleepWindowChartStats,
   createDashboardPlotId,
+  formatRunningPace,
   normalizeDashboardPlotPreferences as normalizeDashboardPlotPreferencesRaw,
   type DashboardRatioPlotPoint,
   type SleepWindowChartPoint,
@@ -1041,6 +1042,7 @@ function SparklineTooltip({
   const formattedValue = typeof value === "number" ? formatDashboardValue(plotKey, option, value) : "--";
   const numerator = point?.numerator;
   const denominator = point?.denominator;
+  const distance = point?.distance;
   const showRatioComponents = plotKey === "garmin:hrToSpeedRatio"
     && typeof numerator === "number"
     && typeof denominator === "number";
@@ -1052,6 +1054,8 @@ function SparklineTooltip({
         <div className="mt-1 space-y-0.5 text-muted">
           <p>Average HR: {numerator.toFixed(1)} bpm</p>
           <p>Average speed: {denominator.toFixed(1)} km/h</p>
+          <p>Average pace: {formatRunningPace(denominator)}</p>
+          {typeof distance === "number" && <p>Average distance: {distance.toFixed(1)} km</p>}
         </div>
       )}
     </div>
@@ -1749,6 +1753,9 @@ function App() {
               : null,
             denominator: plotPreference.key === "garmin:hrToSpeedRatio"
               ? record.predictors.runningAverageSpeedKmh ?? null
+              : null,
+            distance: plotPreference.key === "garmin:hrToSpeedRatio"
+              ? record.predictors.runningAverageDistanceKm ?? null
               : null,
           }));
           const points = plotPreference.key === "garmin:hrToSpeedRatio"
