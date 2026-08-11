@@ -20,12 +20,21 @@ from src.db import (
     upsert_raw_payload,
 )
 from src.garmin_client import (
+    ActivityZoneSummary,
     GarminConnectAdapter,
     GarminRateLimitError,
     compute_zone_minutes,
     normalize_activities,
     normalize_daily_metrics,
 )
+
+
+def _is_running_activity(activity: dict[str, object]) -> bool:
+    activity_type = activity.get("activityType")
+    if isinstance(activity_type, dict):
+        activity_type = activity_type.get("typeKey")
+    return "running" in str(activity_type or "").lower()
+
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +100,27 @@ def run_sync(
 
         for day in days:
             day_payload = adapter.fetch_day(day)
+            activities_payload = day_payload.endpoints.get("activities")
+            run_zones: list[tuple[dict[str, object], ActivityZoneSummary]] = []
+            if isinstance(activities_payload, list):
+                for act in activities_payload:
+                    if (
+                        not isinstance(act, dict)
+                        or not act.get("activityId")
+                        or not _is_running_activity(act)
+                    ):
+                        continue
+                    summary = adapter.fetch_activity_hr_zones(int(act["activityId"]))
+                    if not summary:
+                        continue
+                    run_zones.append((act, summary))
+                    act["hrTimeInZones"] = {
+                        "lowerBounds": summary.lower_bounds,
+                        "secondsByZone": summary.seconds_by_zone,
+                    }
+                    if summary.lower_bounds != zone_bounds:
+                        zone_bounds = summary.lower_bounds
+                        upsert_hr_zone_bounds(connection, zone_bounds)
 
             for endpoint, payload in day_payload.endpoints.items():
                 upsert_raw_payload(
@@ -100,18 +130,6 @@ def run_sync(
                     payload=payload,
                     sync_run_id=run_id,
                 )
-
-            # Update zone bounds from the first activity that returns valid bounds
-            activities_payload = day_payload.endpoints.get("activities")
-            if isinstance(activities_payload, list):
-                for act in activities_payload:
-                    if isinstance(act, dict) and act.get("activityId"):
-                        fetched = adapter.fetch_hr_zones(int(act["activityId"]))
-                        if fetched:
-                            if fetched != zone_bounds:
-                                zone_bounds = fetched
-                                upsert_hr_zone_bounds(connection, zone_bounds)
-                            break
 
             metrics = normalize_daily_metrics(day_payload)
             metrics["avg_hr_1h_before_sleep"] = (
@@ -123,7 +141,9 @@ def run_sync(
             if zone_bounds is not None:
                 metrics.update(
                     compute_zone_minutes(
-                        day_payload.endpoints.get("heart_rates"), zone_bounds
+                        day_payload.endpoints.get("heart_rates"),
+                        zone_bounds,
+                        run_zones,
                     )
                 )
             upsert_daily_metrics(connection, metrics)

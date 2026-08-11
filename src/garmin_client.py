@@ -32,6 +32,12 @@ class DayPayload:
     endpoints: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class ActivityZoneSummary:
+    lower_bounds: list[int]
+    seconds_by_zone: dict[int, float]
+
+
 def _garmin_class() -> type[Any]:
     garmin_module = __import__("garminconnect", fromlist=["Garmin"])
     return getattr(garmin_module, "Garmin")
@@ -78,7 +84,7 @@ class GarminConnectAdapter:
         }
         return DayPayload(payload_date=day, endpoints=endpoints)
 
-    def fetch_hr_zones(self, activity_id: int) -> list[int] | None:
+    def fetch_activity_hr_zones(self, activity_id: int) -> ActivityZoneSummary | None:
         result = self._safe_call("get_activity_hr_in_timezones", activity_id)
         if not isinstance(result, list) or not result:
             return None
@@ -89,11 +95,20 @@ class GarminConnectAdapter:
                 for z in sorted_zones
                 if "zoneLowBoundary" in z
             ]
+            seconds_by_zone = {
+                int(zone["zoneNumber"]): float(zone["secsInZone"])
+                for zone in sorted_zones
+                if "zoneNumber" in zone and "secsInZone" in zone
+            }
         except (KeyError, TypeError, ValueError):
             return None
-        if not bounds:
+        if not bounds or not seconds_by_zone:
             return None
-        return bounds
+        return ActivityZoneSummary(bounds, seconds_by_zone)
+
+    def fetch_hr_zones(self, activity_id: int) -> list[int] | None:
+        summary = self.fetch_activity_hr_zones(activity_id)
+        return summary.lower_bounds if summary else None
 
     def fetch_hr_zones_from_recent_activities(
         self, limit: int = 20
@@ -108,6 +123,11 @@ class GarminConnectAdapter:
             return None
         for act in result:
             if not isinstance(act, dict):
+                continue
+            activity_type = act.get("activityType")
+            if isinstance(activity_type, dict):
+                activity_type = activity_type.get("typeKey")
+            if "running" not in str(activity_type or "").lower():
                 continue
             activity_id = act.get("activityId")
             if not activity_id:
@@ -354,41 +374,66 @@ def normalize_daily_metrics(day_payload: DayPayload) -> dict[str, Any]:
 def compute_zone_minutes(
     heart_rates_payload: Any,
     zone_lower_bounds: list[int],
+    activity_zones: list[tuple[dict[str, Any], ActivityZoneSummary]] | None = None,
 ) -> dict[str, int]:
-    """Classify each BPM sample into a zone and accumulate minutes per zone.
+    """Combine run zone summaries with all-day samples outside those runs.
 
     Zone 0 is below the first lower bound; zones 1–N match the provided bounds.
     Each sample's duration is derived from the gap to the next timestamp (ms).
     The final sample defaults to 2 minutes.
     """
     num_zones = len(zone_lower_bounds) + 1
-    result: dict[str, int] = {f"zone{i}_minutes": 0 for i in range(num_zones)}
+    sorted_bounds = sorted(zone_lower_bounds)
+    totals: dict[str, float] = {f"zone{i}_minutes": 0.0 for i in range(num_zones)}
+    excluded_intervals: list[tuple[float, float]] = []
+
+    for activity, summary in activity_zones or []:
+        start = activity.get("beginTimestamp")
+        duration = activity.get("duration")
+        if not isinstance(start, (int, float)) or not isinstance(
+            duration, (int, float)
+        ):
+            continue
+        excluded_intervals.append((float(start), float(start) + float(duration) * 1000))
+        for zone, seconds in summary.seconds_by_zone.items():
+            key = f"zone{zone}_minutes"
+            if key in totals:
+                totals[key] += seconds / 60
 
     if not isinstance(heart_rates_payload, dict):
-        return result
+        return {key: round(value) for key, value in totals.items()}
 
     samples = heart_rates_payload.get("heartRateValues")
     if not isinstance(samples, list) or not samples:
-        return result
-
-    sorted_bounds = sorted(zone_lower_bounds)
-    # Accumulate fractional minutes per zone; round once at the end.
-    totals: dict[str, float] = {f"zone{i}_minutes": 0.0 for i in range(num_zones)}
+        return {key: round(value) for key, value in totals.items()}
 
     for i, sample in enumerate(samples):
         if not isinstance(sample, (list, tuple)) or len(sample) < 2:
             continue
+        timestamp = sample[0]
         bpm = sample[1]
-        if bpm is None:
+        if not isinstance(timestamp, (int, float)) or not isinstance(bpm, (int, float)):
             continue
 
-        # Determine interval duration in minutes
-        if i + 1 < len(samples) and isinstance(samples[i + 1], (list, tuple)):
-            duration_minutes = max(0.0, (samples[i + 1][0] - sample[0]) / 60_000)
-        else:
-            duration_minutes = 2.0
+        next_timestamp = timestamp + 120_000
+        if i + 1 < len(samples):
+            next_sample = samples[i + 1]
+            if (
+                isinstance(next_sample, (list, tuple))
+                and next_sample
+                and isinstance(next_sample[0], (int, float))
+            ):
+                next_timestamp = max(timestamp, next_sample[0])
 
-        # Assign zone
+        duration_ms = next_timestamp - timestamp
+        for excluded_start, excluded_end in excluded_intervals:
+            overlap = max(
+                0.0,
+                min(next_timestamp, excluded_end) - max(timestamp, excluded_start),
+            )
+            duration_ms -= overlap
+        duration_minutes = max(0.0, duration_ms / 60_000)
+
         zone = 0
         for j, bound in enumerate(sorted_bounds):
             if bpm >= bound:

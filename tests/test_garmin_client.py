@@ -6,8 +6,10 @@ from pathlib import Path
 import pytest
 
 from src.garmin_client import (
+    ActivityZoneSummary,
     DayPayload,
     GarminConnectAdapter,
+    compute_zone_minutes,
     normalize_daily_metrics,
 )
 
@@ -59,6 +61,54 @@ def test_login_without_tokenstore_passes_none(
     adapter.login()
 
     assert calls == [("login", None)]
+
+
+def test_compute_zone_minutes_uses_run_zones_and_excludes_overlapping_daily_hr() -> (
+    None
+):
+    start = 1_700_000_000_000
+    heart_rates = {
+        "heartRateValues": [
+            [start - 120_000, 190],
+            [start, 190],
+            [start + 120_000, 190],
+            [start + 240_000, 190],
+        ]
+    }
+    run = {"beginTimestamp": start, "duration": 240}
+    run_zones = ActivityZoneSummary(
+        lower_bounds=[103, 124, 144, 165, 185],
+        seconds_by_zone={1: 0, 2: 0, 3: 0, 4: 0, 5: 388},
+    )
+
+    result = compute_zone_minutes(
+        heart_rates,
+        run_zones.lower_bounds,
+        [(run, run_zones)],
+    )
+
+    assert result["zone5_minutes"] == 10
+
+
+def test_fetch_activity_hr_zones_preserves_activity_thresholds_and_seconds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = GarminConnectAdapter("user@example.com", "secret")
+    monkeypatch.setattr(
+        adapter,
+        "_safe_call",
+        lambda *_: [
+            {"zoneNumber": 5, "secsInZone": 387.9, "zoneLowBoundary": 185},
+            {"zoneNumber": 4, "secsInZone": 1116.5, "zoneLowBoundary": 165},
+        ],
+    )
+
+    summary = adapter.fetch_activity_hr_zones(123)
+
+    assert summary == ActivityZoneSummary(
+        lower_bounds=[165, 185],
+        seconds_by_zone={4: 1116.5, 5: 387.9},
+    )
 
 
 def test_normalize_daily_metrics_extracts_fell_asleep_timestamp() -> None:
