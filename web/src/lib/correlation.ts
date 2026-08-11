@@ -92,7 +92,7 @@ const GARMIN_PREDICTOR_LABELS: Record<GarminPredictorKey, string> = {
   vo2Max: "VO2 Max",
   avgHr1hBeforeSleep: "Avg HR 1h Before Sleep",
   ...GAP_PREDICTOR_LABELS,
-  sleepConsistency: "Sleep Consistency (min)",
+  sleepConsistency: "Sleep Timing Variability (min)",
   isTrainingDay: "Training Day (1/0)",
 };
 

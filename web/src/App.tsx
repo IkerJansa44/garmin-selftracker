@@ -159,6 +159,9 @@ type GarminPlotKey =
   | "stressAvg"
   | "bodyBattery"
   | "runningKilometers"
+  | "strengthVolume"
+  | "strengthSets"
+  | "strengthReps"
   | "sleepSeconds"
   | "vo2Max"
   | "avgHr1hBeforeSleep"
@@ -411,10 +414,13 @@ const GARMIN_PLOT_META: Record<GarminPlotKey, Omit<DashboardPlotVariableOption, 
   stressAvg: { label: "Stress Avg", color: "#806739", unit: "pts" },
   bodyBattery: { label: "Body Battery", color: "#51745e", unit: "%" },
   runningKilometers: { label: "Running Distance", color: "#b45f3c", unit: "km" },
+  strengthVolume: { label: "Strength Volume", color: "#a63228", unit: "kg" },
+  strengthSets: { label: "Strength Sets", color: "#c0693a", unit: "sets" },
+  strengthReps: { label: "Strength Reps", color: "#8d6a2d", unit: "reps" },
   sleepSeconds: { label: "Sleep Duration", color: "#3f6686", unit: "h" },
   vo2Max: { label: "VO2 Max", color: "#586f9e", unit: "ml/kg/min" },
   avgHr1hBeforeSleep: { label: "Avg HR 1h Before Sleep", color: "#9a4f5f", unit: "bpm" },
-  sleepConsistency: { label: "Sleep Consistency", color: "#4b7394", unit: "min" },
+  sleepConsistency: { label: "Sleep Timing Variability", color: "#4b7394", unit: "min" },
   isTrainingDay: { label: "Training Day", color: "#6f4b83", unit: "0/1" },
   zone0Minutes: { label: "Zone 0 Time", color: "#7a9e9f", unit: "min" },
   zone1Minutes: { label: "Zone 1 Time", color: "#5b8db8", unit: "min" },
@@ -2428,7 +2434,7 @@ function App() {
                       )}
                       {pendingAddPlotStep === "chartStyle" && (
                         <>
-                          <p className="mt-1 text-xs text-muted">Choose the Sleep Consistency chart style.</p>
+                          <p className="mt-1 text-xs text-muted">Choose the Sleep Timing Variability chart style.</p>
                           <div className="mt-3 grid grid-cols-2 gap-2">
                             <button
                               className="focusable min-h-10 rounded-xl bg-accent px-3 text-xs font-semibold text-white"

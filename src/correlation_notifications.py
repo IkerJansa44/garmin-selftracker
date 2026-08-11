@@ -43,7 +43,7 @@ FEATURE_LABELS = {
     "garmin:sleepSeconds": "Sleep Duration (h)",
     "garmin:vo2Max": "VO2 Max",
     "garmin:avgHr1hBeforeSleep": "Avg HR 1h Before Sleep",
-    "garmin:sleepConsistency": "Sleep Consistency (min)",
+    "garmin:sleepConsistency": "Sleep Timing Variability (min)",
     "garmin:isTrainingDay": "Training Day",
     "garmin:mealToSleepGapMinutes": "Meal to Sleep Gap (min)",
     "garmin:caffeineToSleepGapMinutes": "Caffeine to Sleep Gap (min)",

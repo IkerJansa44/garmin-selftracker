@@ -331,7 +331,7 @@ export function CorrelationFeature({ controller }: { controller: CorrelationCont
               </article>
             )}
 
-            <article className="panel p-6 sm:p-8">
+            <article className="panel p-4 sm:p-8">
               <header className="mb-4 flex flex-wrap items-end justify-between gap-4">
                 <div>
                   <h3 className="text-lg font-semibold tracking-tight">Top Correlations</h3>
@@ -393,13 +393,13 @@ export function CorrelationFeature({ controller }: { controller: CorrelationCont
                   Insufficient data for the selected target. Keep tracking to unlock meaningful and exploratory results.
                 </p>
               ) : (
-                <div className="grid gap-3 md:grid-cols-2">
+                <div className="grid grid-cols-2 gap-2 sm:gap-3">
                   {displayedCorrelationCards.map((pair) => (
                     <button
                       key={pair.key}
                       type="button"
                       className={clsx(
-                        "focusable rounded-[22px] bg-subsurface p-4 text-left transition",
+                        "focusable rounded-[18px] bg-subsurface p-3 text-left transition sm:rounded-[22px] sm:p-4",
                         pair.predictor === predictorKey && pair.outcome === outcomeKey
                           ? "ring-2 ring-accent"
                           : "hover:bg-[color-mix(in_srgb,var(--surface)_72%,white)]",
@@ -409,11 +409,11 @@ export function CorrelationFeature({ controller }: { controller: CorrelationCont
                         setOutcomeKey(pair.outcome);
                       }}
                     >
-                      <div className="mb-2 flex items-center justify-between gap-2">
-                        <h4 className="text-sm font-semibold tracking-tight">{pair.predictorLabel} vs {pair.outcomeLabel}</h4>
+                      <div className="mb-1.5 flex flex-col items-start gap-1.5 sm:mb-2 sm:flex-row sm:items-center sm:justify-between sm:gap-2">
+                        <h4 className="text-xs font-semibold tracking-tight sm:text-sm">{pair.predictorLabel} vs {pair.outcomeLabel}</h4>
                         <span
                           className={clsx(
-                            "rounded-capsule px-3 py-1 text-xs font-semibold",
+                            "rounded-capsule px-2 py-1 text-[10px] font-semibold sm:px-3 sm:text-xs",
                             pair.classification === "meaningful"
                               ? "bg-[color-mix(in_srgb,var(--success)_14%,white)] text-success"
                               : "bg-[color-mix(in_srgb,var(--warning)_16%,white)] text-warning",
@@ -422,8 +422,15 @@ export function CorrelationFeature({ controller }: { controller: CorrelationCont
                           {pair.classification === "meaningful" ? "Meaningful" : "Exploratory"}
                         </span>
                       </div>
-                      <p className="text-sm text-muted">{describeCorrelationDirection(pair)}</p>
-                      <p className="metric-number mt-2 text-xs text-muted">
+                      <p className="line-clamp-3 text-xs text-muted sm:line-clamp-none sm:text-sm">
+                        {describeCorrelationDirection(pair)}
+                      </p>
+                      <p className="metric-number mt-2 text-[10px] text-muted sm:hidden">
+                        {pair.testType === "continuous"
+                          ? `r=${(pair.correlation ?? 0).toFixed(2)} · N=${pair.sampleCount}`
+                          : `eta²=${(pair.etaSquared ?? 0).toFixed(3)} · N=${pair.sampleCount}`}
+                      </p>
+                      <p className="metric-number mt-2 hidden text-xs text-muted sm:block">
                         {pair.testType === "continuous"
                           ? `r=${(pair.correlation ?? 0).toFixed(2)} · slope=${pair.regression?.slope.toFixed(3) ?? "--"} · p=${pair.pValue?.toExponential(2) ?? "--"} · q=${pair.qValue?.toExponential(2) ?? "--"} · N=${pair.sampleCount}`
                           : `eta²=${(pair.etaSquared ?? 0).toFixed(3)} · F=${pair.fStatistic?.toFixed(2) ?? "--"} · p=${pair.pValue?.toExponential(2) ?? "--"} · q=${pair.qValue?.toExponential(2) ?? "--"} · N=${pair.sampleCount}`}

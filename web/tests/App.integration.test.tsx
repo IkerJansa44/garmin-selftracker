@@ -375,6 +375,83 @@ describe("App persistence workflows", () => {
     expect(screen.queryByText("Plot layout synced with SQLite.")).not.toBeInTheDocument();
   });
 
+  it("uses the compact two-column correlation card layout", async () => {
+    setView("lab");
+    const records = generateMockRecords(90);
+    api.fetchCorrelationValues.mockResolvedValue({
+      values: records.slice(1).flatMap((record, index) => [
+        {
+          analysisDate: record.date,
+          role: "predictor" as const,
+          featureKey: "garmin:steps",
+          valueNum: index * 1_000,
+          valueText: null,
+          valueBool: null,
+          sourceDate: records[index].date,
+          lagDays: -1,
+          alignmentRule: "garmin_previous_day",
+        },
+        {
+          analysisDate: record.date,
+          role: "target" as const,
+          featureKey: "metric:restingHr",
+          valueNum: 46 + index,
+          valueText: null,
+          valueBool: null,
+          sourceDate: record.date,
+          lagDays: 0,
+          alignmentRule: "metric_same_day",
+        },
+      ]),
+    });
+    api.fetchDashboardData.mockResolvedValue({
+      records,
+      importStatus: { state: "ok", lastImportAt: null, message: "Ready", errorDetail: null },
+      notifications: { correlations: [] },
+      meta: { source: "test", days: 90, availableDays: 90 },
+      hrZoneBounds: null,
+    });
+
+    render(<App />);
+    const badge = (await screen.findAllByText(/^(Meaningful|Exploratory)$/, {
+      selector: "span",
+    }))[0];
+    const card = badge.closest("button");
+
+    expect(card).toHaveClass("rounded-[18px]", "p-3");
+    expect(card?.parentElement).toHaveClass("grid-cols-2");
+  });
+
+  it("offers strength volume, sets, and reps as dashboard plots", async () => {
+    setView("dashboard");
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Add plot" }));
+
+    expect(screen.getByRole("button", { name: "Strength Volume" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Strength Sets" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Strength Reps" })).toBeInTheDocument();
+  });
+
+  it("maps the internal sleep consistency key to the sleep timing variability UI name", async () => {
+    setView("dashboard");
+    mockInitialLoads({
+      plots: [{
+        ...RECOVERY_PLOT,
+        id: "sleep-timing-variability-plot",
+        key: "garmin:sleepConsistency",
+        direction: "lower",
+      }],
+    });
+    render(<App />);
+
+    expect(await screen.findByRole("button", {
+      name: "Remove Sleep Timing Variability plot",
+    })).toBeInTheDocument();
+    expect(screen.queryByText("Sleep Consistency")).not.toBeInTheDocument();
+  });
+
   it("persists dashboard plot removal", async () => {
     setView("dashboard");
     const user = userEvent.setup();

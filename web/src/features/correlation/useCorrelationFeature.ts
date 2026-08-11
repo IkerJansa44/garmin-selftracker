@@ -160,7 +160,7 @@ const GARMIN_META: Record<GarminKey, { label: string; unit: string }> = {
   sleepSeconds: { label: "Sleep Duration", unit: "h" },
   vo2Max: { label: "VO2 Max", unit: "ml/kg/min" },
   avgHr1hBeforeSleep: { label: "Avg HR 1h Before Sleep", unit: "bpm" },
-  sleepConsistency: { label: "Sleep Consistency", unit: "min" },
+  sleepConsistency: { label: "Sleep Timing Variability", unit: "min" },
   isTrainingDay: { label: "Training Day", unit: "0/1" },
   zone0Minutes: { label: "Zone 0 Time", unit: "min" },
   zone1Minutes: { label: "Zone 1 Time", unit: "min" },

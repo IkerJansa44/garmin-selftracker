@@ -138,7 +138,7 @@ describe("buildSleepWindowChartStats", () => {
     expect(stats.sleepConsistencyDomain).toEqual([18, 24]);
   });
 
-  it("keeps bars when sleep consistency is missing", () => {
+  it("keeps bars when sleep timing variability is missing", () => {
     const stats = buildSleepWindowChartStats([
       { date: "2026-02-01", fellAsleepAt: "23:15", wokeUpAt: "07:15", sleepConsistency: null },
       { date: "2026-02-02", fellAsleepAt: "23:00", wokeUpAt: "06:45" },

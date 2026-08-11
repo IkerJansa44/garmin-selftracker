@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from argparse import Namespace
 from datetime import date, datetime, timedelta, timezone
 from http import HTTPStatus
@@ -606,7 +607,7 @@ def test_normalize_derived_predictors_payload_accepts_valid_payload() -> None:
         },
         {
             "id": "sleep_consistency_bins",
-            "name": "Sleep Consistency",
+            "name": "Sleep Timing Variability",
             "sourceKey": "garmin:sleepConsistency",
             "mode": "threshold",
             "cutPoints": [30],
@@ -1231,6 +1232,63 @@ def test_load_dashboard_payload_includes_running_kilometers(tmp_path: Path) -> N
     assert (
         records_by_date[yesterday.isoformat()]["predictors"]["runningKilometers"] == 0
     )
+
+
+def test_load_dashboard_payload_includes_strength_totals(tmp_path: Path) -> None:
+    db_path = tmp_path / "garmin.db"
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+
+    connection = connect_db(str(db_path))
+    init_db(connection)
+    for metric_date in (yesterday, today):
+        connection.execute(
+            "INSERT INTO daily_metrics (metric_date, updated_at) VALUES (?, ?)",
+            (metric_date.isoformat(), "2026-02-21T06:00:00+00:00"),
+        )
+    connection.execute(
+        """
+        INSERT INTO activities (
+            garmin_activity_id,
+            activity_name,
+            activity_type,
+            start_time_local,
+            raw_json,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            1,
+            "Strength",
+            "strength_training",
+            f"{today.isoformat()} 08:00:00",
+            json.dumps(
+                {
+                    "summarizedExerciseSets": [
+                        {"volume": 400000, "sets": 2, "reps": 10},
+                        {"volume": 300000, "sets": 3, "reps": 15},
+                    ]
+                }
+            ),
+            "2026-02-21T06:00:00+00:00",
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+    payload = _load_dashboard_payload(str(db_path), 2)
+    records_by_date = {record["date"]: record for record in payload["records"]}
+
+    today_predictors = records_by_date[today.isoformat()]["predictors"]
+    assert today_predictors["strengthVolume"] == 700.0
+    assert today_predictors["strengthSets"] == 5
+    assert today_predictors["strengthReps"] == 25
+
+    yesterday_predictors = records_by_date[yesterday.isoformat()]["predictors"]
+    assert yesterday_predictors["strengthVolume"] == 0.0
+    assert yesterday_predictors["strengthSets"] == 0
+    assert yesterday_predictors["strengthReps"] == 0
 
 
 def test_load_dashboard_payload_includes_caffeine_sleep_gap_predictor(

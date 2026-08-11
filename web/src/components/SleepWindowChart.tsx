@@ -88,7 +88,7 @@ function SleepWindowTooltip({
         Wake {point.wakeValue === null ? "--" : formatOvernightClockLabel(point.wakeValue)}
       </p>
       <p className="metric-number mt-1 font-mono">
-        Sleep Consistency {formatSleepConsistencyMinutes(point.sleepConsistencyValue)}
+        Sleep Timing Variability {formatSleepConsistencyMinutes(point.sleepConsistencyValue)}
       </p>
     </div>
   );

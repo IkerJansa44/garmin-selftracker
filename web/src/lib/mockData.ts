@@ -257,6 +257,9 @@ export function generateMockRecords(totalDays = TOTAL_DAYS): DailyRecord[] {
           : ["Easy", "Tempo", "Interval"].includes(currentFactors.trainingType)
             ? Number((2 + currentFactors.trainingIntensity * 0.7 + noise(dayIndex + 44) * 4).toFixed(1))
             : 0,
+        strengthVolume: importGap ? null : 0,
+        strengthSets: importGap ? null : 0,
+        strengthReps: importGap ? null : 0,
         sleepSeconds: importGap ? null : clamp(
           Math.round((25200 + (weekday === 0 || weekday === 6 ? 1800 : 0) - (previousFactors?.alcoholUnits ?? 0)) + (noise(dayIndex + 1) - 0.5) * 5400),
           14400, 36000,

@@ -49,6 +49,9 @@ export interface DailyRecord {
     stressAvg: number | null;
     bodyBattery: number | null;
     runningKilometers?: number | null;
+    strengthVolume?: number | null;
+    strengthSets?: number | null;
+    strengthReps?: number | null;
     sleepSeconds: number | null;
     vo2Max: number | null;
     avgHr1hBeforeSleep: number | null;

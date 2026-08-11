@@ -1576,6 +1576,35 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
         for row in running_rows
         if row["activity_date"]
     }
+    strength_rows = connection.execute(
+        """
+        SELECT
+            substr(a.start_time_local, 1, 10) AS activity_date,
+            COALESCE(SUM(json_extract(exercise.value, '$.volume')), 0) / 1000.0
+                AS volume_kilograms,
+            COALESCE(SUM(json_extract(exercise.value, '$.sets')), 0) AS total_sets,
+            COALESCE(SUM(json_extract(exercise.value, '$.reps')), 0) AS total_reps
+        FROM activities AS a
+        LEFT JOIN json_each(a.raw_json, '$.summarizedExerciseSets') AS exercise
+        WHERE a.start_time_local IS NOT NULL
+          AND substr(a.start_time_local, 1, 10) BETWEEN ? AND ?
+          AND (
+              lower(COALESCE(a.activity_type, '')) LIKE '%strength%'
+              OR lower(COALESCE(a.activity_name, '')) LIKE '%strength%'
+          )
+        GROUP BY activity_date
+        """,
+        (start_date.isoformat(), end_date.isoformat()),
+    ).fetchall()
+    strength_by_date = {
+        str(row["activity_date"]): {
+            "volume": float(row["volume_kilograms"] or 0),
+            "sets": int(row["total_sets"] or 0),
+            "reps": int(row["total_reps"] or 0),
+        }
+        for row in strength_rows
+        if row["activity_date"]
+    }
 
     latest_run = connection.execute(
         """
@@ -1643,6 +1672,15 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
             "bodyBattery": _as_int(row["body_battery"]) if row else None,
             "runningKilometers": (
                 running_kilometers_by_date.get(date_key, 0.0) if row else None
+            ),
+            "strengthVolume": (
+                strength_by_date.get(date_key, {}).get("volume", 0.0) if row else None
+            ),
+            "strengthSets": (
+                strength_by_date.get(date_key, {}).get("sets", 0) if row else None
+            ),
+            "strengthReps": (
+                strength_by_date.get(date_key, {}).get("reps", 0) if row else None
             ),
             "sleepSeconds": _as_int(row["sleep_seconds"]) if row else None,
             "vo2Max": _as_float(row["vo2max"]) if row else None,
