@@ -73,10 +73,11 @@ import { buildImportProgressDisplay } from "./lib/importProgress";
 import { getZone2PlusMinutes } from "./lib/heartRateZones";
 import {
   aggregateDashboardPlotPoints,
+  aggregateDashboardRatioPoints,
   buildSleepWindowChartStats,
   createDashboardPlotId,
   normalizeDashboardPlotPreferences as normalizeDashboardPlotPreferencesRaw,
-  type DashboardPlotPoint,
+  type DashboardRatioPlotPoint,
   type SleepWindowChartPoint,
   type DashboardPlotChartStyle,
 } from "./lib/dashboardPlots";
@@ -159,6 +160,7 @@ type GarminPlotKey =
   | "stressAvg"
   | "bodyBattery"
   | "runningKilometers"
+  | "hrToSpeedRatio"
   | "strengthVolume"
   | "strengthSets"
   | "strengthReps"
@@ -414,6 +416,7 @@ const GARMIN_PLOT_META: Record<GarminPlotKey, Omit<DashboardPlotVariableOption, 
   stressAvg: { label: "Stress Avg", color: "#806739", unit: "pts" },
   bodyBattery: { label: "Body Battery", color: "#51745e", unit: "%" },
   runningKilometers: { label: "Running Distance", color: "#b45f3c", unit: "km" },
+  hrToSpeedRatio: { label: "HR-to-Speed Ratio", color: "#9a4f5f", unit: "bpm per km/h" },
   strengthVolume: { label: "Strength Volume", color: "#a63228", unit: "kg" },
   strengthSets: { label: "Strength Sets", color: "#c0693a", unit: "sets" },
   strengthReps: { label: "Strength Reps", color: "#8d6a2d", unit: "reps" },
@@ -433,6 +436,7 @@ const GARMIN_PLOT_META: Record<GarminPlotKey, Omit<DashboardPlotVariableOption, 
 };
 const GARMIN_PLOT_DIRECTIONS: Partial<Record<GarminPlotKey, PlotDirection>> = {
   avgHr1hBeforeSleep: "lower",
+  hrToSpeedRatio: "lower",
   sleepConsistency: "lower",
 };
 
@@ -1025,19 +1029,31 @@ function SparklineTooltip({
 }: {
   active?: boolean;
   option: DashboardPlotVariableOption;
-  payload?: Array<{ value?: number; payload?: DashboardPlotPoint }>;
+  payload?: Array<{ value?: number; payload?: DashboardRatioPlotPoint }>;
   plotKey: DashboardPlotVariableKey;
 }) {
   if (!active || !payload?.length) {
     return null;
   }
   const value = payload[0]?.value;
-  const date = payload[0]?.payload?.date;
+  const point = payload[0]?.payload;
+  const date = point?.date;
   const formattedValue = typeof value === "number" ? formatDashboardValue(plotKey, option, value) : "--";
+  const numerator = point?.numerator;
+  const denominator = point?.denominator;
+  const showRatioComponents = plotKey === "garmin:hrToSpeedRatio"
+    && typeof numerator === "number"
+    && typeof denominator === "number";
   return (
-    <div className="rounded-2xl bg-panel px-3 py-2 text-xs shadow-soft">
+    <div className="whitespace-nowrap rounded-2xl bg-panel px-3 py-2 text-xs shadow-soft">
       {date && <p className="mb-1 text-muted">{formatReadableDate(date)}</p>}
-      <span className="metric-number font-mono">{formattedValue}</span>
+      <p className="metric-number font-mono">{formattedValue}</p>
+      {showRatioComponents && (
+        <div className="mt-1 space-y-0.5 text-muted">
+          <p>Average HR: {numerator.toFixed(1)} bpm</p>
+          <p>Average speed: {denominator.toFixed(1)} km/h</p>
+        </div>
+      )}
     </div>
   );
 }
@@ -1725,11 +1741,28 @@ function App() {
           if (!option) {
             return null;
           }
-          const rawPoints = records.map((record) => ({
+          const rawPoints: DashboardRatioPlotPoint[] = records.map((record) => ({
             date: record.date,
             value: getDashboardPlotValue(plotPreference.key, record, checkinsByDateMap, questionFieldsById),
+            numerator: plotPreference.key === "garmin:hrToSpeedRatio"
+              ? record.predictors.runningAverageHr ?? null
+              : null,
+            denominator: plotPreference.key === "garmin:hrToSpeedRatio"
+              ? record.predictors.runningAverageSpeedKmh ?? null
+              : null,
           }));
-          const points = aggregateDashboardPlotPoints(rawPoints, plotPreference.aggregation, plotPreference.rolling, plotPreference.reduceMethod);
+          const points = plotPreference.key === "garmin:hrToSpeedRatio"
+            ? aggregateDashboardRatioPoints(
+              rawPoints,
+              plotPreference.aggregation,
+              plotPreference.rolling,
+            )
+            : aggregateDashboardPlotPoints(
+              rawPoints,
+              plotPreference.aggregation,
+              plotPreference.rolling,
+              plotPreference.reduceMethod,
+            );
           const values = points
             .map((point) => point.value)
             .filter((value): value is number => value !== null);
@@ -1916,7 +1949,7 @@ function App() {
   const handleSelectDashboardPlotToAdd = (option: DashboardPlotVariableOption) => {
     setPendingAddPlot(option);
     setPendingAddPlotStep("direction");
-    setPendingAddPlotDirection("higher");
+    setPendingAddPlotDirection(defaultPlotDirection(option.key));
     setPendingAddPlotChartStyle("line");
     setPendingAddPlotAggregation("daily");
     setPendingAddPlotRolling(false);
@@ -1940,7 +1973,7 @@ function App() {
         chartStyle,
         aggregation,
         rolling,
-        reduceMethod,
+        reduceMethod: plotKey === "garmin:hrToSpeedRatio" ? "mean" : reduceMethod,
       },
     ]);
     setPendingAddPlot(null);
@@ -2533,8 +2566,15 @@ function App() {
                       )}
                       {pendingAddPlotStep === "reduceMethod" && (
                         <>
-                          <p className="mt-1 text-xs text-muted">Should values be averaged or summed?</p>
-                          <div className="mt-3 grid grid-cols-2 gap-2">
+                          <p className="mt-1 text-xs text-muted">
+                            {pendingAddPlot.key === "garmin:hrToSpeedRatio"
+                              ? "The ratio uses average HR divided by average speed."
+                              : "Should values be averaged or summed?"}
+                          </p>
+                          <div className={clsx(
+                            "mt-3 grid gap-2",
+                            pendingAddPlot.key === "garmin:hrToSpeedRatio" ? "grid-cols-1" : "grid-cols-2",
+                          )}>
                             <button
                               className="focusable min-h-10 rounded-xl bg-accent px-3 text-xs font-semibold text-white"
                               type="button"
@@ -2547,22 +2587,24 @@ function App() {
                                 "mean",
                               )}
                             >
-                              Average
+                              {pendingAddPlot.key === "garmin:hrToSpeedRatio" ? "Use averaged components" : "Average"}
                             </button>
-                            <button
-                              className="focusable min-h-10 rounded-xl bg-subsurface px-3 text-xs font-semibold text-ink"
-                              type="button"
-                              onClick={() => handleAddDashboardPlot(
-                                pendingAddPlot.key,
-                                pendingAddPlotDirection,
-                                pendingAddPlotChartStyle,
-                                pendingAddPlotAggregation,
-                                pendingAddPlotRolling,
-                                "sum",
-                              )}
-                            >
-                              Sum
-                            </button>
+                            {pendingAddPlot.key !== "garmin:hrToSpeedRatio" && (
+                              <button
+                                className="focusable min-h-10 rounded-xl bg-subsurface px-3 text-xs font-semibold text-ink"
+                                type="button"
+                                onClick={() => handleAddDashboardPlot(
+                                  pendingAddPlot.key,
+                                  pendingAddPlotDirection,
+                                  pendingAddPlotChartStyle,
+                                  pendingAddPlotAggregation,
+                                  pendingAddPlotRolling,
+                                  "sum",
+                                )}
+                              >
+                                Sum
+                              </button>
+                            )}
                           </div>
                         </>
                       )}
@@ -2901,12 +2943,13 @@ function SortableDashboardPlotItem({
   const saveEditor = () => {
     const isSleepWindowBars = draftChartStyle === "sleepWindowBars";
     const isDaily = draftAggregation === "daily";
+    const isRatio = plot.key === "garmin:hrToSpeedRatio";
     onUpdate(plot.id, {
       direction: draftDirection,
       chartStyle: draftChartStyle,
       aggregation: isSleepWindowBars ? "daily" : draftAggregation,
       rolling: isSleepWindowBars || isDaily ? false : draftRolling,
-      reduceMethod: isSleepWindowBars || isDaily ? "mean" : draftReduceMethod,
+      reduceMethod: isSleepWindowBars || isDaily || isRatio ? "mean" : draftReduceMethod,
     });
     setIsEditing(false);
   };
@@ -2947,8 +2990,13 @@ function SortableDashboardPlotItem({
             <p className="mt-0.5 text-[10px] text-muted sm:text-xs">{aggregationLabel}</p>
           )}
           <p className="metric-number mt-1.5 text-xl font-semibold tracking-tight sm:mt-2 sm:text-3xl">
-            {formatDashboardValue(plot.key, plot.option, plot.todayValue)}
+            {plot.key === "garmin:hrToSpeedRatio" && plot.todayValue !== null
+              ? plot.todayValue.toFixed(1)
+              : formatDashboardValue(plot.key, plot.option, plot.todayValue)}
           </p>
+          {plot.key === "garmin:hrToSpeedRatio" && plot.todayValue !== null && (
+            <p className="metric-number text-[10px] text-muted sm:text-xs">bpm per km/h</p>
+          )}
           <p className="metric-number mt-1 text-[10px] text-muted sm:text-xs">
             {rangePreset}d average {formatDashboardValue(plot.key, plot.option, plot.periodAverage)}
           </p>
@@ -3068,17 +3116,21 @@ function SortableDashboardPlotItem({
                       </div>
                     </div>
 
-                    <div>
-                      <p className="mb-2 text-xs text-muted">Reduce</p>
-                      <div className="grid grid-cols-2 gap-2">
-                        <button className={choiceClass(draftReduceMethod === "mean")} type="button" onClick={() => setDraftReduceMethod("mean")}>
-                          Average
-                        </button>
-                        <button className={choiceClass(draftReduceMethod === "sum")} type="button" onClick={() => setDraftReduceMethod("sum")}>
-                          Sum
-                        </button>
+                    {plot.key === "garmin:hrToSpeedRatio" ? (
+                      <p className="text-xs text-muted">Average HR ÷ average speed</p>
+                    ) : (
+                      <div>
+                        <p className="mb-2 text-xs text-muted">Reduce</p>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button className={choiceClass(draftReduceMethod === "mean")} type="button" onClick={() => setDraftReduceMethod("mean")}>
+                            Average
+                          </button>
+                          <button className={choiceClass(draftReduceMethod === "sum")} type="button" onClick={() => setDraftReduceMethod("sum")}>
+                            Sum
+                          </button>
+                        </div>
                       </div>
-                    </div>
+                    )}
                   </>
                 )}
               </>

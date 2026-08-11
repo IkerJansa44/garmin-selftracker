@@ -434,6 +434,19 @@ describe("App persistence workflows", () => {
     expect(screen.getByRole("button", { name: "Strength Reps" })).toBeInTheDocument();
   });
 
+  it("offers HR-to-Speed Ratio as a lower-is-better dashboard plot", async () => {
+    setView("dashboard");
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Add plot" }));
+    await user.click(screen.getByRole("button", { name: "HR-to-Speed Ratio" }));
+
+    expect(screen.getByText("HR-to-Speed Ratio")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Lower better" }));
+    expect(screen.getByText("How should data be aggregated?")).toBeInTheDocument();
+  });
+
   it("maps the internal sleep consistency key to the sleep timing variability UI name", async () => {
     setView("dashboard");
     mockInitialLoads({

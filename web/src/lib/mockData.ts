@@ -257,6 +257,9 @@ export function generateMockRecords(totalDays = TOTAL_DAYS): DailyRecord[] {
           : ["Easy", "Tempo", "Interval"].includes(currentFactors.trainingType)
             ? Number((2 + currentFactors.trainingIntensity * 0.7 + noise(dayIndex + 44) * 4).toFixed(1))
             : 0,
+        runningAverageHr: null,
+        runningAverageSpeedKmh: null,
+        hrToSpeedRatio: null,
         strengthVolume: importGap ? null : 0,
         strengthSets: importGap ? null : 0,
         strengthReps: importGap ? null : 0,

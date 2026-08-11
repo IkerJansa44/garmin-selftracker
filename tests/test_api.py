@@ -1234,6 +1234,49 @@ def test_load_dashboard_payload_includes_running_kilometers(tmp_path: Path) -> N
     )
 
 
+def test_load_dashboard_payload_includes_hr_to_speed_ratio(tmp_path: Path) -> None:
+    db_path = tmp_path / "garmin.db"
+    today = date.today()
+
+    connection = connect_db(str(db_path))
+    init_db(connection)
+    connection.execute(
+        "INSERT INTO daily_metrics (metric_date, updated_at) VALUES (?, ?)",
+        (today.isoformat(), "2026-02-21T06:00:00+00:00"),
+    )
+    for activity_id, average_hr, speed_mps in ((1, 150, 4.0), (2, 160, 5.0)):
+        connection.execute(
+            """
+            INSERT INTO activities (
+                garmin_activity_id,
+                activity_name,
+                activity_type,
+                start_time_local,
+                average_hr,
+                raw_json,
+                updated_at
+            )
+            VALUES (?, 'Running', 'running', ?, ?, ?, ?)
+            """,
+            (
+                activity_id,
+                f"{today.isoformat()} 08:00:00",
+                average_hr,
+                json.dumps({"averageSpeed": speed_mps}),
+                "2026-02-21T06:00:00+00:00",
+            ),
+        )
+    connection.commit()
+    connection.close()
+
+    payload = _load_dashboard_payload(str(db_path), 1)
+    predictors = payload["records"][0]["predictors"]
+
+    assert predictors["runningAverageHr"] == 155
+    assert predictors["runningAverageSpeedKmh"] == 16.2
+    assert predictors["hrToSpeedRatio"] == pytest.approx(155 / 16.2)
+
+
 def test_load_dashboard_payload_includes_strength_totals(tmp_path: Path) -> None:
     db_path = tmp_path / "garmin.db"
     today = date.today()

@@ -46,6 +46,11 @@ export interface DashboardPlotPoint {
   value: number | null;
 }
 
+export interface DashboardRatioPlotPoint extends DashboardPlotPoint {
+  numerator: number | null;
+  denominator: number | null;
+}
+
 const CLOCK_STEP_MINUTES = 15;
 const OVERNIGHT_SPLIT_MINUTES = 12 * 60;
 const OVERNIGHT_DAY_MINUTES = 24 * 60;
@@ -304,6 +309,35 @@ export function aggregateDashboardPlotPoints(
     });
   }
   return grouped;
+}
+
+export function aggregateDashboardRatioPoints(
+  rawPoints: DashboardRatioPlotPoint[],
+  aggregation: PlotAggregation,
+  rolling: boolean,
+): DashboardRatioPlotPoint[] {
+  const aggregateComponent = (key: "numerator" | "denominator") =>
+    aggregateDashboardPlotPoints(
+      rawPoints.map((point) => ({ date: point.date, value: point[key] })),
+      aggregation,
+      rolling,
+      "mean",
+    );
+  const numerators = aggregateComponent("numerator");
+  const denominators = aggregateComponent("denominator");
+
+  return numerators.map((point, index) => {
+    const numerator = point.value;
+    const denominator = denominators[index]?.value ?? null;
+    return {
+      date: point.date,
+      numerator,
+      denominator,
+      value: numerator !== null && denominator !== null && denominator > 0
+        ? numerator / denominator
+        : null,
+    };
+  });
 }
 
 export function formatOvernightClockLabel(minutes: number): string {

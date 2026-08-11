@@ -1576,6 +1576,39 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
         for row in running_rows
         if row["activity_date"]
     }
+    running_ratio_rows = connection.execute(
+        """
+        WITH runs AS (
+            SELECT
+                substr(start_time_local, 1, 10) AS activity_date,
+                average_hr,
+                COALESCE(
+                    NULLIF(json_extract(raw_json, '$.averageSpeed'), 0),
+                    distance_meters / NULLIF(duration_seconds, 0)
+                ) * 3.6 AS average_speed_kmh
+            FROM activities
+            WHERE start_time_local IS NOT NULL
+              AND substr(start_time_local, 1, 10) BETWEEN ? AND ?
+              AND lower(COALESCE(activity_type, activity_name, '')) LIKE '%running%'
+        )
+        SELECT
+            activity_date,
+            AVG(average_hr) AS average_hr,
+            AVG(average_speed_kmh) AS average_speed_kmh
+        FROM runs
+        WHERE average_hr IS NOT NULL AND average_speed_kmh > 0
+        GROUP BY activity_date
+        """,
+        (start_date.isoformat(), end_date.isoformat()),
+    ).fetchall()
+    running_ratio_by_date = {
+        str(row["activity_date"]): {
+            "average_hr": float(row["average_hr"]),
+            "average_speed_kmh": float(row["average_speed_kmh"]),
+        }
+        for row in running_ratio_rows
+        if row["activity_date"]
+    }
     strength_rows = connection.execute(
         """
         SELECT
@@ -1672,6 +1705,22 @@ def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
             "bodyBattery": _as_int(row["body_battery"]) if row else None,
             "runningKilometers": (
                 running_kilometers_by_date.get(date_key, 0.0) if row else None
+            ),
+            "runningAverageHr": (
+                running_ratio_by_date.get(date_key, {}).get("average_hr")
+                if row
+                else None
+            ),
+            "runningAverageSpeedKmh": (
+                running_ratio_by_date.get(date_key, {}).get("average_speed_kmh")
+                if row
+                else None
+            ),
+            "hrToSpeedRatio": (
+                running_ratio_by_date[date_key]["average_hr"]
+                / running_ratio_by_date[date_key]["average_speed_kmh"]
+                if row and date_key in running_ratio_by_date
+                else None
             ),
             "strengthVolume": (
                 strength_by_date.get(date_key, {}).get("volume", 0.0) if row else None

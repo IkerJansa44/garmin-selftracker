@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   aggregateDashboardPlotPoints,
+  aggregateDashboardRatioPoints,
   buildSleepWindowChartStats,
   formatOvernightClockLabel,
   normalizeDashboardPlotPreferences,
@@ -98,6 +99,22 @@ describe("aggregateDashboardPlotPoints", () => {
 
     expect(aggregated).toHaveLength(7);
     expect(aggregated[6]).toEqual({ date: "2026-04-24", value: 18.34 });
+  });
+});
+
+describe("aggregateDashboardRatioPoints", () => {
+  it("recalculates aggregated ratios from averaged components", () => {
+    const points = [
+      { date: "2026-04-20", value: 10, numerator: 150, denominator: 15 },
+      { date: "2026-04-21", value: 8, numerator: 160, denominator: 20 },
+      { date: "2026-04-22", value: 10, numerator: 170, denominator: 17 },
+    ];
+
+    const [aggregated] = aggregateDashboardRatioPoints(points, "3days", false);
+
+    expect(aggregated.numerator).toBe(160);
+    expect(aggregated.denominator).toBeCloseTo(52 / 3);
+    expect(aggregated.value).toBeCloseTo(160 / (52 / 3));
   });
 });
 
