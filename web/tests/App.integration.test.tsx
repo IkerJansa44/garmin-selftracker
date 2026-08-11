@@ -321,7 +321,7 @@ describe("App persistence workflows", () => {
     expect(screen.getByRole("button", { name: "Correlation" })).not.toHaveClass("bg-accent");
   });
 
-  it("adds a short lateral transition when swiping between tabs", async () => {
+  it("uses an iOS-style lateral transition when swiping between tabs", async () => {
     setView("dashboard");
     render(<App />);
     const main = screen.getByRole("main");
@@ -336,14 +336,25 @@ describe("App persistence workflows", () => {
 
     await waitFor(() => expect(animate).toHaveBeenCalledTimes(2));
     expect(animate.mock.calls[0][0]).toEqual([
-      { transform: "translateX(0)", opacity: 1 },
-      { transform: "translateX(-24px)", opacity: 0.82 },
+      { transform: "translate3d(0px, 0, 0)", opacity: 1 },
+      { transform: "translate3d(-96px, 0, 0)", opacity: 0.76 },
     ]);
     expect(animate.mock.calls[1][0]).toEqual([
-      { transform: "translateX(24px)", opacity: 0.82 },
-      { transform: "translateX(0)", opacity: 1 },
+      { transform: "translate3d(96px, 0, 0)", opacity: 0.76 },
+      { transform: "translate3d(0, 0, 0)", opacity: 1 },
     ]);
     expect(screen.getByRole("button", { name: "Correlation" })).toHaveClass("bg-accent");
+  });
+
+  it("adds edge resistance when dragging past the first tab", () => {
+    setView("dashboard");
+    render(<App />);
+    const main = screen.getByRole("main");
+
+    fireEvent.touchStart(main, { touches: [{ clientX: 100, clientY: 200 }] });
+    fireEvent.touchMove(main, { touches: [{ clientX: 300, clientY: 204 }] });
+
+    expect(main).toHaveStyle({ transform: "translate3d(48px, 0, 0)" });
   });
 
   it("persists dashboard plot removal", async () => {

@@ -11,13 +11,18 @@ import { ScrollTrigger } from "gsap/ScrollTrigger";
 import clsx from "clsx";
 import {
   AlertCircle,
+  ChartNoAxesCombined,
   CirclePlus,
   CircleHelp,
   Check,
+  ClipboardCheck,
   GripVertical,
+  LayoutDashboard,
   LoaderCircle,
   Pencil,
+  Settings,
   X,
+  type LucideIcon,
 } from "lucide-react";
 import {
   ComposedChart,
@@ -129,17 +134,25 @@ type QuestionBackfillRequest = {
 };
 const DEFAULT_TOP_CORRELATION_OUTCOME: OutcomeKey = "metric:restingHr";
 const VIEW_KEYS = new Set<ViewKey>(["dashboard", "lab", "checkin", "settings"]);
-const VIEW_BUTTONS: Array<{ key: ViewKey; label: string }> = [
-  { key: "dashboard", label: "Dashboard" },
-  { key: "lab", label: "Correlation" },
-  { key: "checkin", label: "Check-In" },
-  { key: "settings", label: "Settings" },
+const VIEW_BUTTONS: Array<{ key: ViewKey; label: string; icon: LucideIcon }> = [
+  { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { key: "lab", label: "Correlation", icon: ChartNoAxesCombined },
+  { key: "checkin", label: "Check-In", icon: ClipboardCheck },
+  { key: "settings", label: "Settings", icon: Settings },
 ];
-const SWIPE_MIN_DISTANCE_PX = 64;
+const SWIPE_MIN_DISTANCE_PX = 52;
 const SWIPE_HORIZONTAL_RATIO = 1.25;
-const VIEW_TRANSITION_DISTANCE_PX = 24;
-const VIEW_EXIT_DURATION_MS = 100;
-const VIEW_ENTER_DURATION_MS = 160;
+const SWIPE_AXIS_LOCK_DISTANCE_PX = 8;
+const SWIPE_MIN_FLING_DISTANCE_PX = 22;
+const SWIPE_MIN_FLING_VELOCITY_PX_MS = 0.45;
+const VIEW_EXIT_DURATION_MS = 180;
+const VIEW_ENTER_DURATION_MS = 380;
+type SwipeGesture = {
+  axis: "horizontal" | "vertical" | null;
+  startedAt: number;
+  x: number;
+  y: number;
+};
 type GarminPlotKey =
   | "steps"
   | "calories"
@@ -1044,7 +1057,8 @@ function App() {
   const appRef = useRef<HTMLDivElement | null>(null);
   const heroRef = useRef<HTMLDivElement | null>(null);
   const mainRef = useRef<HTMLElement | null>(null);
-  const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
+  const swipeStartRef = useRef<SwipeGesture | null>(null);
+  const swipeOffsetRef = useRef(0);
   const isViewTransitioningRef = useRef(false);
 
   const [activeView, setActiveView] = useState<ViewKey>(readUrlView);
@@ -1132,36 +1146,74 @@ function App() {
     return () => window.removeEventListener("popstate", handlePopState);
   }, []);
 
+  const resetDraggedView = useCallback(async () => {
+    const main = mainRef.current;
+    const offset = swipeOffsetRef.current;
+    swipeOffsetRef.current = 0;
+    if (!main) return;
+
+    if (offset && typeof main.animate === "function") {
+      try {
+        await main.animate(
+          [
+            { transform: `translate3d(${offset}px, 0, 0)`, opacity: 0.96 },
+            { transform: "translate3d(0, 0, 0)", opacity: 1 },
+          ],
+          {
+            duration: 420,
+            easing: "cubic-bezier(0.22, 1, 0.36, 1)",
+          },
+        ).finished;
+      } catch {
+        // An interrupted rebound only needs its inline drag state cleared.
+      }
+    }
+    main.style.removeProperty("transform");
+    main.style.removeProperty("opacity");
+    main.style.removeProperty("will-change");
+  }, []);
+
   const animateViewStep = useCallback(async (direction: -1 | 1) => {
     if (isViewTransitioningRef.current) return;
     const nextView = adjacentView(activeView, direction);
-    if (nextView === activeView) return;
+    if (nextView === activeView) {
+      await resetDraggedView();
+      return;
+    }
     const main = mainRef.current;
+    const startOffset = swipeOffsetRef.current;
+    swipeOffsetRef.current = 0;
     if (
       !main
       || typeof main.animate !== "function"
       || (typeof window.matchMedia === "function"
         && window.matchMedia("(prefers-reduced-motion: reduce)").matches)
     ) {
+      if (main) {
+        main.style.removeProperty("transform");
+        main.style.removeProperty("opacity");
+        main.style.removeProperty("will-change");
+      }
       setActiveView(nextView);
       return;
     }
 
     isViewTransitioningRef.current = true;
-    const exitOffset = -direction * VIEW_TRANSITION_DISTANCE_PX;
-    const enterOffset = direction * VIEW_TRANSITION_DISTANCE_PX;
+    const transitionDistance = Math.min(96, Math.max(56, window.innerWidth * 0.18));
+    const exitOffset = -direction * transitionDistance;
+    const enterOffset = direction * transitionDistance;
     let exitAnimation: Animation | null = null;
     let enterAnimation: Animation | null = null;
     let viewChanged = false;
     try {
       exitAnimation = main.animate(
         [
-          { transform: "translateX(0)", opacity: 1 },
-          { transform: `translateX(${exitOffset}px)`, opacity: 0.82 },
+          { transform: `translate3d(${startOffset}px, 0, 0)`, opacity: startOffset ? 0.96 : 1 },
+          { transform: `translate3d(${exitOffset}px, 0, 0)`, opacity: 0.76 },
         ],
         {
           duration: VIEW_EXIT_DURATION_MS,
-          easing: "cubic-bezier(0.4, 0, 1, 1)",
+          easing: "cubic-bezier(0.32, 0, 0.67, 0)",
           fill: "forwards",
         },
       );
@@ -1171,10 +1223,13 @@ function App() {
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
       enterAnimation = main.animate(
         [
-          { transform: `translateX(${enterOffset}px)`, opacity: 0.82 },
-          { transform: "translateX(0)", opacity: 1 },
+          { transform: `translate3d(${enterOffset}px, 0, 0)`, opacity: 0.76 },
+          { transform: "translate3d(0, 0, 0)", opacity: 1 },
         ],
-        { duration: VIEW_ENTER_DURATION_MS, easing: "cubic-bezier(0, 0, 0.2, 1)" },
+        {
+          duration: VIEW_ENTER_DURATION_MS,
+          easing: "cubic-bezier(0.22, 1, 0.36, 1)",
+        },
       );
       exitAnimation.cancel();
       await enterAnimation.finished;
@@ -1183,9 +1238,12 @@ function App() {
     } finally {
       exitAnimation?.cancel();
       enterAnimation?.cancel();
+      main.style.removeProperty("transform");
+      main.style.removeProperty("opacity");
+      main.style.removeProperty("will-change");
       isViewTransitioningRef.current = false;
     }
-  }, [activeView]);
+  }, [activeView, resetDraggedView]);
 
   const handleViewTouchStart = useCallback((event: ReactTouchEvent<HTMLElement>) => {
     if (event.touches.length !== 1 || !isSwipeNavigationTarget(event.target)) {
@@ -1193,25 +1251,65 @@ function App() {
       return;
     }
     const touch = event.touches[0];
-    swipeStartRef.current = { x: touch.clientX, y: touch.clientY };
+    swipeOffsetRef.current = 0;
+    swipeStartRef.current = {
+      axis: null,
+      startedAt: performance.now(),
+      x: touch.clientX,
+      y: touch.clientY,
+    };
   }, []);
 
+  const handleViewTouchMove = useCallback((event: ReactTouchEvent<HTMLElement>) => {
+    const gesture = swipeStartRef.current;
+    const touch = event.touches[0];
+    const main = mainRef.current;
+    if (!gesture || !touch || !main) return;
+
+    const deltaX = touch.clientX - gesture.x;
+    const deltaY = touch.clientY - gesture.y;
+    if (!gesture.axis && Math.hypot(deltaX, deltaY) >= SWIPE_AXIS_LOCK_DISTANCE_PX) {
+      gesture.axis = Math.abs(deltaX) > Math.abs(deltaY) * SWIPE_HORIZONTAL_RATIO
+        ? "horizontal"
+        : "vertical";
+    }
+    if (gesture.axis !== "horizontal") return;
+
+    const currentIndex = VIEW_BUTTONS.findIndex((button) => button.key === activeView);
+    const isPullingPastEdge = (currentIndex === 0 && deltaX > 0)
+      || (currentIndex === VIEW_BUTTONS.length - 1 && deltaX < 0);
+    const viewportWidth = Math.max(320, window.innerWidth);
+    const offset = isPullingPastEdge
+      ? Math.sign(deltaX) * Math.min(72, Math.abs(deltaX) * 0.24)
+      : Math.sign(deltaX) * Math.min(viewportWidth * 0.32, Math.abs(deltaX));
+    swipeOffsetRef.current = offset;
+    main.style.willChange = "transform, opacity";
+    main.style.transform = `translate3d(${offset}px, 0, 0)`;
+    main.style.opacity = String(1 - Math.min(0.08, Math.abs(offset) / viewportWidth * 0.18));
+  }, [activeView]);
+
   const handleViewTouchEnd = useCallback((event: ReactTouchEvent<HTMLElement>) => {
-    const start = swipeStartRef.current;
+    const gesture = swipeStartRef.current;
     swipeStartRef.current = null;
     const touch = event.changedTouches[0];
-    if (!start || !touch) return;
+    if (!gesture || !touch) return;
 
-    const deltaX = touch.clientX - start.x;
-    const deltaY = touch.clientY - start.y;
+    const deltaX = touch.clientX - gesture.x;
+    const deltaY = touch.clientY - gesture.y;
+    const isHorizontal = gesture.axis === "horizontal"
+      || (gesture.axis === null && Math.abs(deltaX) > Math.abs(deltaY) * SWIPE_HORIZONTAL_RATIO);
+    const velocity = Math.abs(deltaX) / Math.max(16, performance.now() - gesture.startedAt);
     if (
-      Math.abs(deltaX) < SWIPE_MIN_DISTANCE_PX
-      || Math.abs(deltaX) <= Math.abs(deltaY) * SWIPE_HORIZONTAL_RATIO
+      !isHorizontal
+      || (Math.abs(deltaX) < SWIPE_MIN_DISTANCE_PX
+        && (Math.abs(deltaX) < SWIPE_MIN_FLING_DISTANCE_PX
+          || velocity < SWIPE_MIN_FLING_VELOCITY_PX_MS))
     ) {
+      void resetDraggedView();
       return;
     }
     void animateViewStep(deltaX < 0 ? 1 : -1);
-  }, [animateViewStep]);
+  }, [animateViewStep, resetDraggedView]);
 
   const loadDashboardData = useCallback(
     async ({
@@ -2036,7 +2134,10 @@ function App() {
     setOutcomeKey,
   });
   return (
-    <div ref={appRef} className="min-h-screen overflow-x-clip px-4 pb-10 pt-4 text-ink sm:px-6 sm:pt-32 lg:px-9">
+    <div
+      ref={appRef}
+      className="min-h-screen overflow-x-clip px-4 pb-[calc(7rem+env(safe-area-inset-bottom))] pt-4 text-ink sm:px-6 sm:pb-10 sm:pt-32 lg:px-9"
+    >
       {correlationNotifications.length > 0 && (
         <div className="fixed right-3 top-4 z-[65] flex w-[min(50vw,420px)] flex-col gap-2 sm:right-4 sm:top-24 sm:gap-3">
           {correlationNotifications.map((notification) => (
@@ -2160,23 +2261,32 @@ function App() {
               className="hidden h-10 w-px shrink-0 bg-[rgba(18,18,18,0.14)] sm:block"
             />
 
-            <div className="panel gsap-fade flex min-h-16 min-w-0 px-4 py-2 sm:shrink-0 sm:items-center sm:px-3">
-              <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
+            <nav
+              aria-label="Primary navigation"
+              className="fixed inset-x-1/2 bottom-[calc(0.75rem+env(safe-area-inset-bottom))] z-[60] flex w-max -translate-x-1/2 items-center rounded-[26px] border border-white/70 bg-[rgba(248,247,243,0.72)] p-1.5 shadow-[0_16px_44px_rgba(18,18,18,0.18),inset_0_1px_0_rgba(255,255,255,0.9)] backdrop-blur-2xl sm:static sm:z-auto sm:min-h-16 sm:w-auto sm:translate-x-0 sm:shrink-0 sm:rounded-panel sm:border-0 sm:bg-panel sm:px-3 sm:py-2 sm:shadow-panel sm:backdrop-blur-none"
+            >
+              <div className="flex items-center gap-1.5 sm:flex-wrap sm:gap-2">
                 {VIEW_BUTTONS.map((button) => (
                   <button
                     key={button.key}
+                    aria-current={activeView === button.key ? "page" : undefined}
+                    aria-label={button.label}
                     className={clsx(
-                      "focusable min-h-10 rounded-capsule px-3 text-xs font-semibold shadow-soft transition sm:px-3",
-                      activeView === button.key ? "bg-accent text-white" : "bg-panel text-ink",
+                      "focusable grid size-12 place-items-center rounded-[19px] text-muted transition-[color,background-color,transform,box-shadow] duration-300 active:scale-90 sm:flex sm:min-h-10 sm:w-auto sm:gap-2 sm:rounded-capsule sm:px-3 sm:text-xs sm:font-semibold sm:shadow-soft",
+                      activeView === button.key
+                        ? "bg-accent text-white shadow-[0_7px_18px_color-mix(in_srgb,var(--accent)_34%,transparent)]"
+                        : "hover:bg-white/55 hover:text-ink sm:bg-panel sm:text-ink",
                     )}
                     type="button"
                     onClick={() => setActiveView(button.key)}
+                    title={button.label}
                   >
-                    {button.label}
+                    <button.icon className="size-[21px] sm:size-4" strokeWidth={2.1} aria-hidden="true" />
+                    <span className="hidden sm:inline">{button.label}</span>
                   </button>
                 ))}
               </div>
-            </div>
+            </nav>
           </div>
         </div>
       </header>
@@ -2186,8 +2296,10 @@ function App() {
         className="mx-auto flex w-full max-w-[1400px] touch-pan-y flex-col gap-8"
         onTouchCancel={() => {
           swipeStartRef.current = null;
+          void resetDraggedView();
         }}
         onTouchEnd={handleViewTouchEnd}
+        onTouchMove={handleViewTouchMove}
         onTouchStart={handleViewTouchStart}
       >
         {dataStatus !== "ready" && (
