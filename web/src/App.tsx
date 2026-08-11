@@ -2189,7 +2189,7 @@ function App() {
       <header
         className={clsx(
           "z-50 mb-6 rounded-[32px] bg-[rgba(255,255,255,0.78)] p-3 shadow-soft transition sm:fixed sm:inset-x-3 sm:top-4 sm:mb-0 lg:inset-x-7",
-          isScrolled && "backdrop-blur-md",
+          isScrolled && "sm:backdrop-blur-md",
         )}
       >
         <div className="flex flex-col gap-2 sm:overflow-visible">
@@ -2319,7 +2319,7 @@ function App() {
 
         {activeView === "dashboard" && (
           <section ref={heroRef} className="panel gsap-fade overflow-hidden p-4 sm:p-10">
-            <div className="min-h-[42vh] rounded-[30px] bg-[radial-gradient(circle_at_0%_5%,#ffffff_0%,#f8f6f1_40%,#efede6_100%)] p-5 shadow-inset sm:p-8">
+            <div className="min-h-[42vh] rounded-[30px] bg-[radial-gradient(circle_at_0%_5%,#ffffff_0%,#f8f6f1_40%,#efede6_100%)] p-3 shadow-inset sm:p-8">
               <p className="text-sm text-muted">{rangePreset}-Day Dashboard</p>
               <div className="mt-4 grid w-full grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] lg:items-center">
                 <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl xl:text-5xl">Dashboard</h1>
@@ -2571,32 +2571,23 @@ function App() {
                   )}
                 </div>
               </div>
-              <p className="mt-3 text-sm text-muted">
-                Higher is better for Recovery Index, Body Battery, and Training Readiness.
-                Lower is better for Stress and Resting HR.
-              </p>
               <div className="mt-3 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
                 <input
-                  className="focusable min-h-11 w-full rounded-2xl bg-panel px-3 text-sm lg:max-w-md"
+                  className="focusable min-h-11 w-full rounded-2xl border border-[rgba(18,18,18,0.4)] bg-panel px-3 text-sm lg:max-w-md"
                   placeholder="Search metrics and plots"
                   type="search"
                   value={plotSearchQuery}
                   onChange={(event) => setPlotSearchQuery(event.target.value)}
                 />
-                <p
-                  className={clsx(
-                    "text-xs",
-                    plotSettingsError ? "text-error" : "text-muted",
-                  )}
-                >
-                  {plotSettingsLoadState === "loading"
-                    ? "Loading plot layout..."
-                    : isSavingPlotSettings
-                      ? "Saving plot layout..."
-                      : plotSettingsError
-                        ? `Plot layout sync failed: ${plotSettingsError}`
-                        : "Plot layout synced with SQLite."}
-                </p>
+                {(plotSettingsLoadState === "loading" || isSavingPlotSettings || plotSettingsError) && (
+                  <p className={clsx("text-xs", plotSettingsError ? "text-error" : "text-muted")}>
+                    {plotSettingsLoadState === "loading"
+                      ? "Loading plot layout..."
+                      : isSavingPlotSettings
+                        ? "Saving plot layout..."
+                        : `Plot layout sync failed: ${plotSettingsError}`}
+                  </p>
+                )}
               </div>
 
               <DndContext sensors={sensors} onDragEnd={handleDashboardPlotSortEnd}>
@@ -2605,7 +2596,7 @@ function App() {
                   strategy={rectSortingStrategy}
                 >
                   {filteredDashboardPlots.length ? (
-                    <div className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+                    <div className="mt-4 grid grid-cols-2 gap-2 sm:mt-8 sm:gap-4 xl:grid-cols-3">
                       {filteredDashboardPlots.map((plot) => (
                         <SortableDashboardPlotItem
                           key={plot.id}
@@ -2934,54 +2925,57 @@ function SortableDashboardPlotItem({
   return (
     <article
       ref={setNodeRef}
-      className="mx-auto w-full max-w-[26rem] rounded-[24px] bg-panel p-5 shadow-soft md:max-w-none"
+      className={clsx(
+        "mx-auto w-full rounded-[20px] bg-panel p-3 shadow-soft sm:rounded-[24px] sm:p-5",
+        isEditing && "col-span-2 sm:col-span-1",
+      )}
       style={{
         transform: CSS.Transform.toString(transform),
         transition,
       }}
     >
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
         <div className="min-w-0">
-          <p className="text-sm text-muted">{plot.option.label}</p>
+          <p className="text-xs text-muted sm:text-sm">{plot.option.label}</p>
           {aggregationLabel && (
-            <p className="mt-0.5 text-xs text-muted">{aggregationLabel}</p>
+            <p className="mt-0.5 text-[10px] text-muted sm:text-xs">{aggregationLabel}</p>
           )}
-          <p className="metric-number mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">
+          <p className="metric-number mt-1.5 text-xl font-semibold tracking-tight sm:mt-2 sm:text-3xl">
             {formatDashboardValue(plot.key, plot.option, plot.todayValue)}
           </p>
-          <p className="metric-number mt-1 text-xs text-muted">
+          <p className="metric-number mt-1 text-[10px] text-muted sm:text-xs">
             {rangePreset}d average {formatDashboardValue(plot.key, plot.option, plot.periodAverage)}
           </p>
-          <p className={clsx("mt-1 text-xs font-medium", plot.comparison.tone)}>{plot.comparison.text}</p>
+          <p className={clsx("mt-1 hidden text-xs font-medium sm:block", plot.comparison.tone)}>{plot.comparison.text}</p>
         </div>
-        <div className="flex flex-wrap items-start gap-2 sm:justify-end">
-          <span className={clsx("rounded-capsule px-3 py-1 text-xs font-semibold", coverageMeta.tone)}>
+        <div className="flex flex-wrap items-start gap-1 sm:justify-end sm:gap-2">
+          <span className={clsx("rounded-capsule px-2 py-1 text-[10px] font-semibold sm:px-3 sm:text-xs", coverageMeta.tone)}>
             {coverageMeta.label}
           </span>
           <button
             aria-label={`Edit ${plot.option.label} plot`}
-            className="focusable min-h-9 rounded-capsule bg-subsurface px-3 text-muted transition hover:text-ink"
+            className="focusable min-h-8 rounded-capsule bg-subsurface px-2 text-muted transition hover:text-ink sm:min-h-9 sm:px-3"
             type="button"
             onClick={openEditor}
           >
-            <Pencil className="size-4" />
+            <Pencil className="size-3.5 sm:size-4" />
           </button>
           <button
             aria-label={`Remove ${plot.option.label} plot`}
-            className="focusable min-h-9 rounded-capsule bg-subsurface px-3 text-muted transition hover:text-ink"
+            className="focusable min-h-8 rounded-capsule bg-subsurface px-2 text-muted transition hover:text-ink sm:min-h-9 sm:px-3"
             type="button"
             onClick={() => onRemove(plot.id)}
           >
-            <X className="size-4" />
+            <X className="size-3.5 sm:size-4" />
           </button>
           <button
             aria-label={`Reorder ${plot.option.label} plot`}
-            className="focusable min-h-9 rounded-capsule bg-subsurface px-3 text-muted transition hover:text-ink"
+            className="focusable min-h-8 rounded-capsule bg-subsurface px-2 text-muted transition hover:text-ink sm:min-h-9 sm:px-3"
             type="button"
             {...attributes}
             {...listeners}
           >
-            <GripVertical className="size-4" />
+            <GripVertical className="size-3.5 sm:size-4" />
           </button>
         </div>
       </div>
@@ -3087,7 +3081,7 @@ function SortableDashboardPlotItem({
         </div>
       )}
 
-      <div className="mt-4 h-24 sm:h-20 lg:h-16">
+      <div className="mt-3 h-20 sm:mt-4 lg:h-16">
         {showSleepWindowBars ? (
           <SleepWindowChart
             averageBedtime={plot.averageBedtime}
@@ -3139,18 +3133,22 @@ function SortableDashboardPlotItem({
         )}
       </div>
 
-      <div className="mt-3 min-h-8 text-xs text-muted">
+      <div className="mt-2 min-h-0 text-[10px] text-muted sm:mt-3 sm:min-h-8 sm:text-xs">
         {loadingState ? (
           <span className="inline-flex flex-wrap items-center gap-2 text-warning">
-            <LoaderCircle className="size-3 animate-spin" /> Import in progress. This tile will
-            update when sync completes.
+            <LoaderCircle className="size-3 animate-spin" />
+            <span className="hidden sm:inline">
+              Import in progress. This tile will update when sync completes.
+            </span>
           </span>
         ) : errorState ? (
           <span className="inline-flex flex-wrap items-center gap-2 text-error">
             <AlertCircle className="size-3" />
-            {dataStatus === "error" ? "Unable to load data API." : "No data yet. Last import failed."}
+            <span className="hidden sm:inline">
+              {dataStatus === "error" ? "Unable to load data API." : "No data yet. Last import failed."}
+            </span>
             <button
-              className="focusable rounded-capsule bg-[color-mix(in_srgb,var(--error)_14%,white)] px-2 py-1 text-[11px]"
+              className="focusable hidden rounded-capsule bg-[color-mix(in_srgb,var(--error)_14%,white)] px-2 py-1 text-[11px] sm:inline"
               type="button"
               onClick={onOpenStatus}
             >
@@ -3158,9 +3156,11 @@ function SortableDashboardPlotItem({
             </button>
           </span>
         ) : isPartial ? (
-          <span>Partial telemetry. {rangePreset}-day average uses available samples only.</span>
+          <span className="hidden sm:inline">
+            Partial telemetry. {rangePreset}-day average uses available samples only.
+          </span>
         ) : (
-          <span>{plot.baselineHint}</span>
+          <span className="hidden sm:inline">{plot.baselineHint}</span>
         )}
       </div>
     </article>

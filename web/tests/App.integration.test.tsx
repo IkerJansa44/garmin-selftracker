@@ -357,12 +357,32 @@ describe("App persistence workflows", () => {
     expect(main).toHaveStyle({ transform: "translate3d(48px, 0, 0)" });
   });
 
+  it("uses the compact two-column dashboard plot layout", async () => {
+    setView("dashboard");
+    render(<App />);
+
+    const search = await screen.findByPlaceholderText("Search metrics and plots");
+    await waitFor(() =>
+      expect(screen.queryByText("Loading plot layout...")).not.toBeInTheDocument(),
+    );
+    const plot = (await screen.findByRole("button", {
+      name: "Remove Recovery Index plot",
+    })).closest("article");
+
+    expect(search).toHaveClass("border", "border-[rgba(18,18,18,0.4)]");
+    expect(plot?.parentElement).toHaveClass("grid-cols-2");
+    expect(screen.queryByText(/Higher is better for Recovery Index/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Plot layout synced with SQLite.")).not.toBeInTheDocument();
+  });
+
   it("persists dashboard plot removal", async () => {
     setView("dashboard");
     const user = userEvent.setup();
 
     render(<App />);
-    await screen.findByText("Plot layout synced with SQLite.");
+    await waitFor(() =>
+      expect(screen.queryByText("Loading plot layout...")).not.toBeInTheDocument(),
+    );
     await user.click(await screen.findByRole("button", { name: "Remove Recovery Index plot" }));
 
     await waitFor(() =>
