@@ -105,3 +105,16 @@ CREATE TABLE IF NOT EXISTS analysis_values (
 
 CREATE INDEX IF NOT EXISTS idx_analysis_values_feature
 ON analysis_values (feature_key, role, analysis_date);
+
+CREATE TABLE IF NOT EXISTS monthly_reports (
+    report_month TEXT PRIMARY KEY,
+    period_start TEXT NOT NULL,
+    period_end TEXT NOT NULL,
+    status TEXT NOT NULL,
+    analysis_source TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL,
+    pdf_path TEXT NOT NULL,
+    generated_at TEXT NOT NULL,
+    emailed_at TEXT,
+    warnings_json TEXT NOT NULL DEFAULT '[]'
+);

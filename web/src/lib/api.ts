@@ -8,6 +8,8 @@ import {
   type DailyRecord,
   type ImportState,
   type NotificationPreferences,
+  type MonthlyReportSettings,
+  type MonthlyReportStatus,
 } from "./types";
 
 interface ImportStatusSummary {
@@ -340,6 +342,37 @@ export async function startDateRangeImport(
   return apiRequest("/api/import", "Date range import failed", {
     method: "POST",
     json: { mode: "range", fromDate, toDate },
+    signal,
+  });
+}
+
+export async function fetchMonthlyReportSettings(signal?: AbortSignal): Promise<MonthlyReportSettings> {
+  return apiRequest("/api/monthly-report-settings", "Monthly report settings API failed", { signal });
+}
+
+export async function saveMonthlyReportSettings(
+  settings: MonthlyReportSettings,
+  signal?: AbortSignal,
+): Promise<MonthlyReportSettings> {
+  return apiRequest("/api/monthly-report-settings", "Saving monthly report settings failed", {
+    method: "PUT",
+    json: settings,
+    signal,
+  });
+}
+
+export async function fetchMonthlyReportStatus(signal?: AbortSignal): Promise<MonthlyReportStatus> {
+  return apiRequest("/api/monthly-reports/status", "Monthly report status API failed", { signal });
+}
+
+export async function generateMonthlyReport(
+  month: string,
+  sendEmail: boolean,
+  signal?: AbortSignal,
+): Promise<{ status: string; month: string; sendEmail: boolean }> {
+  return apiRequest("/api/monthly-reports/generate", "Monthly report generation failed", {
+    method: "POST",
+    json: { month, sendEmail },
     signal,
   });
 }

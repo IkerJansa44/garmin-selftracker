@@ -91,7 +91,17 @@ If you only use the dashboard from the same computer, `DASHBOARD_URL=http://loca
 docker compose up --build
 ```
 
-4. Open dashboard:
+4. Connect Codex once for AI-written monthly recaps:
+
+```bash
+docker compose run --rm api codex login --device-auth
+```
+
+The login is stored in the private `codex-home` Docker volume and reused by the API. The monthly report workflow imports missing Garmin days, calculates all values locally, asks Codex only for strict-schema editorial copy, renders a four-page PDF, and optionally emails it. If Codex is unavailable or returns invalid output, the app uses deterministic copy and still produces the report. Configure the schedule or generate a report manually under **Settings → Monthly PDF Report**.
+
+For unattended server deployments, Codex also supports API-key authentication; keep credentials server-side and never expose the Codex process directly to untrusted clients.
+
+5. Open dashboard:
 
 - [http://localhost:5180](http://localhost:5180)
 - `http://<your-computer-ip-or-hostname>:5180` from your phone on the same network or VPN

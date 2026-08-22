@@ -174,3 +174,31 @@ export interface NotificationPreferences {
   email: boolean;
   iphone: boolean;
 }
+
+export interface MonthlyReportSettings {
+  enabled: boolean;
+  sendDay: number;
+  sendAfter: string;
+}
+
+export interface MonthlyReportStatus {
+  report: null | {
+    month: string;
+    status: string;
+    analysisSource: "codex" | "deterministic";
+    generatedAt: string;
+    emailedAt: string | null;
+    warnings: string[];
+    downloadUrl: string;
+  };
+  job: {
+    running: boolean;
+    runningMonth: string | null;
+    lastError: string | null;
+  };
+  codex: {
+    available: boolean;
+    authenticated: boolean;
+    detail: string;
+  };
+}

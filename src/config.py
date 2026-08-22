@@ -20,6 +20,8 @@ class Settings:
     web_push_vapid_public_key: str = ""
     web_push_vapid_private_key: str = ""
     web_push_vapid_subject: str = ""
+    monthly_reports_dir: str = "/data/reports"
+    codex_report_timeout_seconds: int = 120
 
 
 class SettingsError(RuntimeError):
@@ -57,6 +59,11 @@ def load_settings(*, require_garmin_credentials: bool = True) -> Settings:
         smtp_port = int(smtp_port_raw)
     except ValueError as exc:
         raise SettingsError("SMTP_PORT must be an integer") from exc
+    codex_timeout_raw = _optional_env("CODEX_REPORT_TIMEOUT_SECONDS", default="120")
+    try:
+        codex_timeout = max(10, int(codex_timeout_raw))
+    except ValueError as exc:
+        raise SettingsError("CODEX_REPORT_TIMEOUT_SECONDS must be an integer") from exc
     timezone = _optional_env("TZ") or None
     return Settings(
         garmin_email=garmin_email,
@@ -73,4 +80,8 @@ def load_settings(*, require_garmin_credentials: bool = True) -> Settings:
         web_push_vapid_public_key=_optional_env("WEB_PUSH_VAPID_PUBLIC_KEY"),
         web_push_vapid_private_key=_optional_env("WEB_PUSH_VAPID_PRIVATE_KEY"),
         web_push_vapid_subject=_optional_env("WEB_PUSH_VAPID_SUBJECT"),
+        monthly_reports_dir=_optional_env(
+            "MONTHLY_REPORTS_DIR", default="/data/reports"
+        ),
+        codex_report_timeout_seconds=codex_timeout,
     )

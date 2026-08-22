@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import threading
+from pathlib import Path
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from http import HTTPStatus
@@ -47,6 +48,15 @@ from src.garmin_client import (
 from src.notifications import (
     load_notification_preferences,
     save_notification_preferences,
+)
+from src.monthly_report_codex import codex_login_status
+from src.monthly_reports import (
+    MonthlyReportService,
+    MonthlyReportServiceSettings,
+    load_monthly_report_settings,
+    parse_report_month,
+    report_status,
+    save_monthly_report_settings,
 )
 from src.reminders import (
     CHECKIN_REMINDER_SETTINGS_KEY,
@@ -142,6 +152,8 @@ class ApiSettings:
     web_push_vapid_public_key: str = ""
     web_push_vapid_private_key: str = ""
     web_push_vapid_subject: str = ""
+    monthly_reports_dir: str = "/data/reports"
+    codex_report_timeout_seconds: int = 120
 
 
 @dataclass(frozen=True)
@@ -385,6 +397,58 @@ class ImportJobManager:
         finally:
             with self._lock:
                 self._running = False
+
+
+class MonthlyReportJobManager:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._running_month: str | None = None
+        self._last_error: str | None = None
+
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "running": self._running_month is not None,
+                "runningMonth": self._running_month,
+                "lastError": self._last_error,
+            }
+
+    def start(
+        self,
+        service: MonthlyReportService,
+        month: date,
+        *,
+        send_email: bool,
+    ) -> bool:
+        month_key = month.strftime("%Y-%m")
+        with self._lock:
+            if self._running_month is not None:
+                return False
+            self._running_month = month_key
+            self._last_error = None
+        threading.Thread(
+            target=self._run,
+            args=(service, month, send_email),
+            name=f"monthly-report-{month_key}",
+            daemon=True,
+        ).start()
+        return True
+
+    def _run(
+        self,
+        service: MonthlyReportService,
+        month: date,
+        send_email: bool,
+    ) -> None:
+        try:
+            service.generate(month, send_email=send_email)
+        except Exception as exc:  # pragma: no cover - runtime guard
+            logger.exception("Monthly report generation failed for %s", month)
+            with self._lock:
+                self._last_error = str(exc)
+        finally:
+            with self._lock:
+                self._running_month = None
 
 
 def _correlation_email_settings(settings: ApiSettings) -> CorrelationEmailSettings:
@@ -1811,6 +1875,8 @@ class ApiHandler(BaseHTTPRequestHandler):
     db_path: str = "/data/garmin.db"
     settings: ApiSettings | None = None
     import_job_manager = ImportJobManager()
+    monthly_report_job_manager = MonthlyReportJobManager()
+    monthly_report_service: MonthlyReportService | None = None
 
     def _send_operation(
         self,
@@ -1938,6 +2004,38 @@ class ApiHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if parsed.path == "/api/monthly-report-settings":
+            self._send_operation(
+                lambda: load_monthly_report_settings(self.db_path),
+                failure_log="Failed to load monthly report settings",
+                failure_error="Failed to load monthly report settings",
+            )
+            return
+
+        if parsed.path == "/api/monthly-reports/status":
+            payload = {
+                **report_status(self.db_path),
+                "job": self.monthly_report_job_manager.status(),
+                "codex": codex_login_status(),
+            }
+            self._send_json(HTTPStatus.OK, payload)
+            return
+
+        if parsed.path.startswith("/api/monthly-reports/") and parsed.path.endswith(
+            "/pdf"
+        ):
+            month_raw = (
+                parsed.path.removeprefix("/api/monthly-reports/")
+                .removesuffix("/pdf")
+                .strip("/")
+            )
+            try:
+                month = parse_report_month(month_raw)
+                self._send_monthly_report_pdf(month)
+            except ValueError as exc:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
+
         if parsed.path == "/api/notification-preferences":
             self._send_operation(
                 lambda: load_notification_preferences(self.db_path),
@@ -1960,6 +2058,51 @@ class ApiHandler(BaseHTTPRequestHandler):
                 failure_error="Failed to save push subscription",
                 invalid_error="Invalid push subscription payload",
                 wrap=lambda created: {"subscribed": True, "created": created},
+            )
+            return
+
+        if parsed.path == "/api/monthly-reports/generate":
+            if self.monthly_report_service is None:
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"error": "Monthly report service is not initialized"},
+                )
+                return
+            raw_payload = self._read_json_body()
+            if raw_payload is None:
+                return
+            try:
+                month = parse_report_month(
+                    raw_payload.get("month") if isinstance(raw_payload, dict) else None
+                )
+                send_email = (
+                    raw_payload.get("sendEmail", False)
+                    if isinstance(raw_payload, dict)
+                    else False
+                )
+                if not isinstance(send_email, bool):
+                    raise ValueError("sendEmail must be a boolean")
+            except ValueError as exc:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "Invalid monthly report request", "details": str(exc)},
+                )
+                return
+            if not self.monthly_report_job_manager.start(
+                self.monthly_report_service, month, send_email=send_email
+            ):
+                self._send_json(
+                    HTTPStatus.CONFLICT,
+                    {"error": "Monthly report generation already running"},
+                )
+                return
+            self._send_json(
+                HTTPStatus.ACCEPTED,
+                {
+                    "status": "accepted",
+                    "month": month.strftime("%Y-%m"),
+                    "sendEmail": send_email,
+                },
             )
             return
 
@@ -2170,6 +2313,20 @@ class ApiHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if parsed.path == "/api/monthly-report-settings":
+            settings_payload = (
+                raw_payload.get("settings")
+                if isinstance(raw_payload, dict) and "settings" in raw_payload
+                else raw_payload
+            )
+            self._send_operation(
+                lambda: save_monthly_report_settings(self.db_path, settings_payload),
+                failure_log="Failed to save monthly report settings",
+                failure_error="Failed to save monthly report settings",
+                invalid_error="Invalid monthly report settings payload",
+            )
+            return
+
         if parsed.path == "/api/notification-preferences":
             preferences_payload = (
                 raw_payload.get("preferences")
@@ -2234,6 +2391,33 @@ class ApiHandler(BaseHTTPRequestHandler):
             )
             return None
 
+    def _send_monthly_report_pdf(self, month: date) -> None:
+        connection = connect_db(self.db_path)
+        try:
+            init_db(connection)
+            row = connection.execute(
+                "SELECT pdf_path FROM monthly_reports WHERE report_month = ?",
+                (month.strftime("%Y-%m"),),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "Monthly report not found"})
+            return
+        pdf_path = Path(str(row["pdf_path"]))
+        if not pdf_path.is_file():
+            self._send_json(
+                HTTPStatus.NOT_FOUND, {"error": "Monthly report file is missing"}
+            )
+            return
+        data = pdf_path.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/pdf")
+        self.send_header("Content-Disposition", f'inline; filename="{pdf_path.name}"')
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
         data = json.dumps(payload).encode("utf-8")
         self.send_response(status)
@@ -2282,6 +2466,8 @@ def _build_settings() -> ApiSettings:
         web_push_vapid_public_key=env_settings.web_push_vapid_public_key,
         web_push_vapid_private_key=env_settings.web_push_vapid_private_key,
         web_push_vapid_subject=env_settings.web_push_vapid_subject,
+        monthly_reports_dir=env_settings.monthly_reports_dir,
+        codex_report_timeout_seconds=env_settings.codex_report_timeout_seconds,
     )
 
 
@@ -2298,6 +2484,22 @@ def main() -> int:
     handler = ApiHandler
     handler.db_path = settings.db_path
     handler.settings = settings
+    monthly_report_service = MonthlyReportService(
+        MonthlyReportServiceSettings(
+            db_path=settings.db_path,
+            garmin_email=settings.garmin_email,
+            garmin_password=settings.garmin_password,
+            garmin_tokenstore=settings.garmin_tokenstore,
+            smtp_host=settings.smtp_host,
+            smtp_port=settings.smtp_port,
+            smtp_user=settings.smtp_user,
+            smtp_pass=settings.smtp_pass,
+            recipient_email=settings.garmin_email,
+            reports_dir=settings.monthly_reports_dir,
+            codex_timeout_seconds=settings.codex_report_timeout_seconds,
+        )
+    )
+    handler.monthly_report_service = monthly_report_service
     reminder_service = CheckinReminderService(
         ReminderServiceSettings(
             db_path=settings.db_path,
@@ -2312,6 +2514,7 @@ def main() -> int:
         )
     )
     reminder_service.start()
+    monthly_report_service.start()
 
     try:
         with ThreadingHTTPServer((settings.host, settings.port), handler) as server:
@@ -2323,6 +2526,7 @@ def main() -> int:
             )
             server.serve_forever()
     finally:
+        monthly_report_service.stop()
         reminder_service.stop()
 
     return 0

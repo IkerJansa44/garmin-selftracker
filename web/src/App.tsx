@@ -52,6 +52,7 @@ import { QuestionAnswerInput } from "./components/QuestionAnswerInput";
 import { CheckinFeature, useCheckinFeature } from "./features/checkin/CheckinFeature";
 import { CheckinReminderSettings } from "./features/checkin/CheckinReminderSettings";
 import { NotificationSettings } from "./features/checkin/NotificationSettings";
+import { MonthlyReportSettings } from "./features/reports/MonthlyReportSettings";
 import { CorrelationFeature } from "./features/correlation/CorrelationFeature";
 import { useCorrelationFeature } from "./features/correlation/useCorrelationFeature";
 import {
@@ -2684,6 +2685,7 @@ function App() {
             <div className="space-y-5">
               <NotificationSettings />
               <CheckinReminderSettings />
+              <MonthlyReportSettings />
 
               <article className="rounded-[24px] bg-subsurface p-5">
                 <div className="mb-4">
