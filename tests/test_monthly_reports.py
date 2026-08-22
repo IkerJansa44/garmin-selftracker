@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
+import src.monthly_reports as monthly_reports
 from src.db import connect_db, init_db, upsert_daily_metrics, upsert_setting_json
 from src.monthly_report_codex import generate_editorial_analysis
 from src.monthly_report_pdf import render_monthly_report
 from src.monthly_reports import (
     build_monthly_snapshot,
     contiguous_ranges,
+    MonthlyReportService,
+    MonthlyReportServiceSettings,
     normalize_monthly_report_settings,
     parse_report_month,
 )
@@ -28,14 +32,51 @@ def test_contiguous_ranges_groups_only_adjacent_days() -> None:
 def test_monthly_report_settings_and_month_validation() -> None:
     assert normalize_monthly_report_settings(
         {"enabled": True, "sendDay": 2, "sendAfter": "07:30"}
-    ) == {"enabled": True, "sendDay": 2, "sendAfter": "07:30"}
+    ) == {"enabled": True, "sendAfter": "07:30"}
     assert (
-        normalize_monthly_report_settings(
-            {"enabled": True, "sendDay": 29, "sendAfter": "07:30"}
-        )
+        normalize_monthly_report_settings({"enabled": True, "sendAfter": "tomorrow"})
         is None
     )
     assert parse_report_month("2026-08", today=date(2026, 8, 22)) == date(2026, 8, 1)
+
+
+def test_automatic_report_targets_completed_previous_month(
+    tmp_path: Path, monkeypatch
+) -> None:
+    settings = MonthlyReportServiceSettings(
+        db_path=str(tmp_path / "report.db"),
+        garmin_email="",
+        garmin_password="",
+        garmin_tokenstore="",
+        smtp_host="",
+        smtp_port=587,
+        smtp_user="",
+        smtp_pass="",
+        recipient_email="",
+        reports_dir=str(tmp_path),
+    )
+    generated: list[tuple[date, bool]] = []
+    service = MonthlyReportService(
+        settings,
+        now_fn=lambda: datetime(2026, 9, 1, 8, tzinfo=timezone.utc),
+    )
+    monkeypatch.setattr(
+        monthly_reports,
+        "load_monthly_report_settings",
+        lambda _db_path: {"enabled": True, "sendAfter": "07:00"},
+    )
+    monkeypatch.setattr(
+        monthly_reports, "_should_attempt_delivery", lambda *_args, **_kwargs: True
+    )
+    monkeypatch.setattr(
+        service,
+        "generate",
+        lambda month, *, send_email=False: generated.append((month, send_email)),
+    )
+
+    service.run_once()
+
+    assert generated == [(date(2026, 8, 1), True)]
 
 
 def test_snapshot_uses_dashboard_metrics_and_prior_90_days(tmp_path: Path) -> None:
@@ -48,6 +89,9 @@ def test_snapshot_uses_dashboard_metrics_and_prior_90_days(tmp_path: Path) -> No
         [
             {"key": "metric:sleepScore", "direction": "higher"},
             {"key": "garmin:steps", "direction": "higher"},
+            {"key": "garmin:strengthVolume", "direction": "higher"},
+            {"key": "garmin:hrToSpeedRatio", "direction": "lower"},
+            {"key": "garmin:futureMetric", "direction": "higher"},
         ],
     )
     upsert_setting_json(
@@ -83,6 +127,34 @@ def test_snapshot_uses_dashboard_metrics_and_prior_90_days(tmp_path: Path) -> No
             "2026-08-01T20:00:00",
         ),
     )
+    for activity_id, activity_date, activity_type, average_hr, raw_json in (
+        (1, "2026-05-31", "running", 150, {"averageSpeed": 4.0}),
+        (2, "2026-08-01", "running", 144, {"averageSpeed": 4.0}),
+        (
+            3,
+            "2026-08-01",
+            "strength_training",
+            None,
+            {"summarizedExerciseSets": [{"volume": 700000, "sets": 5, "reps": 25}]},
+        ),
+    ):
+        connection.execute(
+            """
+            INSERT INTO activities (
+                garmin_activity_id, activity_name, activity_type, start_time_local,
+                average_hr, raw_json, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                activity_id,
+                activity_type,
+                activity_type,
+                f"{activity_date} 08:00:00",
+                average_hr,
+                json.dumps(raw_json),
+                "2026-08-02T08:00:00+00:00",
+            ),
+        )
     connection.commit()
     connection.close()
 
@@ -96,10 +168,16 @@ def test_snapshot_uses_dashboard_metrics_and_prior_90_days(tmp_path: Path) -> No
         "metric:sleepScore"
     ]
     assert [metric["key"] for metric in snapshot["sections"]["training"]] == [
-        "garmin:steps"
+        "garmin:steps",
+        "garmin:strengthVolume",
+        "garmin:hrToSpeedRatio",
+        "garmin:futureMetric",
     ]
     assert snapshot["sections"]["sleep"][0]["current"] == 85
     assert snapshot["sections"]["sleep"][0]["baseline"] == 70
+    assert snapshot["sections"]["training"][1]["current"] == 350
+    assert snapshot["sections"]["training"][2]["current"] == 10
+    assert snapshot["sections"]["training"][3]["current"] is None
     assert snapshot["coverage"]["checkinDays"] == 1
 
 
@@ -147,7 +225,7 @@ def test_codex_analysis_validates_json_and_falls_back(tmp_path: Path) -> None:
     assert failed.analysis == fallback
 
 
-def test_pdf_renderer_creates_four_page_document(tmp_path: Path) -> None:
+def test_pdf_renderer_adds_pages_instead_of_dropping_metrics(tmp_path: Path) -> None:
     metric = {
         "key": "metric:sleepScore",
         "label": "Sleep score",
@@ -179,7 +257,13 @@ def test_pdf_renderer_creates_four_page_document(tmp_path: Path) -> None:
             "checkinDays": 20,
             "baselineCheckinDays": 80,
         },
-        "sections": {"sleep": [metric], "training": [metric], "selfReported": [metric]},
+        "sections": {
+            "sleep": [metric],
+            "training": [
+                {**metric, "key": f"metric:training{index}"} for index in range(9)
+            ],
+            "selfReported": [metric],
+        },
         "analysis": analysis,
         "analysisSource": "codex",
     }
@@ -187,4 +271,6 @@ def test_pdf_renderer_creates_four_page_document(tmp_path: Path) -> None:
 
     render_monthly_report(snapshot, output)
 
-    assert output.read_bytes().startswith(b"%PDF")
+    pdf_bytes = output.read_bytes()
+    assert pdf_bytes.startswith(b"%PDF")
+    assert len(re.findall(rb"/Type /Page\b", pdf_bytes)) == 5

@@ -1541,8 +1541,10 @@ def _save_checkin_draft_payload(db_path: str, payload: Any) -> dict[str, Any]:
         connection.close()
 
 
-def _load_dashboard_payload(db_path: str, days: int) -> dict[str, Any]:
-    end_date = date.today()
+def _load_dashboard_payload(
+    db_path: str, days: int, *, end_date: date | None = None
+) -> dict[str, Any]:
+    end_date = end_date or date.today()
     start_date = end_date - timedelta(days=days - 1)
     lookback_start_date = start_date - timedelta(days=7)
 

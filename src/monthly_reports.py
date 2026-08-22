@@ -14,15 +14,12 @@ from statistics import mean
 from typing import Any, Callable
 
 from src.db import (
-    build_sleep_consistency_by_source_date,
-    build_time_to_sleep_gap_by_metric_date,
     connect_db,
     get_setting_json,
     init_db,
     upsert_setting_json,
     utc_now,
 )
-from src.derived_metrics import TIME_TO_SLEEP_GAP_METRICS
 from src.monthly_report_codex import CodexResult, generate_editorial_analysis
 from src.sync import run_sync
 
@@ -33,7 +30,6 @@ DASHBOARD_PLOTS_SETTINGS_KEY = "dashboard_plots"
 QUESTION_SETTINGS_KEY = "checkin_questions"
 DEFAULT_MONTHLY_REPORT_SETTINGS = {
     "enabled": False,
-    "sendDay": 1,
     "sendAfter": "07:00",
 }
 SLEEP_KEYS = {
@@ -178,6 +174,24 @@ METRICS: dict[str, MetricDefinition] = {
     "garmin:calories": MetricDefinition(
         "Calories", "kcal", 0, True, lambda row: _number(row, "calories")
     ),
+    "garmin:stressAvg": MetricDefinition(
+        "Stress avg", "pts", 0, False, lambda row: _number(row, "stress_avg")
+    ),
+    "garmin:bodyBattery": MetricDefinition(
+        "Body battery", "%", 0, True, lambda row: _number(row, "body_battery")
+    ),
+    "garmin:hrToSpeedRatio": MetricDefinition(
+        "HR-to-speed ratio", "bpm per km/h", 1, False, lambda _: None
+    ),
+    "garmin:strengthVolume": MetricDefinition(
+        "Strength volume", "kg", 0, True, lambda _: None
+    ),
+    "garmin:strengthSets": MetricDefinition(
+        "Strength sets", "sets", 0, True, lambda _: None
+    ),
+    "garmin:strengthReps": MetricDefinition(
+        "Strength reps", "reps", 0, True, lambda _: None
+    ),
     "garmin:sleepSeconds": MetricDefinition(
         "Sleep duration",
         "h",
@@ -258,21 +272,14 @@ METRICS: dict[str, MetricDefinition] = {
 def normalize_monthly_report_settings(payload: Any) -> dict[str, Any] | None:
     if not isinstance(payload, dict) or not isinstance(payload.get("enabled"), bool):
         return None
-    send_day = payload.get("sendDay")
     send_after = payload.get("sendAfter")
-    if (
-        not isinstance(send_day, int)
-        or isinstance(send_day, bool)
-        or not 1 <= send_day <= 28
-    ):
-        return None
     if not isinstance(send_after, str):
         return None
     try:
         datetime.strptime(send_after, "%H:%M")
     except ValueError:
         return None
-    return {"enabled": payload["enabled"], "sendDay": send_day, "sendAfter": send_after}
+    return {"enabled": payload["enabled"], "sendAfter": send_after}
 
 
 def load_monthly_report_settings(db_path: str) -> dict[str, Any]:
@@ -384,63 +391,36 @@ def import_missing_report_dates(
 def build_monthly_snapshot(
     db_path: str, month: date, *, today: date | None = None
 ) -> dict[str, Any]:
+    from src.api import _load_dashboard_payload
+
     report_start, report_end = month_period(month, today=today)
     baseline_end = report_start - timedelta(days=1)
     baseline_start = baseline_end - timedelta(days=89)
+    days = (report_end - baseline_start).days + 1
+    records = _load_dashboard_payload(db_path, days, end_date=report_end)["records"]
+    current_rows = [row for row in records if report_start.isoformat() <= row["date"]]
+    baseline_rows = [row for row in records if row["date"] <= baseline_end.isoformat()]
     connection = connect_db(db_path)
     try:
         init_db(connection)
-        all_rows = _load_metric_rows(
-            connection, baseline_start - timedelta(days=7), report_end
-        )
-        sleep_consistency = build_sleep_consistency_by_source_date(all_rows)
-        gaps = {
-            metric.dashboard_key: build_time_to_sleep_gap_by_metric_date(
-                connection,
-                all_rows,
-                (baseline_start - timedelta(days=7)).isoformat(),
-                report_end.isoformat(),
-                metric,
-            )
-            for metric in TIME_TO_SLEEP_GAP_METRICS
-        }
-        for row in all_rows:
-            metric_date = str(row["metric_date"])
-            row["sleep_consistency"] = sleep_consistency.get(metric_date)
-            for dashboard_key, values in gaps.items():
-                row[dashboard_key] = values.get(metric_date)
-        rows = [
-            row for row in all_rows if row["metric_date"] >= baseline_start.isoformat()
-        ]
         plot_settings = get_setting_json(connection, DASHBOARD_PLOTS_SETTINGS_KEY)
         plots = plot_settings if isinstance(plot_settings, list) else DEFAULT_PLOTS
-        current_rows = [
-            row
-            for row in rows
-            if report_start.isoformat() <= row["metric_date"] <= report_end.isoformat()
-        ]
-        baseline_rows = [
-            row
-            for row in rows
-            if baseline_start.isoformat()
-            <= row["metric_date"]
-            <= baseline_end.isoformat()
-        ]
         sleep, training = [], []
         for plot in plots:
             key = plot.get("key") if isinstance(plot, dict) else plot
-            if (
-                not isinstance(key, str)
-                or key.startswith("question:")
-                or key not in METRICS
-            ):
+            if not isinstance(key, str) or key.startswith("question:"):
                 continue
+            definition = METRICS.get(key) or _generic_metric_definition(key)
             metric = _summarize_metric(
                 key,
-                METRICS[key],
+                definition,
                 current_rows,
                 baseline_rows,
                 current_days=(report_end - report_start).days + 1,
+                direction=plot.get("direction") if isinstance(plot, dict) else None,
+                reduce_method=(
+                    plot.get("reduceMethod") if isinstance(plot, dict) else None
+                ),
             )
             (sleep if key in SLEEP_KEYS else training).append(metric)
         self_reported, current_checkins, baseline_checkins = _self_reported(
@@ -449,7 +429,7 @@ def build_monthly_snapshot(
     finally:
         connection.close()
     expected_days = (report_end - report_start).days + 1
-    imported_days = len({row["metric_date"] for row in current_rows})
+    imported_days = sum(not row["importGap"] for row in current_rows)
     snapshot = {
         "reportMonth": month.strftime("%Y-%m"),
         "period": {"start": report_start.isoformat(), "end": report_end.isoformat()},
@@ -474,40 +454,46 @@ def build_monthly_snapshot(
     return snapshot
 
 
-def _load_metric_rows(connection: Any, start: date, end: date) -> list[dict[str, Any]]:
-    rows = [
-        dict(row)
-        for row in connection.execute(
-            """
-        SELECT d.*, COALESCE(r.running_meters, 0) / 1000.0 AS running_km,
-               CASE WHEN a.activity_count > 0 THEN 1 ELSE 0 END AS is_training_day
-        FROM daily_metrics d
-        LEFT JOIN (
-            SELECT substr(start_time_local, 1, 10) activity_date,
-                   SUM(COALESCE(distance_meters, 0)) running_meters
-            FROM activities
-            WHERE lower(COALESCE(activity_type, activity_name, '')) LIKE '%running%'
-            GROUP BY 1
-        ) r ON r.activity_date = d.metric_date
-        LEFT JOIN (
-            SELECT substr(start_time_local, 1, 10) activity_date, COUNT(*) activity_count
-            FROM activities GROUP BY 1
-        ) a ON a.activity_date = d.metric_date
-        WHERE d.metric_date BETWEEN ? AND ? ORDER BY d.metric_date
-        """,
-            (start.isoformat(), end.isoformat()),
+def _generic_metric_definition(key: str) -> MetricDefinition:
+    raw_name = key.split(":", 1)[-1]
+    label = "".join(
+        f" {character}" if character.isupper() else character for character in raw_name
+    )
+    return MetricDefinition(label.strip().capitalize(), "", 1, True, lambda _: None)
+
+
+def _dashboard_value(row: dict[str, Any], key: str) -> float | None:
+    namespace, _, name = key.partition(":")
+    if namespace == "metric":
+        return _number(row.get("metrics", {}), name)
+    if namespace != "garmin":
+        return None
+    predictors = row.get("predictors", {})
+    if name == "isTrainingDay":
+        value = predictors.get(name)
+        return float(value) if isinstance(value, bool) else _number(predictors, name)
+    if name == "zone2PlusMinutes":
+        values = [_number(predictors, f"zone{zone}Minutes") for zone in range(2, 6)]
+        return (
+            sum(value or 0 for value in values)
+            if any(value is not None for value in values)
+            else None
         )
-    ]
-    return rows
+    value = _number(predictors, name)
+    if name == "sleepSeconds" and value is not None:
+        return value / 3600
+    return value
 
 
 def _aggregate(
-    rows: list[dict[str, Any]], metric: MetricDefinition, *, calendar_days: int
+    rows: list[dict[str, Any]], key: str, *, calendar_days: int, weekly: bool
 ) -> tuple[float | None, int]:
-    values = [value for row in rows if (value := metric.getter(row)) is not None]
+    values = [
+        value for row in rows if (value := _dashboard_value(row, key)) is not None
+    ]
     if not values:
         return None, 0
-    if metric.reduce == "weekly":
+    if weekly:
         return sum(values) / max(1, calendar_days) * 7, len(values)
     return mean(values), len(values)
 
@@ -519,11 +505,16 @@ def _summarize_metric(
     baseline: list[dict[str, Any]],
     *,
     current_days: int,
+    direction: Any,
+    reduce_method: Any,
 ) -> dict[str, Any]:
+    weekly = reduce_method == "sum"
     current_value, current_count = _aggregate(
-        current, metric, calendar_days=current_days
+        current, key, calendar_days=current_days, weekly=weekly
     )
-    baseline_value, baseline_count = _aggregate(baseline, metric, calendar_days=90)
+    baseline_value, baseline_count = _aggregate(
+        baseline, key, calendar_days=90, weekly=weekly
+    )
     delta = (
         current_value - baseline_value
         if current_value is not None and baseline_value is not None
@@ -532,9 +523,13 @@ def _summarize_metric(
     return {
         "key": key,
         "label": metric.label,
-        "unit": metric.unit,
+        "unit": f"{metric.unit}/wk" if weekly and metric.unit else metric.unit,
         "decimals": metric.decimals,
-        "higherIsBetter": metric.higher_is_better,
+        "higherIsBetter": (
+            direction == "higher"
+            if direction in {"higher", "lower"}
+            else metric.higher_is_better
+        ),
         "current": current_value,
         "baseline": baseline_value,
         "delta": delta,
@@ -608,8 +603,6 @@ def _self_reported(
                 "baselineSamples": baseline_count,
             }
         )
-        if len(summaries) == 6:
-            break
     return summaries, len(current), len(baseline)
 
 
@@ -741,7 +734,6 @@ class MonthlyReportService:
         report_settings = load_monthly_report_settings(self.settings.db_path)
         if (
             not report_settings["enabled"]
-            or now.day < report_settings["sendDay"]
             or now.strftime("%H:%M") < report_settings["sendAfter"]
         ):
             return

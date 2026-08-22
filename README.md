@@ -97,7 +97,7 @@ docker compose up --build
 docker compose run --rm api codex login --device-auth
 ```
 
-The login is stored in the private `codex-home` Docker volume and reused by the API. The monthly report workflow imports missing Garmin days, calculates all values locally, asks Codex only for strict-schema editorial copy, renders a four-page PDF, and optionally emails it. If Codex is unavailable or returns invalid output, the app uses deterministic copy and still produces the report. Configure the schedule or generate a report manually under **Settings → Monthly PDF Report**.
+The login is stored in the private `codex-home` Docker volume and reused by the API. The monthly report workflow imports missing Garmin days, uses the configured dashboard metrics and their calculated values, asks Codex only for strict-schema editorial copy, renders a multi-page PDF, and optionally emails it. If Codex is unavailable or returns invalid output, the app uses deterministic copy and still produces the report. Automatic reports cover the completed calendar month and run on the first day of the next month after the configured time. Configure delivery or generate a report manually under **Settings → Monthly PDF Report**.
 
 For unattended server deployments, Codex also supports API-key authentication; keep credentials server-side and never expose the Codex process directly to untrusted clients.
 

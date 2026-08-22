@@ -177,7 +177,6 @@ export interface NotificationPreferences {
 
 export interface MonthlyReportSettings {
   enabled: boolean;
-  sendDay: number;
   sendAfter: string;
 }
 

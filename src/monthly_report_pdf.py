@@ -35,20 +35,49 @@ def render_monthly_report(snapshot: dict[str, Any], output_path: Path) -> None:
     pdf = canvas.Canvas(str(output_path), pagesize=A4)
     pdf.setTitle(f"Selftracker monthly report - {month_label}")
     pdf.setAuthor("Garmin Selftracker")
-    _overview_page(pdf, snapshot, month_label)
-    _section_page(pdf, snapshot, "sleep", "Sleep", SLEEP, SLEEP_LIGHT, 2, month_label)
-    _section_page(
-        pdf, snapshot, "training", "Training", TRAIN, TRAIN_LIGHT, 3, month_label
-    )
-    _section_page(
-        pdf, snapshot, "selfReported", "Self-reported", SELF, SELF_LIGHT, 4, month_label
-    )
+    section_pages: list[tuple[str, str, Any, Any, list[dict[str, Any]], bool]] = []
+    for key, title, accent, accent_light in (
+        ("sleep", "Sleep", SLEEP, SLEEP_LIGHT),
+        ("training", "Training", TRAIN, TRAIN_LIGHT),
+        ("selfReported", "Self-reported", SELF, SELF_LIGHT),
+    ):
+        metrics = snapshot["sections"][key]
+        chunks = [
+            metrics[index : index + 8] for index in range(0, len(metrics), 8)
+        ] or [[]]
+        section_pages.extend(
+            (key, title, accent, accent_light, chunk, index > 0)
+            for index, chunk in enumerate(chunks)
+        )
+    total_pages = len(section_pages) + 1
+    _overview_page(pdf, snapshot, month_label, total_pages)
+    for page_number, (
+        key,
+        title,
+        accent,
+        accent_light,
+        metrics,
+        continued,
+    ) in enumerate(section_pages, start=2):
+        _section_page(
+            pdf,
+            snapshot,
+            key,
+            f"{title} (continued)" if continued else title,
+            accent,
+            accent_light,
+            page_number,
+            total_pages,
+            month_label,
+            metrics,
+        )
     pdf.save()
 
 
 def _page_base(
     pdf: canvas.Canvas,
     page_number: int,
+    total_pages: int,
     title: str,
     kicker: str,
     color: Any,
@@ -69,7 +98,7 @@ def _page_base(
     pdf.setFillColor(MUTED)
     pdf.setFont("Helvetica", 7.5)
     pdf.drawString(MARGIN, 19, f"GARMIN SELFTRACKER  /  {month_label.upper()}")
-    pdf.drawRightString(PAGE_W - MARGIN, 19, f"{page_number:02d}  /  04")
+    pdf.drawRightString(PAGE_W - MARGIN, 19, f"{page_number:02d}  /  {total_pages:02d}")
 
 
 def _card(
@@ -101,13 +130,17 @@ def _wrap(text: str, font: str, size: float, width: float) -> list[str]:
 
 
 def _overview_page(
-    pdf: canvas.Canvas, snapshot: dict[str, Any], month_label: str
+    pdf: canvas.Canvas,
+    snapshot: dict[str, Any],
+    month_label: str,
+    total_pages: int,
 ) -> None:
     period = snapshot["period"]
     coverage = snapshot["coverage"]
     _page_base(
         pdf,
         1,
+        total_pages,
         f"{datetime.strptime(snapshot['reportMonth'], '%Y-%m').strftime('%B')}, at a glance",
         f"Monthly overview  /  {_friendly_period(period['start'], period['end'])}",
         TERRACOTTA,
@@ -190,16 +223,17 @@ def _section_page(
     accent: Any,
     accent_light: Any,
     page_number: int,
+    total_pages: int,
     month_label: str,
+    metrics: list[dict[str, Any]],
 ) -> None:
-    metrics = snapshot["sections"][key]
     analysis = snapshot["analysis"][key]
     kicker = (
         "Dashboard metrics only"
         if key != "selfReported"
         else "Coffee, reading and answered questions"
     )
-    _page_base(pdf, page_number, title, kicker, accent, month_label)
+    _page_base(pdf, page_number, total_pages, title, kicker, accent, month_label)
     pdf.setFillColor(MUTED)
     pdf.setFont("Helvetica", 9)
     description = (
@@ -209,7 +243,7 @@ def _section_page(
     )
     pdf.drawString(MARGIN, PAGE_H - 128, description)
 
-    shown_metrics = metrics[:8]
+    shown_metrics = metrics
     if not shown_metrics:
         _card(pdf, MARGIN, 570, CONTENT_W, 112, accent_light)
         pdf.setFillColor(accent)

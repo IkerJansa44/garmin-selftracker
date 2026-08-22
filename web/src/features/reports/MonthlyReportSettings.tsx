@@ -10,7 +10,7 @@ import {
 } from "../../lib/api";
 import { type MonthlyReportSettings as Settings, type MonthlyReportStatus } from "../../lib/types";
 
-const DEFAULT_SETTINGS: Settings = { enabled: false, sendDay: 1, sendAfter: "07:00" };
+const DEFAULT_SETTINGS: Settings = { enabled: false, sendAfter: "07:00" };
 const SAVE_DELAY_MS = 350;
 
 export function MonthlyReportSettings() {
@@ -113,20 +113,19 @@ export function MonthlyReportSettings() {
         </span>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="grid gap-3 md:grid-cols-2">
         <label className="flex items-center justify-between rounded-2xl bg-panel p-4 text-sm font-medium">
           Email automatically
           <input checked={settings.enabled} type="checkbox" onChange={(event) => setSettings((previous) => ({ ...previous, enabled: event.target.checked }))} />
         </label>
         <label className="rounded-2xl bg-panel p-4 text-sm">
-          <span className="mb-2 block text-xs uppercase tracking-[0.14em] text-muted">Day of month</span>
-          <input className="focusable h-11 w-full rounded-2xl bg-subsurface px-3" disabled={!settings.enabled} max={28} min={1} type="number" value={settings.sendDay} onChange={(event) => setSettings((previous) => ({ ...previous, sendDay: Number(event.target.value) }))} />
-        </label>
-        <label className="rounded-2xl bg-panel p-4 text-sm">
-          <span className="mb-2 block text-xs uppercase tracking-[0.14em] text-muted">Send after</span>
+          <span className="mb-2 block text-xs uppercase tracking-[0.14em] text-muted">First day, after</span>
           <input className="focusable h-11 w-full rounded-2xl bg-subsurface px-3" disabled={!settings.enabled} type="time" value={settings.sendAfter} onChange={(event) => setSettings((previous) => ({ ...previous, sendAfter: event.target.value }))} />
         </label>
       </div>
+      <p className="mt-2 text-xs text-muted">
+        Covers the complete previous calendar month. If the app is offline on the first day, it sends the report when it next runs.
+      </p>
 
       <div className="mt-3 flex flex-wrap items-end gap-3 rounded-2xl bg-panel p-4">
         <label className="min-w-44 flex-1 text-sm">
