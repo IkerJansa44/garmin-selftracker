@@ -3280,6 +3280,7 @@ function QuestionEditor({
   const [showAnalysisHelp, setShowAnalysisHelp] = useState(false);
   const [showBackfillHelp, setShowBackfillHelp] = useState(false);
   const [activeConditionHelpChildId, setActiveConditionHelpChildId] = useState<string | null>(null);
+  const [isDeleteConfirmationOpen, setIsDeleteConfirmationOpen] = useState(false);
   const [isSectionEditorOpen, setIsSectionEditorOpen] = useState(false);
   const [sectionEditorMode, setSectionEditorMode] = useState<"add" | "rename">("add");
   const [sectionEditorValue, setSectionEditorValue] = useState("");
@@ -3290,6 +3291,7 @@ function QuestionEditor({
   const [backfillRange, setBackfillRange] = useState<BackfillRangePreset>("all");
   const [customBackfillFromDate, setCustomBackfillFromDate] = useState(firstTrackedDate ?? "");
   const [customBackfillToDate, setCustomBackfillToDate] = useState(maxBackfillDate ?? "");
+  const cancelDeleteButtonRef = useRef<HTMLButtonElement>(null);
   const inputTagClass = "text-[10px] uppercase tracking-[0.12em] text-muted";
   const normalizedSection = normalizeSectionName(question.section);
   const sectionOptions = availableSections.includes(normalizedSection)
@@ -3303,6 +3305,12 @@ function QuestionEditor({
     setIsBackfillActive(false);
     setShowBackfillHelp(false);
   }, [question.id, question.inputType]);
+
+  useEffect(() => {
+    if (isDeleteConfirmationOpen) {
+      cancelDeleteButtonRef.current?.focus();
+    }
+  }, [isDeleteConfirmationOpen]);
 
   useEffect(() => {
     if (firstTrackedDate) {
@@ -4150,11 +4158,59 @@ function QuestionEditor({
         <button
           className="focusable min-h-11 rounded-capsule bg-[color-mix(in_srgb,var(--error)_16%,white)] px-4 text-sm text-error"
           type="button"
-          onClick={onDelete}
+          onClick={() => setIsDeleteConfirmationOpen(true)}
         >
           Delete question
         </button>
       </div>
+      {isDeleteConfirmationOpen && (
+        <div
+          aria-labelledby="delete-question-title"
+          aria-modal="true"
+          className="fixed inset-0 z-[80] grid place-items-center bg-[rgba(18,18,18,0.2)] p-4 backdrop-blur-xs"
+          role="dialog"
+          onClick={() => setIsDeleteConfirmationOpen(false)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              setIsDeleteConfirmationOpen(false);
+            }
+          }}
+        >
+          <div className="panel w-full max-w-md p-6" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-start gap-4">
+              <div className="grid size-11 shrink-0 place-items-center rounded-full bg-[color-mix(in_srgb,var(--error)_16%,white)] text-error">
+                <AlertCircle className="size-5" />
+              </div>
+              <div>
+                <h2 className="text-xl font-semibold" id="delete-question-title">
+                  Delete this question?
+                </h2>
+                <p className="mt-2 text-sm leading-6 text-muted">
+                  “{question.prompt}” will be removed from future check-ins. This action cannot be
+                  undone.
+                </p>
+              </div>
+            </div>
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                ref={cancelDeleteButtonRef}
+                className="focusable min-h-11 rounded-capsule bg-subsurface px-4 text-sm"
+                type="button"
+                onClick={() => setIsDeleteConfirmationOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="focusable min-h-11 rounded-capsule bg-error px-5 text-sm font-semibold text-white"
+                type="button"
+                onClick={onDelete}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

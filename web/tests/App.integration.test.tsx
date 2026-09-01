@@ -258,6 +258,16 @@ describe("App persistence workflows", () => {
     await user.click(await screen.findByRole("button", { name: /Journal/ }));
     await user.click(screen.getByRole("button", { name: "Delete question" }));
 
+    const dialog = screen.getByRole("dialog", { name: "Delete this question?" });
+    expect(within(dialog).getByText(/“Journal” will be removed/)).toBeInTheDocument();
+    expect(api.saveQuestionSettings).not.toHaveBeenCalled();
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(api.saveQuestionSettings).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Delete question" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete" }));
+
     await waitFor(() => expect(api.saveQuestionSettings).toHaveBeenCalledOnce());
     const savedQuestions = api.saveQuestionSettings.mock.calls[0][0] as CheckInQuestion[];
     expect(savedQuestions.some((question) => question.id === JOURNAL_QUESTION.id)).toBe(false);
