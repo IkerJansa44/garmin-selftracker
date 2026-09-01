@@ -1288,17 +1288,18 @@ def _normalize_derived_predictors_payload(payload: Any) -> list[dict[str, Any]] 
     return normalized
 
 
-def _load_questions_payload(db_path: str) -> list[dict[str, Any]]:
+def _load_questions_payload(db_path: str) -> dict[str, Any]:
     connection = connect_db(db_path)
     try:
         init_db(connection)
         raw_payload = get_setting_json(connection, QUESTION_SETTINGS_KEY)
     finally:
         connection.close()
-    if raw_payload is None:
-        return []
     normalized = _normalize_questions_payload(raw_payload)
-    return normalized if normalized is not None else []
+    return {
+        "questions": normalized if normalized is not None else [],
+        "configured": raw_payload is not None,
+    }
 
 
 def _load_dashboard_plots_payload(db_path: str) -> list[dict[str, Any]]:
@@ -1948,7 +1949,6 @@ class ApiHandler(BaseHTTPRequestHandler):
                 lambda: _load_questions_payload(self.db_path),
                 failure_log="Failed to load question settings",
                 failure_error="Failed to load question settings",
-                wrap=lambda payload: {"questions": payload},
             )
             return
 

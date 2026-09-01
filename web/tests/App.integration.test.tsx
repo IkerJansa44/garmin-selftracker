@@ -119,6 +119,7 @@ function mockInitialLoads({
   api.saveCheckinReminderSettings.mockImplementation(async (settings) => settings);
   api.saveDashboardPlotSettings.mockImplementation(async (plots) => ({ plots }));
   api.saveNotificationPreferences.mockImplementation(async (preferences) => preferences);
+  api.saveQuestionSettings.mockImplementation(async (questions) => ({ questions }));
 }
 
 function todayIso() {
@@ -246,6 +247,52 @@ describe("App persistence workflows", () => {
         { enabled: true, notifyAfter: "21:00" },
         expect.any(AbortSignal),
       ),
+    );
+  });
+
+  it("persists question deletion immediately", async () => {
+    setView("settings");
+    const user = userEvent.setup();
+
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: /Journal/ }));
+    await user.click(screen.getByRole("button", { name: "Delete question" }));
+
+    await waitFor(() => expect(api.saveQuestionSettings).toHaveBeenCalledOnce());
+    const savedQuestions = api.saveQuestionSettings.mock.calls[0][0] as CheckInQuestion[];
+    expect(savedQuestions.some((question) => question.id === JOURNAL_QUESTION.id)).toBe(false);
+  });
+
+  it("keeps an intentionally empty question library empty", async () => {
+    setView("settings");
+    api.fetchQuestionSettings.mockResolvedValue({ questions: [], configured: true });
+
+    render(<App />);
+    const heading = await screen.findByRole("heading", { name: "Asked Questions" });
+    const questionPanel = within(heading.closest("article")!);
+
+    await waitFor(() => expect(questionPanel.getAllByRole("button")).toHaveLength(1));
+    expect(questionPanel.getByRole("button", { name: "Add" })).toBeInTheDocument();
+  });
+
+  it("persists moving a question to another section immediately", async () => {
+    setView("settings");
+    const user = userEvent.setup();
+    api.fetchQuestionSettings.mockResolvedValue({
+      questions: [
+        JOURNAL_QUESTION,
+        { ...JOURNAL_QUESTION, id: "stress", prompt: "Stress", section: "Stress & Mind" },
+      ],
+    });
+
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: /Journal/ }));
+    await user.selectOptions(screen.getAllByRole("combobox")[0], "Stress & Mind");
+
+    await waitFor(() => expect(api.saveQuestionSettings).toHaveBeenCalledOnce());
+    const savedQuestions = api.saveQuestionSettings.mock.calls[0][0] as CheckInQuestion[];
+    expect(savedQuestions.find((question) => question.id === JOURNAL_QUESTION.id)?.section).toBe(
+      "Stress & Mind",
     );
   });
 

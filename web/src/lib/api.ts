@@ -50,6 +50,7 @@ export interface DashboardApiResponse {
 
 export interface QuestionsApiResponse {
   questions: CheckInQuestion[];
+  configured?: boolean;
 }
 
 export interface DerivedPredictorsApiResponse {

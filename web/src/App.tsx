@@ -831,20 +831,8 @@ function inferAlcoholScore(option: QuestionOption): number | null {
   return null;
 }
 
-function cloneQuestion(question: CheckInQuestion): CheckInQuestion {
-  return {
-    ...question,
-    options: question.options?.map((option) => ({ ...option })),
-    children: question.children?.map((child) => ({
-      ...child,
-      options: child.options?.map((option) => ({ ...option })),
-      condition: { ...child.condition },
-    })),
-  };
-}
-
 function migrateQuestionLibrary(questions: CheckInQuestion[]): CheckInQuestion[] {
-  const nextQuestions = questions
+  return questions
     .filter((question) => !GARMIN_ONLY_QUESTION_IDS.has(question.id))
     .filter((question) => !REMOVED_DEFAULT_QUESTION_IDS.has(question.id))
     .map((question) => {
@@ -853,7 +841,7 @@ function migrateQuestionLibrary(questions: CheckInQuestion[]): CheckInQuestion[]
         analysisMode: question.analysisMode ?? "predictor_next_day",
       };
 
-      if (nextQuestion.id === MEAL_FINISH_QUESTION_ID) {
+      if (nextQuestion.id === MEAL_FINISH_QUESTION_ID && question.inputType !== "time") {
         nextQuestion.section = "Nutrition & Substances";
         nextQuestion.prompt = "Finished eating at";
         nextQuestion.inputType = "time";
@@ -910,7 +898,7 @@ function migrateQuestionLibrary(questions: CheckInQuestion[]): CheckInQuestion[]
         }
       }
 
-      if (nextQuestion.id === FULLNESS_QUESTION_ID) {
+      if (nextQuestion.id === FULLNESS_QUESTION_ID && question.inputType !== "multi-choice") {
         nextQuestion.section = "Nutrition & Substances";
         nextQuestion.prompt = "Do you feel full?";
         nextQuestion.inputType = "multi-choice";
@@ -922,7 +910,7 @@ function migrateQuestionLibrary(questions: CheckInQuestion[]): CheckInQuestion[]
         ];
       }
 
-      if (nextQuestion.id === ENERGY_TARGET_QUESTION_ID) {
+      if (nextQuestion.id === ENERGY_TARGET_QUESTION_ID && question.inputType !== "multi-choice") {
         nextQuestion.section = "Stress & Mind";
         nextQuestion.prompt = "Felt energized during the day";
         nextQuestion.inputType = "multi-choice";
@@ -937,16 +925,6 @@ function migrateQuestionLibrary(questions: CheckInQuestion[]): CheckInQuestion[]
       delete nextQuestion.inputLabel;
       return nextQuestion;
     });
-
-  const seenQuestionIds = new Set(nextQuestions.map((question) => question.id));
-  for (const defaultQuestion of DEFAULT_QUESTIONS) {
-    if (seenQuestionIds.has(defaultQuestion.id)) {
-      continue;
-    }
-    nextQuestions.push(cloneQuestion(defaultQuestion));
-  }
-
-  return nextQuestions;
 }
 
 function normalizeSectionName(section: string): string {
@@ -1443,9 +1421,7 @@ function App() {
       setQuestionSyncError(null);
       try {
         const payload = await fetchQuestionSettings(controller.signal);
-        const sourceQuestions = payload.questions.length
-          ? payload.questions
-          : DEFAULT_QUESTIONS;
+        const sourceQuestions = payload.configured === false ? DEFAULT_QUESTIONS : payload.questions;
         const nextQuestions = migrateQuestionLibrary(sourceQuestions);
         const serializedSource = JSON.stringify(sourceQuestions);
         const serializedNext = JSON.stringify(nextQuestions);
@@ -2040,6 +2016,14 @@ function App() {
     );
   };
 
+  const updateQuestionSection = (questionId: string, section: string) => {
+    const nextQuestions = questionLibrary.map((question) =>
+      question.id === questionId ? { ...question, section } : question,
+    );
+    setQuestionLibrary(nextQuestions);
+    void persistQuestionLibrary(nextQuestions);
+  };
+
   const renameQuestionSection = (source: string, target: string) => {
     const sourceSection = normalizeSectionName(source);
     const targetSection = normalizeSectionName(target);
@@ -2049,13 +2033,13 @@ function App() {
     setCustomSectionOptions((previous) =>
       previous.map((section) => (section === sourceSection ? targetSection : section)),
     );
-    setQuestionLibrary((previous) =>
-      previous.map((question) =>
-        normalizeSectionName(question.section) === sourceSection
-          ? { ...question, section: targetSection }
-          : question,
-      ),
+    const nextQuestions = questionLibrary.map((question) =>
+      normalizeSectionName(question.section) === sourceSection
+        ? { ...question, section: targetSection }
+        : question,
     );
+    setQuestionLibrary(nextQuestions);
+    void persistQuestionLibrary(nextQuestions);
   };
 
   const addQuestionSection = (section: string) => {
@@ -2076,13 +2060,12 @@ function App() {
   };
 
   const removeQuestion = (questionId: string) => {
-    setQuestionLibrary((previous) => {
-      const next = previous.filter((question) => question.id !== questionId);
-      if (selectedQuestionId === questionId) {
-        setSelectedQuestionId("");
-      }
-      return next;
-    });
+    const nextQuestions = questionLibrary.filter((question) => question.id !== questionId);
+    setQuestionLibrary(nextQuestions);
+    if (selectedQuestionId === questionId) {
+      setSelectedQuestionId("");
+    }
+    void persistQuestionLibrary(nextQuestions);
   };
 
   const handleQuestionSortEnd = (event: DragEndEvent) => {
@@ -2121,15 +2104,18 @@ function App() {
     return savedCount;
   };
 
-  const handleSaveQuestions = async (backfillRequest?: QuestionBackfillRequest | null) => {
-    if (!isQuestionDirty || isSavingQuestions) {
+  async function persistQuestionLibrary(
+    questions: CheckInQuestion[],
+    backfillRequest?: QuestionBackfillRequest | null,
+  ) {
+    if (isSavingQuestions) {
       return;
     }
     setIsSavingQuestions(true);
     setQuestionSyncError(null);
     setQuestionBackfillMessage(null);
     try {
-      const payload = await saveQuestionSettings(questionLibrary);
+      const payload = await saveQuestionSettings(questions);
       const nextQuestions = migrateQuestionLibrary(payload.questions);
       setQuestionLibrary(nextQuestions);
       lastSavedQuestionsRef.current = JSON.stringify(nextQuestions);
@@ -2147,6 +2133,13 @@ function App() {
     } finally {
       setIsSavingQuestions(false);
     }
+  }
+
+  const handleSaveQuestions = (backfillRequest?: QuestionBackfillRequest | null) => {
+    if (!isQuestionDirty) {
+      return;
+    }
+    void persistQuestionLibrary(questionLibrary, backfillRequest);
   };
 
   const dismissCorrelationNotificationIds = useCallback(async (ids: string[]) => {
@@ -2787,6 +2780,9 @@ function App() {
                                   question={question}
                                   onDelete={() => removeQuestion(question.id)}
                                   onPatch={(patch) => updateQuestion(question.id, patch)}
+                                  onSectionChange={(section) =>
+                                    updateQuestionSection(question.id, section)
+                                  }
                                 />
                               </div>
                             )}
@@ -3260,6 +3256,7 @@ function QuestionEditor({
   onSave,
   question,
   onPatch,
+  onSectionChange,
   onDelete,
 }: {
   availableSections: string[];
@@ -3275,6 +3272,7 @@ function QuestionEditor({
   onSave: (backfillRequest?: QuestionBackfillRequest | null) => void;
   question: CheckInQuestion;
   onPatch: (patch: Partial<CheckInQuestion>) => void;
+  onSectionChange: (section: string) => void;
   onDelete: () => void;
 }) {
   const children = question.children ?? [];
@@ -3384,7 +3382,7 @@ function QuestionEditor({
     const nextSection = normalizeSectionName(sectionEditorValue);
     if (sectionEditorMode === "add") {
       onAddSection(nextSection);
-      onPatch({ section: nextSection });
+      onSectionChange(nextSection);
     }
     if (sectionEditorMode === "rename") {
       onRenameSection(normalizedSection, nextSection);
@@ -3638,7 +3636,7 @@ function QuestionEditor({
               <select
                 className="focusable min-h-11 min-w-0 flex-1 rounded-2xl bg-panel px-3"
                 value={normalizedSection}
-                onChange={(event) => onPatch({ section: event.target.value })}
+                onChange={(event) => onSectionChange(event.target.value)}
               >
                 {sectionOptions.map((section) => (
                   <option key={section} value={section}>

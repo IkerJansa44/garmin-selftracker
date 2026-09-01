@@ -24,6 +24,7 @@ from src.api import (
     _load_correlation_values_payload,
     _load_dashboard_payload,
     _load_dashboard_plots_payload,
+    _load_questions_payload,
     _normalize_checkin_reminder_settings_payload,
     _normalize_dashboard_plots_payload,
     _normalize_derived_predictors_payload,
@@ -34,6 +35,7 @@ from src.api import (
     _save_checkin_reminder_settings_payload,
     _save_dashboard_plots_payload,
     _save_derived_predictors_payload,
+    _save_questions_payload,
 )
 from src.correlation_notifications import MeaningfulCorrelation
 from src.config import Settings
@@ -105,6 +107,18 @@ def test_send_json_reraises_unexpected_os_error() -> None:
 
     with pytest.raises(OSError, match="I/O error"):
         ApiHandler._send_json(handler, HTTPStatus.OK, {"ok": True})  # type: ignore[arg-type]
+
+
+def test_question_settings_distinguish_unconfigured_from_saved_empty(
+    tmp_path: Path,
+) -> None:
+    db_path = str(tmp_path / "questions.db")
+
+    assert _load_questions_payload(db_path) == {"questions": [], "configured": False}
+
+    _save_questions_payload(db_path, [])
+
+    assert _load_questions_payload(db_path) == {"questions": [], "configured": True}
 
 
 def test_normalize_questions_payload_accepts_valid_payload() -> None:
