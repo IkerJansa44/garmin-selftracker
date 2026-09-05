@@ -138,3 +138,32 @@ The commit is cancelled if any check fails. Run the same checks on demand with:
 ```bash
 .venv/bin/pre-commit run --all-files
 ```
+
+### Multiple instances and URL prefixes
+
+Each separate clone can run as its own Compose project (the clone directory names
+must differ), with a fresh `.env` and its own `data/` directory. Use different
+`DASHBOARD_PORT` values. Do not copy another user's database or Garmin tokens.
+
+For an instance served under `/garmin-joan/`, set these in that clone's `.env`:
+
+```dotenv
+DASHBOARD_PORT=5181
+APP_BASE_PATH=/garmin-joan/
+DASHBOARD_URL=https://your-host/garmin-joan/
+```
+
+`APP_BASE_PATH` defaults to `/`. Set it to any URL path prefix, such as
+`/nil-garmin/`, without changing application code. The dashboard uses it for
+assets, API requests, PDF links, and service-worker scope. Installed-app URLs
+and offline caches are also scoped to each instance. `DASHBOARD_URL` must include
+the same prefix so email and push links reach the correct instance.
+
+Recreate the dashboard after changing the environment. The reverse proxy must
+forward the full prefixed path to the instance's dashboard port; the dashboard
+removes the prefix when forwarding API requests internally. Merely creating a
+Compose instance does not configure a Tailscale route.
+
+When running Vite outside Docker, pass `APP_BASE_PATH` in the shell or set it in
+`web/.env.local`. For static builds, set it at build time. Updating two clones
+requires pulling and rebuilding each separately.

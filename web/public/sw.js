@@ -1,11 +1,13 @@
-const CACHE_NAME = "garmin-selftracker-v2";
+const BASE_URL = new URL(self.registration.scope);
+const CACHE_PREFIX = `garmin-selftracker:${BASE_URL.pathname}:`;
+const CACHE_NAME = `${CACHE_PREFIX}v3`;
 const APP_SHELL = [
   "/",
   "/manifest.webmanifest",
   "/icons/icon-192.png",
   "/icons/icon-512.png",
   "/icons/apple-touch-icon.png",
-];
+].map((path) => new URL(path.slice(1), BASE_URL).href);
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)));
@@ -20,7 +22,9 @@ self.addEventListener("activate", (event) => {
         Promise.all(
           names
             .filter(
-              (name) => name.startsWith("garmin-selftracker-") && name !== CACHE_NAME,
+              (name) => (name.startsWith(CACHE_PREFIX) ||
+                (BASE_URL.pathname === "/" && name.startsWith("garmin-selftracker-"))) &&
+              name !== CACHE_NAME,
             )
             .map((name) => caches.delete(name)),
         ),
@@ -34,7 +38,8 @@ self.addEventListener("fetch", (event) => {
   if (
     event.request.method !== "GET" ||
     url.origin !== self.location.origin ||
-    url.pathname.startsWith("/api/")
+    !url.pathname.startsWith(BASE_URL.pathname) ||
+    url.pathname.startsWith(`${BASE_URL.pathname}api/`)
   ) {
     return;
   }
@@ -47,10 +52,10 @@ self.addEventListener("push", (event) => {
   event.waitUntil(
     self.registration.showNotification(payload.title ?? "Garmin Selftracker", {
       body: payload.body ?? "Open Selftracker to see the latest update.",
-      icon: "/icons/icon-192.png",
-      badge: "/icons/icon-192.png",
+      icon: new URL("icons/icon-192.png", BASE_URL).href,
+      badge: new URL("icons/icon-192.png", BASE_URL).href,
       tag: payload.tag ?? "selftracker-notification",
-      data: { url: payload.url ?? "/" },
+      data: { url: payload.url ?? BASE_URL.href },
     }),
   );
 });
@@ -69,12 +74,13 @@ async function networkFirst(request) {
     }
     return response;
   } catch (error) {
-    const cached = await caches.match(request);
+    const cache = await caches.open(CACHE_NAME);
+    const cached = await cache.match(request);
     if (cached) {
       return cached;
     }
     if (request.mode === "navigate") {
-      const shell = await caches.match("/");
+      const shell = await cache.match(BASE_URL.href);
       if (shell) {
         return shell;
       }
@@ -94,11 +100,13 @@ function readPushPayload(data) {
 }
 
 async function openNotificationTarget(rawUrl) {
-  const target = new URL(rawUrl || "/", self.location.origin);
-  const safeUrl = target.origin === self.location.origin ? target.href : self.location.origin;
+  const target = new URL(rawUrl || BASE_URL.href, BASE_URL);
+  const safeUrl = target.origin === BASE_URL.origin && target.pathname.startsWith(BASE_URL.pathname)
+    ? target.href : BASE_URL.href;
   const windowClients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
   for (const client of windowClients) {
-    if (new URL(client.url).origin !== self.location.origin) continue;
+    const clientUrl = new URL(client.url);
+    if (clientUrl.origin !== BASE_URL.origin || !clientUrl.pathname.startsWith(BASE_URL.pathname)) continue;
     await client.navigate(safeUrl);
     return client.focus();
   }

@@ -1,3 +1,5 @@
+import { appPath } from "./appPath";
+
 import {
   type AnalysisValueRecord,
   type CheckInEntry,
@@ -133,7 +135,7 @@ async function apiRequest<T>(
   failureMessage: string,
   { json, ...options }: ApiRequestOptions = {},
 ): Promise<T> {
-  const response = await fetch(url, {
+  const response = await fetch(appPath(url), {
     ...options,
     ...(json === undefined
       ? {}

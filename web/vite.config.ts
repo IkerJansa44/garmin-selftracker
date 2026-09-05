@@ -14,7 +14,10 @@ function parseAllowedHosts(rawValue: string): string[] {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, ".", "");
 
+  const base = `/${(env.APP_BASE_PATH || "").replace(/^\/+|\/+$/g, "")}/`.replace("//", "/");
+
   return {
+    base,
     plugins: [react()],
     test: {
       include: ["tests/**/*.test.{ts,tsx}"],
@@ -26,9 +29,10 @@ export default defineConfig(({ mode }) => {
       host: true,
       port: 5180,
       proxy: {
-        "/api": {
+        [`${base}api`]: {
           target: env.VITE_PROXY_TARGET || "http://localhost:8000",
           changeOrigin: true,
+          rewrite: (path: string) => `/${path.slice(base.length)}`,
         },
       },
     },

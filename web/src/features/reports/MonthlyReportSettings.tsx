@@ -1,3 +1,4 @@
+import { appPath } from "../../lib/appPath";
 import clsx from "clsx";
 import { Download, FileText, LoaderCircle, Mail } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -146,7 +147,7 @@ export function MonthlyReportSettings() {
             <p className="font-semibold">Latest: {status.report.month}</p>
             <p className="text-muted">{status.report.analysisSource === "codex" ? "Written with Codex" : "Deterministic fallback"}{status.report.emailedAt ? " · emailed" : " · PDF ready"}</p>
           </div>
-          <a className="focusable inline-flex min-h-11 items-center gap-2 rounded-capsule bg-subsurface px-4 font-semibold" href={status.report.downloadUrl} target="_blank" rel="noreferrer">
+          <a className="focusable inline-flex min-h-11 items-center gap-2 rounded-capsule bg-subsurface px-4 font-semibold" href={appPath(status.report.downloadUrl)} target="_blank" rel="noreferrer">
             <Download className="size-4" /> Open PDF
           </a>
         </div>

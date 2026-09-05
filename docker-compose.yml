@@ -22,6 +22,7 @@ services:
       context: ./web
       dockerfile: Dockerfile
     environment:
+      APP_BASE_PATH: ${APP_BASE_PATH:-/}
       VITE_PROXY_TARGET: http://api:8000
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-}
     depends_on:
