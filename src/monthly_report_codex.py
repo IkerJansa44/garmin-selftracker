@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 
 SECTION_KEYS = ("sleep", "training", "selfReported")
+REPORT_MODEL = "gpt-6-astra"
 MAX_RECAP_LENGTH = 520
 MAX_POINT_LENGTH = 150
 
@@ -90,6 +91,8 @@ def generate_editorial_analysis(
                 [
                     "codex",
                     "exec",
+                    "--model",
+                    REPORT_MODEL,
                     "--ephemeral",
                     "--ignore-user-config",
                     "--ignore-rules",

@@ -179,6 +179,15 @@ def test_snapshot_uses_dashboard_metrics_and_prior_90_days(tmp_path: Path) -> No
     assert snapshot["sections"]["training"][2]["current"] == 10
     assert snapshot["sections"]["training"][3]["current"] is None
     assert snapshot["coverage"]["checkinDays"] == 1
+    assert snapshot["calendar"] == [
+        {"date": "2026-08-01", "status": "training"},
+        {"date": "2026-08-02", "status": "rest"},
+    ]
+    full_month = build_monthly_snapshot(
+        db_path, date(2026, 8, 1), today=date(2026, 9, 1)
+    )
+    assert len(full_month["calendar"]) == 31
+    assert full_month["calendar"][2] == {"date": "2026-08-03", "status": "missing"}
 
 
 def test_codex_analysis_validates_json_and_falls_back(tmp_path: Path) -> None:
@@ -274,3 +283,116 @@ def test_pdf_renderer_adds_pages_instead_of_dropping_metrics(tmp_path: Path) -> 
     pdf_bytes = output.read_bytes()
     assert pdf_bytes.startswith(b"%PDF")
     assert len(re.findall(rb"/Type /Page\b", pdf_bytes)) == 5
+
+
+def test_weekly_metrics_have_one_week_suffix() -> None:
+    for key in (
+        *(f"garmin:zone{zone}Minutes" for zone in range(6)),
+        "garmin:zone2PlusMinutes",
+        "garmin:runningKilometers",
+        "garmin:isTrainingDay",
+        "garmin:strengthVolume",
+    ):
+        metric = monthly_reports.METRICS[key]
+        summary = monthly_reports._summarize_metric(
+            key, metric, [], [], current_days=31, direction=None, reduce_method="sum"
+        )
+        assert summary["unit"] == f"{metric.unit}/wk"
+        assert summary["unit"].count("/wk") == 1
+
+
+def test_pdf_metric_values_and_units_fit_narrow_cards() -> None:
+    from unittest.mock import Mock
+
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    from src.monthly_report_pdf import CONTENT_W, TRAIN, _metric_card
+
+    width = (CONTENT_W - 27) / 4
+    for unit, value in (
+        ("min/wk", 128),
+        ("km/wk", 11.5),
+        ("kg/wk", 13239),
+        ("bpm per km/h", 13.9),
+        ("per answered day", 2.5),
+        ("steps", 123456789),
+    ):
+        pdf = Mock()
+        _metric_card(
+            pdf,
+            0,
+            0,
+            width,
+            92,
+            {
+                "label": "Example metric",
+                "current": value,
+                "unit": unit,
+                "decimals": 1,
+                "delta": 0.5,
+                "higherIsBetter": True,
+                "currentSamples": 31,
+                "baselineSamples": 90,
+            },
+            TRAIN,
+        )
+        drawn = []
+        for call in pdf.method_calls:
+            if call[0] == "setFont":
+                font, size = call.args
+            elif call[0] == "drawString":
+                x, _, text = call.args
+                assert x + stringWidth(text, font, size) <= width - 12 + 1e-6
+                drawn.append(text)
+        assert unit in drawn
+        assert f"{value:,.1f}" in drawn
+
+
+def test_highlights_balance_sections_and_exclude_sparse_or_rounded_changes() -> None:
+    from src.monthly_report_pdf import _standout_metrics
+
+    metric = dict(
+        current=10,
+        baseline=5,
+        delta=5,
+        decimals=0,
+        unit="min",
+        currentSamples=20,
+        baselineSamples=60,
+    )
+    sparse = dict(metric, delta=1000, currentSamples=2)
+    unchanged = dict(metric, delta=0.01)
+    snapshot = {
+        "sections": {
+            "sleep": [sparse, unchanged, metric],
+            "training": [dict(metric, delta=1), metric],
+            "selfReported": [sparse, unchanged],
+        }
+    }
+    assert _standout_metrics(snapshot) == [("sleep", metric), ("training", metric)]
+
+
+def test_calendar_renders_six_week_month_and_distinguishes_unknown_days() -> None:
+    from unittest.mock import Mock
+
+    from src.monthly_report_pdf import _calendar_card
+
+    pdf = Mock()
+    _calendar_card(
+        pdf,
+        {
+            "reportMonth": "2026-08",
+            "period": {"end": "2026-08-30"},
+            "calendar": [
+                {"date": "2026-08-01", "status": "training"},
+                {"date": "2026-08-02", "status": "rest"},
+            ],
+        },
+    )
+    dates = [
+        call.args[2] for call in pdf.drawString.call_args_list if call.args[2].isdigit()
+    ]
+    assert dates == [str(day) for day in range(1, 32)]
+    assert (
+        pdf.drawRightString.call_count == 28
+    )  # Unknown Aug 3-30; Aug 31 is outside period.

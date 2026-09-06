@@ -235,32 +235,32 @@ METRICS: dict[str, MetricDefinition] = {
         lambda row: _number(row, "caffeineToSleepGapMinutes"),
     ),
     "garmin:zone0Minutes": MetricDefinition(
-        "Zone 0", "min/wk", 0, True, lambda row: _number(row, "zone0_minutes"), "weekly"
+        "Zone 0", "min", 0, True, lambda row: _number(row, "zone0_minutes"), "weekly"
     ),
     "garmin:zone1Minutes": MetricDefinition(
-        "Zone 1", "min/wk", 0, True, lambda row: _number(row, "zone1_minutes"), "weekly"
+        "Zone 1", "min", 0, True, lambda row: _number(row, "zone1_minutes"), "weekly"
     ),
     "garmin:zone2Minutes": MetricDefinition(
-        "Zone 2", "min/wk", 0, True, lambda row: _number(row, "zone2_minutes"), "weekly"
+        "Zone 2", "min", 0, True, lambda row: _number(row, "zone2_minutes"), "weekly"
     ),
     "garmin:zone3Minutes": MetricDefinition(
-        "Zone 3", "min/wk", 0, True, lambda row: _number(row, "zone3_minutes"), "weekly"
+        "Zone 3", "min", 0, True, lambda row: _number(row, "zone3_minutes"), "weekly"
     ),
     "garmin:zone4Minutes": MetricDefinition(
-        "Zone 4", "min/wk", 0, True, lambda row: _number(row, "zone4_minutes"), "weekly"
+        "Zone 4", "min", 0, True, lambda row: _number(row, "zone4_minutes"), "weekly"
     ),
     "garmin:zone5Minutes": MetricDefinition(
-        "Zone 5", "min/wk", 0, True, lambda row: _number(row, "zone5_minutes"), "weekly"
+        "Zone 5", "min", 0, True, lambda row: _number(row, "zone5_minutes"), "weekly"
     ),
     "garmin:zone2PlusMinutes": MetricDefinition(
-        "Zone 2+", "min/wk", 0, True, _zones, "weekly"
+        "Zone 2+", "min", 0, True, _zones, "weekly"
     ),
     "garmin:runningKilometers": MetricDefinition(
-        "Running", "km/wk", 1, True, lambda row: _number(row, "running_km"), "weekly"
+        "Running", "km", 1, True, lambda row: _number(row, "running_km"), "weekly"
     ),
     "garmin:isTrainingDay": MetricDefinition(
         "Training days",
-        "days/wk",
+        "days",
         1,
         True,
         lambda row: _number(row, "is_training_day"),
@@ -444,6 +444,17 @@ def build_monthly_snapshot(
             "checkinDays": current_checkins,
             "baselineCheckinDays": baseline_checkins,
         },
+        "calendar": [
+            {
+                "date": row["date"],
+                "status": "training"
+                if row.get("isTrainingDay")
+                else "missing"
+                if row["importGap"]
+                else "rest",
+            }
+            for row in current_rows
+        ],
         "sections": {
             "sleep": sleep,
             "training": training,
