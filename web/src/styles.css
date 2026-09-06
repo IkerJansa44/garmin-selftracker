@@ -57,12 +57,13 @@ textarea {
   font-variant-numeric: tabular-nums;
 }
 
-.checkin-time-input {
+.settings-date-time-input {
+  @apply block w-full min-w-0 max-w-full appearance-none;
   line-height: 2.75rem;
   padding-block: 0;
 }
 
-.checkin-time-input::-webkit-date-and-time-value {
+.settings-date-time-input::-webkit-date-and-time-value {
   align-items: center;
   display: flex;
   height: 2.75rem;
@@ -72,7 +73,7 @@ textarea {
   text-align: center;
 }
 
-.checkin-time-input::-webkit-datetime-edit {
+.settings-date-time-input::-webkit-datetime-edit {
   align-items: center;
   display: flex;
   height: 2.75rem;

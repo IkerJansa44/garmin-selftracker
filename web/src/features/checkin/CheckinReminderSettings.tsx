@@ -139,7 +139,7 @@ export function CheckinReminderSettings() {
             Notify after
           </span>
           <input
-            className="checkin-time-input focusable block h-11 w-full min-w-0 max-w-full appearance-none rounded-2xl bg-subsurface px-3 text-center disabled:cursor-not-allowed disabled:opacity-60"
+            className="settings-date-time-input focusable h-11 rounded-2xl bg-subsurface px-3 text-center disabled:cursor-not-allowed disabled:opacity-60"
             disabled={!settings.enabled}
             step={60}
             type="time"

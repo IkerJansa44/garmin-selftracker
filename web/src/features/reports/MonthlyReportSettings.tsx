@@ -119,9 +119,9 @@ export function MonthlyReportSettings() {
           Email automatically
           <input checked={settings.enabled} type="checkbox" onChange={(event) => setSettings((previous) => ({ ...previous, enabled: event.target.checked }))} />
         </label>
-        <label className="rounded-2xl bg-panel p-4 text-sm">
+        <label className="min-w-0 rounded-2xl bg-panel p-4 text-sm">
           <span className="mb-2 block text-xs uppercase tracking-[0.14em] text-muted">First day, after</span>
-          <input className="focusable h-11 w-full rounded-2xl bg-subsurface px-3" disabled={!settings.enabled} type="time" value={settings.sendAfter} onChange={(event) => setSettings((previous) => ({ ...previous, sendAfter: event.target.value }))} />
+          <input className="settings-date-time-input focusable h-11 rounded-2xl bg-subsurface px-3" disabled={!settings.enabled} type="time" value={settings.sendAfter} onChange={(event) => setSettings((previous) => ({ ...previous, sendAfter: event.target.value }))} />
         </label>
       </div>
       <p className="mt-2 text-xs text-muted">
@@ -129,9 +129,9 @@ export function MonthlyReportSettings() {
       </p>
 
       <div className="mt-3 flex flex-wrap items-end gap-3 rounded-2xl bg-panel p-4">
-        <label className="min-w-44 flex-1 text-sm">
+        <label className="min-w-0 flex-1 basis-44 text-sm">
           <span className="mb-2 block text-xs uppercase tracking-[0.14em] text-muted">Report month</span>
-          <input className="focusable h-11 w-full rounded-2xl bg-subsurface px-3" max={new Date().toISOString().slice(0, 7)} type="month" value={month} onChange={(event) => setMonth(event.target.value)} />
+          <input className="settings-date-time-input focusable h-11 rounded-2xl bg-subsurface px-3" max={new Date().toISOString().slice(0, 7)} type="month" value={month} onChange={(event) => setMonth(event.target.value)} />
         </label>
         <button className="focusable min-h-11 rounded-capsule bg-subsurface px-4 text-sm font-semibold" disabled={isRunning} type="button" onClick={() => void generate(false)}>
           <span className="inline-flex items-center gap-2">{isRunning ? <LoaderCircle className="size-4 animate-spin" /> : <FileText className="size-4" />} Generate PDF</span>
