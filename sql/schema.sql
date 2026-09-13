@@ -57,6 +57,8 @@ CREATE TABLE IF NOT EXISTS activities (
     average_hr REAL,
     max_hr REAL,
     calories REAL,
+    aerobic_training_effect REAL,
+    anaerobic_training_effect REAL,
     raw_json TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

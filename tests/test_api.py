@@ -1137,6 +1137,60 @@ def test_load_correlation_values_payload_uses_materialized_analysis_values(
     assert target_rem_or_deep_pct["sourceDate"] == "2026-02-21"
 
 
+def test_correlation_values_pair_strongest_training_effect_with_its_sleep_gap(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "garmin.db"
+    connection = connect_db(str(db_path))
+    init_db(connection)
+    connection.execute(
+        """
+        INSERT INTO daily_metrics (metric_date, fell_asleep_at, updated_at)
+        VALUES ('2026-02-21', '2026-02-20T23:00:00+00:00', '2026-02-21T06:00:00+00:00')
+        """
+    )
+    sessions = (
+        (1, "2026-02-20 18:00:00", 3600, 4.0, 1.0),
+        (2, "2026-02-20 20:00:00", 1800, 4.0, 2.0),
+        (3, "2026-02-20 21:00:00", 1800, 2.0, 3.5),
+    )
+    connection.executemany(
+        """
+        INSERT INTO activities (
+            garmin_activity_id,
+            start_time_local,
+            duration_seconds,
+            aerobic_training_effect,
+            anaerobic_training_effect,
+            raw_json,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, '{}', '2026-02-21T06:00:00+00:00')
+        """,
+        sessions,
+    )
+    connection.commit()
+    connection.close()
+
+    values = _load_correlation_values_payload(
+        str(db_path),
+        from_date=date(2026, 2, 21),
+        to_date=date(2026, 2, 21),
+    )
+    predictors = {
+        value["featureKey"]: value for value in values if value["role"] == "predictor"
+    }
+
+    assert predictors["garmin:strongestAerobicTrainingEffect"]["valueNum"] == 4.0
+    assert predictors["garmin:strongestAerobicToSleepGapMinutes"]["valueNum"] == 150
+    assert predictors["garmin:strongestAnaerobicTrainingEffect"]["valueNum"] == 3.5
+    assert predictors["garmin:strongestAnaerobicToSleepGapMinutes"]["valueNum"] == 90
+    assert (
+        predictors["garmin:strongestAerobicTrainingEffect"]["sourceDate"]
+        == "2026-02-20"
+    )
+
+
 def test_load_dashboard_payload_includes_fell_asleep_iso_field(tmp_path: Path) -> None:
     db_path = tmp_path / "garmin.db"
     metric_date = date.today().isoformat()

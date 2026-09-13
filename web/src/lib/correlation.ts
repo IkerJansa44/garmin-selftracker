@@ -25,6 +25,10 @@ type GarminPredictorKey =
   | "stressAvg"
   | "bodyBattery"
   | "runningKilometers"
+  | "strongestAerobicTrainingEffect"
+  | "strongestAerobicToSleepGapMinutes"
+  | "strongestAnaerobicTrainingEffect"
+  | "strongestAnaerobicToSleepGapMinutes"
   | "sleepSeconds"
   | "vo2Max"
   | "avgHr1hBeforeSleep"
@@ -78,6 +82,28 @@ export interface CorrelationPairResult {
   categoryCounts: number[] | null;
 }
 
+export type TrainingEffectPathway = "aerobic" | "anaerobic";
+
+export interface TrainingSleepInteractionPoint {
+  date: string;
+  effect: number;
+  gapHours: number;
+  outcome: number;
+}
+
+export interface TrainingSleepInteractionResult {
+  pathway: TrainingEffectPathway;
+  points: TrainingSleepInteractionPoint[];
+  sampleCount: number;
+  interactionCoefficient: number | null;
+  interactionPValue: number | null;
+  predictionLines: Array<{
+    effect: number;
+    label: string;
+    points: Array<{ gapHours: number; outcome: number }>;
+  }>;
+}
+
 const GAP_PREDICTOR_LABELS = Object.fromEntries(
   DERIVED_GAP_METRICS.map((metric) => [metric.key, metric.predictorLabel]),
 ) as Record<DerivedGapMetricKey, string>;
@@ -88,6 +114,10 @@ const GARMIN_PREDICTOR_LABELS: Record<GarminPredictorKey, string> = {
   stressAvg: "Stress Avg",
   bodyBattery: "Body Battery",
   runningKilometers: "Running Distance (km)",
+  strongestAerobicTrainingEffect: "Strongest Aerobic Training Effect",
+  strongestAerobicToSleepGapMinutes: "Strongest Aerobic Session to Sleep (min)",
+  strongestAnaerobicTrainingEffect: "Strongest Anaerobic Training Effect",
+  strongestAnaerobicToSleepGapMinutes: "Strongest Anaerobic Session to Sleep (min)",
   sleepSeconds: "Sleep Duration (h)",
   vo2Max: "VO2 Max",
   avgHr1hBeforeSleep: "Avg HR 1h Before Sleep",
@@ -237,6 +267,140 @@ function fDistributionCdf(value: number, d1: number, d2: number): number {
   }
   const transformed = (d1 * value) / (d1 * value + d2);
   return regularizedIncompleteBeta(transformed, d1 / 2, d2 / 2);
+}
+
+function invertMatrix(matrix: number[][]): number[][] | null {
+  const size = matrix.length;
+  const augmented = matrix.map((row, rowIndex) => [
+    ...row,
+    ...Array.from({ length: size }, (_, columnIndex) => rowIndex === columnIndex ? 1 : 0),
+  ]);
+  for (let column = 0; column < size; column += 1) {
+    let pivot = column;
+    for (let row = column + 1; row < size; row += 1) {
+      if (Math.abs(augmented[row][column]) > Math.abs(augmented[pivot][column])) pivot = row;
+    }
+    if (Math.abs(augmented[pivot][column]) < 1e-10) return null;
+    [augmented[column], augmented[pivot]] = [augmented[pivot], augmented[column]];
+    const divisor = augmented[column][column];
+    augmented[column] = augmented[column].map((value) => value / divisor);
+    for (let row = 0; row < size; row += 1) {
+      if (row === column) continue;
+      const factor = augmented[row][column];
+      augmented[row] = augmented[row].map(
+        (value, index) => value - factor * augmented[column][index],
+      );
+    }
+  }
+  return augmented.map((row) => row.slice(size));
+}
+
+function quantile(values: number[], fraction: number): number {
+  const sorted = [...values].sort((left, right) => left - right);
+  const rank = fraction * (sorted.length - 1);
+  const lower = Math.floor(rank);
+  const weight = rank - lower;
+  return sorted[lower] * (1 - weight) + sorted[Math.ceil(rank)] * weight;
+}
+
+export function buildTrainingSleepInteraction(
+  analysisValues: AnalysisValueRecord[],
+  questions: CheckInQuestion[],
+  outcome: OutcomeKey,
+  pathway: TrainingEffectPathway,
+): TrainingSleepInteractionResult {
+  const title = pathway[0].toUpperCase() + pathway.slice(1);
+  const effectKey = `garmin:strongest${title}TrainingEffect`;
+  const gapKey = `garmin:strongest${title}ToSleepGapMinutes`;
+  const analysisValueIndex = buildAnalysisValueIndex(analysisValues);
+  const questionFields = flattenQuestionFields(questions);
+  const questionsById = new Map(questionFields.map((question) => [question.id, question]));
+  const byDate = new Map<string, Map<string, AnalysisValueRecord>>();
+  for (const value of analysisValues) {
+    const values = byDate.get(value.analysisDate) ?? new Map<string, AnalysisValueRecord>();
+    values.set(`${value.role}:${value.featureKey}`, value);
+    byDate.set(value.analysisDate, values);
+  }
+  const points: TrainingSleepInteractionPoint[] = [];
+  for (const [date, values] of byDate) {
+    const effect = analysisNumericValue(values.get(`predictor:${effectKey}`));
+    const gapMinutes = analysisNumericValue(values.get(`predictor:${gapKey}`));
+    const outcomeValue = parseOutcomeValue(outcome, analysisValueIndex, questionsById, date);
+    if (effect === null || gapMinutes === null || outcomeValue === null) continue;
+    points.push({ date, effect, gapHours: gapMinutes / 60, outcome: outcomeValue.value });
+  }
+
+  const emptyResult = {
+    pathway,
+    points,
+    sampleCount: points.length,
+    interactionCoefficient: null,
+    interactionPValue: null,
+    predictionLines: [],
+  };
+  if (points.length < 5) return emptyResult;
+
+  const effects = points.map((point) => point.effect);
+  const gaps = points.map((point) => point.gapHours);
+  const effectMean = mean(effects);
+  const gapMean = mean(gaps);
+  const effectScale = Math.sqrt(mean(effects.map((value) => (value - effectMean) ** 2)));
+  const gapScale = Math.sqrt(mean(gaps.map((value) => (value - gapMean) ** 2)));
+  if (effectScale === 0 || gapScale === 0) return emptyResult;
+
+  const design = points.map((point) => {
+    const effectZ = (point.effect - effectMean) / effectScale;
+    const gapZ = (point.gapHours - gapMean) / gapScale;
+    return [1, effectZ, gapZ, effectZ * gapZ];
+  });
+  const xtx = Array.from({ length: 4 }, (_, row) => Array.from(
+    { length: 4 },
+    (_, column) => design.reduce((sum, values) => sum + values[row] * values[column], 0),
+  ));
+  const inverse = invertMatrix(xtx);
+  if (!inverse) return emptyResult;
+  const xty = Array.from({ length: 4 }, (_, column) => design.reduce(
+    (sum, values, index) => sum + values[column] * points[index].outcome,
+    0,
+  ));
+  const coefficients = inverse.map((row) => row.reduce(
+    (sum, value, index) => sum + value * xty[index],
+    0,
+  ));
+  const predict = (effect: number, gapHours: number) => {
+    const effectZ = (effect - effectMean) / effectScale;
+    const gapZ = (gapHours - gapMean) / gapScale;
+    return coefficients[0] + coefficients[1] * effectZ + coefficients[2] * gapZ
+      + coefficients[3] * effectZ * gapZ;
+  };
+  const residualSum = points.reduce(
+    (sum, point) => sum + (point.outcome - predict(point.effect, point.gapHours)) ** 2,
+    0,
+  );
+  const degreesOfFreedom = points.length - 4;
+  const standardError = Math.sqrt((residualSum / degreesOfFreedom) * inverse[3][3]);
+  const interactionPValue = standardError === 0
+    ? (coefficients[3] === 0 ? 1 : 0)
+    : clamp(1 - fDistributionCdf((coefficients[3] / standardError) ** 2, 1, degreesOfFreedom), 0, 1);
+  const minimumGap = Math.min(...gaps);
+  const maximumGap = Math.max(...gaps);
+  const effectLevels = [quantile(effects, 0.25), quantile(effects, 0.75)];
+  const predictionLines = effectLevels.map((effect, index) => ({
+    effect,
+    label: `${index === 0 ? "Lower" : "Stronger"} effect (${effect.toFixed(1)})`,
+    points: Array.from({ length: 25 }, (_, pointIndex) => {
+      const gapHours = minimumGap + (maximumGap - minimumGap) * pointIndex / 24;
+      return { gapHours, outcome: predict(effect, gapHours) };
+    }),
+  }));
+  return {
+    pathway,
+    points,
+    sampleCount: points.length,
+    interactionCoefficient: coefficients[3],
+    interactionPValue,
+    predictionLines,
+  };
 }
 
 function calculateRegression(xs: number[], ys: number[]): { slope: number; intercept: number } {

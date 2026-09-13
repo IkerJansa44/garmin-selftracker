@@ -474,6 +474,8 @@ def normalize_activities(day_payload: DayPayload) -> list[dict[str, Any]]:
                 "average_hr": entry.get("averageHR") or entry.get("avgHr"),
                 "max_hr": entry.get("maxHR") or entry.get("maxHr"),
                 "calories": entry.get("calories"),
+                "aerobic_training_effect": entry.get("aerobicTrainingEffect"),
+                "anaerobic_training_effect": entry.get("anaerobicTrainingEffect"),
                 "raw_json": entry,
             }
         )

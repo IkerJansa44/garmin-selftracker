@@ -35,6 +35,11 @@ REQUIRED_DAILY_METRICS_COLUMNS = {
     "zone4_minutes": "INTEGER",
     "zone5_minutes": "INTEGER",
 }
+REQUIRED_ACTIVITY_COLUMNS = {
+    "aerobic_training_effect": "REAL",
+    "anaerobic_training_effect": "REAL",
+}
+MAX_ACTIVITY_TO_SLEEP_GAP_MINUTES = 24 * 60
 
 
 def utc_now() -> str:
@@ -53,6 +58,7 @@ def init_db(connection: sqlite3.Connection) -> None:
     schema_sql = SCHEMA_PATH.read_text(encoding="utf-8")
     connection.executescript(schema_sql)
     _ensure_daily_metrics_columns(connection)
+    _ensure_activity_columns(connection)
     connection.commit()
 
 
@@ -66,6 +72,30 @@ def _ensure_daily_metrics_columns(connection: sqlite3.Connection) -> None:
             continue
         connection.execute(
             f"ALTER TABLE daily_metrics ADD COLUMN {column_name} {column_type}"
+        )
+
+
+def _ensure_activity_columns(connection: sqlite3.Connection) -> None:
+    existing_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(activities)").fetchall()
+    }
+    added_columns: list[str] = []
+    for column_name, column_type in REQUIRED_ACTIVITY_COLUMNS.items():
+        if column_name in existing_columns:
+            continue
+        connection.execute(
+            f"ALTER TABLE activities ADD COLUMN {column_name} {column_type}"
+        )
+        added_columns.append(column_name)
+    json_keys = {
+        "aerobic_training_effect": "aerobicTrainingEffect",
+        "anaerobic_training_effect": "anaerobicTrainingEffect",
+    }
+    for column_name in added_columns:
+        connection.execute(
+            f"UPDATE activities SET {column_name} = json_extract(raw_json, ?)",
+            (f"$.{json_keys[column_name]}",),
         )
 
 
@@ -252,10 +282,12 @@ def upsert_activity(connection: sqlite3.Connection, activity: dict[str, Any]) ->
             average_hr,
             max_hr,
             calories,
+            aerobic_training_effect,
+            anaerobic_training_effect,
             raw_json,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(garmin_activity_id) DO UPDATE SET
             activity_name = excluded.activity_name,
             activity_type = excluded.activity_type,
@@ -265,6 +297,8 @@ def upsert_activity(connection: sqlite3.Connection, activity: dict[str, Any]) ->
             average_hr = excluded.average_hr,
             max_hr = excluded.max_hr,
             calories = excluded.calories,
+            aerobic_training_effect = excluded.aerobic_training_effect,
+            anaerobic_training_effect = excluded.anaerobic_training_effect,
             raw_json = excluded.raw_json,
             updated_at = excluded.updated_at
         """,
@@ -278,6 +312,8 @@ def upsert_activity(connection: sqlite3.Connection, activity: dict[str, Any]) ->
             activity.get("average_hr"),
             activity.get("max_hr"),
             activity.get("calories"),
+            activity.get("aerobic_training_effect"),
+            activity.get("anaerobic_training_effect"),
             json.dumps(activity.get("raw_json", {})),
             utc_now(),
         ),
@@ -627,6 +663,66 @@ def _datetime_from_any(value: Any) -> datetime | None:
         return datetime.fromtimestamp(seconds, tz=timezone.utc)
     except (OSError, OverflowError, ValueError):
         return None
+
+
+def _local_wall_datetime(value: Any) -> datetime | None:
+    parsed = _datetime_from_any(value)
+    return parsed.replace(tzinfo=None) if parsed is not None else None
+
+
+def build_strongest_training_effects_by_metric_date(
+    connection: sqlite3.Connection,
+    daily_metric_rows: list[sqlite3.Row],
+) -> dict[str, dict[str, tuple[float, float]]]:
+    """Pair each effect pathway's strongest prior-day activity with its sleep gap."""
+    activities_by_date: dict[str, list[sqlite3.Row]] = {}
+    for activity in connection.execute(
+        """
+        SELECT
+            start_time_local,
+            duration_seconds,
+            aerobic_training_effect,
+            anaerobic_training_effect
+        FROM activities
+        WHERE start_time_local IS NOT NULL
+        """
+    ).fetchall():
+        activities_by_date.setdefault(
+            str(activity["start_time_local"])[:10], []
+        ).append(activity)
+
+    summaries: dict[str, dict[str, tuple[float, float]]] = {}
+    for metric in daily_metric_rows:
+        metric_date = str(metric["metric_date"])
+        source_date = _shift_iso_date(metric_date, -1)
+        sleep_at = _local_wall_datetime(metric["fell_asleep_at"])
+        if source_date is None or sleep_at is None:
+            continue
+
+        strongest: dict[str, tuple[float, datetime, float]] = {}
+        for activity in activities_by_date.get(source_date, []):
+            started_at = _local_wall_datetime(activity["start_time_local"])
+            duration_seconds = _as_float(activity["duration_seconds"])
+            if started_at is None or duration_seconds is None or duration_seconds < 0:
+                continue
+            ended_at = started_at + timedelta(seconds=duration_seconds)
+            gap_minutes = (sleep_at - ended_at).total_seconds() / 60
+            if not 0 <= gap_minutes <= MAX_ACTIVITY_TO_SLEEP_GAP_MINUTES:
+                continue
+            for pathway in ("aerobic", "anaerobic"):
+                effect = _as_float(activity[f"{pathway}_training_effect"])
+                if effect is None:
+                    continue
+                current = strongest.get(pathway)
+                if current is None or (effect, ended_at) > (current[0], current[1]):
+                    strongest[pathway] = (effect, ended_at, gap_minutes)
+
+        if strongest:
+            summaries[metric_date] = {
+                pathway: (effect, gap_minutes)
+                for pathway, (effect, _, gap_minutes) in strongest.items()
+            }
+    return summaries
 
 
 def _average_hr_before_sleep_from_payloads(
@@ -1009,10 +1105,36 @@ def rebuild_analysis_values(connection: sqlite3.Connection) -> None:
         for row in daily_metric_rows
         if row["metric_date"] is not None
     }
+    strongest_training_effects = build_strongest_training_effects_by_metric_date(
+        connection, daily_metric_rows
+    )
 
     for row in daily_metric_rows:
         source_date = str(row["metric_date"])
         predictor_analysis_date = _shift_iso_date(source_date, 1)
+
+        training_source_date = _shift_iso_date(source_date, -1)
+        if training_source_date is not None:
+            for pathway, (effect, gap_minutes) in strongest_training_effects.get(
+                source_date, {}
+            ).items():
+                for suffix, value_num in (
+                    ("TrainingEffect", effect),
+                    ("ToSleepGapMinutes", gap_minutes),
+                ):
+                    _append_analysis_row(
+                        rows_to_insert,
+                        analysis_date=source_date,
+                        role="predictor",
+                        feature_key=f"garmin:strongest{pathway.title()}{suffix}",
+                        value_num=value_num,
+                        value_text=None,
+                        value_bool=None,
+                        source_date=training_source_date,
+                        lag_days=-1,
+                        alignment_rule=f"strongest_{pathway}_session_previous_night",
+                        refreshed_at=refreshed_at,
+                    )
 
         if predictor_analysis_date is not None:
             for feature_key, column_name in (

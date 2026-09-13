@@ -23,6 +23,7 @@ import {
   buildOutcomeOptions,
   buildPredictorDistribution,
   buildPredictorOptions,
+  buildTrainingSleepInteraction,
   calculateQuantileCutPoints,
   findCorrelationPair,
   getOptionLabel,
@@ -31,6 +32,8 @@ import {
   type CorrelationPairResult,
   type OutcomeKey,
   type PredictorKey,
+  type TrainingEffectPathway,
+  type TrainingSleepInteractionResult,
 } from "../../lib/correlation";
 import { flattenQuestionFields, type QuestionFieldDefinition } from "../../lib/questions";
 import { fetchDerivedPredictors, saveDerivedPredictors } from "../../lib/api";
@@ -124,6 +127,10 @@ export interface CorrelationController {
   showNewVariablePanel: boolean;
   topCorrelationMode: "target" | "predictor";
   topCorrelationOutcomeOptions: CorrelationOption[];
+  trainingEffectPathway: TrainingEffectPathway;
+  trainingSleepInteraction: TrainingSleepInteractionResult;
+  trainingSleepOutcomeAxis: NumericAxis | undefined;
+  setTrainingEffectPathway: Dispatch<SetStateAction<TrainingEffectPathway>>;
   trendLineData: Array<{ x: number; y: number }>;
   getMetricColor: (metric: MetricKey) => string;
   formatTooltipNumber: (value: number) => string;
@@ -136,6 +143,10 @@ type GarminKey =
   | "stressAvg"
   | "bodyBattery"
   | "runningKilometers"
+  | "strongestAerobicTrainingEffect"
+  | "strongestAerobicToSleepGapMinutes"
+  | "strongestAnaerobicTrainingEffect"
+  | "strongestAnaerobicToSleepGapMinutes"
   | "sleepSeconds"
   | "vo2Max"
   | "avgHr1hBeforeSleep"
@@ -157,6 +168,10 @@ const GARMIN_META: Record<GarminKey, { label: string; unit: string }> = {
   stressAvg: { label: "Stress Avg", unit: "pts" },
   bodyBattery: { label: "Body Battery", unit: "%" },
   runningKilometers: { label: "Running Distance", unit: "km" },
+  strongestAerobicTrainingEffect: { label: "Strongest Aerobic Training Effect", unit: "" },
+  strongestAerobicToSleepGapMinutes: { label: "Strongest Aerobic Session to Sleep", unit: "min" },
+  strongestAnaerobicTrainingEffect: { label: "Strongest Anaerobic Training Effect", unit: "" },
+  strongestAnaerobicToSleepGapMinutes: { label: "Strongest Anaerobic Session to Sleep", unit: "min" },
   sleepSeconds: { label: "Sleep Duration", unit: "h" },
   vo2Max: { label: "VO2 Max", unit: "ml/kg/min" },
   avgHr1hBeforeSleep: { label: "Avg HR 1h Before Sleep", unit: "bpm" },
@@ -349,6 +364,7 @@ export interface CorrelationFeatureInputs {
 export function useCorrelationFeature(inputs: CorrelationFeatureInputs): CorrelationController {
   const { records, analysisValues, questions, questionLoadState, predictorKey, outcomeKey, setPredictorKey, setOutcomeKey } = inputs;
   const [topCorrelationMode, setTopCorrelationMode] = useState<"target" | "predictor">("target");
+  const [trainingEffectPathway, setTrainingEffectPathway] = useState<TrainingEffectPathway>("aerobic");
   const [activeTooltip, setActiveTooltip] = useState<{ point: CorrelationPairResult["points"][number]; position: { x: number; y: number } } | null>(null);
   const [showNewVariablePanel, setShowNewVariablePanel] = useState(false);
   const [derivedPredictors, setDerivedPredictors] = useState<DerivedPredictorDefinition[]>([]);
@@ -417,6 +433,14 @@ export function useCorrelationFeature(inputs: CorrelationFeatureInputs): Correla
   const predictorOptions = useMemo(() => buildPredictorOptions(questions, derivedPredictors), [derivedPredictors, questions]);
   const derivedSourceOptions = useMemo(() => buildDerivedPredictorSourceOptions(questions), [questions]);
   const outcomeOptions = useMemo(() => buildOutcomeOptions(questions), [questions]);
+  const trainingSleepInteraction = useMemo(
+    () => buildTrainingSleepInteraction(analysisValues, questions, outcomeKey, trainingEffectPathway),
+    [analysisValues, outcomeKey, questions, trainingEffectPathway],
+  );
+  const trainingSleepOutcomeAxis = useMemo(() => numericAxis([
+    ...trainingSleepInteraction.points.map((point) => point.outcome),
+    ...trainingSleepInteraction.predictionLines.flatMap((line) => line.points.map((point) => point.outcome)),
+  ]), [trainingSleepInteraction]);
 
   useEffect(() => {
     if (predictorOptions.some((option) => option.key === predictorKey) || !predictorOptions.length) return;
@@ -574,7 +598,8 @@ export function useCorrelationFeature(inputs: CorrelationFeatureInputs): Correla
     selectedCorrelationPair, selectedDerivedSource, setDerivedBins, setDerivedLabelsInput, setDerivedMode,
     setDerivedName, setDerivedThresholdInput, setOutcomeKey, setPredictorKey, setSelectedDerivedSource,
     setShowNewVariablePanel, setTopCorrelationMode, showNewVariablePanel, topCorrelationMode,
-    topCorrelationOutcomeOptions: outcomeOptions, trendLineData, getMetricColor: metricColor,
+    topCorrelationOutcomeOptions: outcomeOptions, trainingEffectPathway, trainingSleepInteraction,
+    trainingSleepOutcomeAxis, setTrainingEffectPathway, trendLineData, getMetricColor: metricColor,
     formatTooltipNumber: formatNumber, describeCorrelationDirection: directionDescription,
   };
 }

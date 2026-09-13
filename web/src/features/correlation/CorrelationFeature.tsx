@@ -2,6 +2,7 @@ import clsx from "clsx";
 import { LoaderCircle } from "lucide-react";
 import {
   CartesianGrid,
+  Cell,
   ComposedChart,
   Line,
   ReferenceLine,
@@ -81,6 +82,10 @@ export function CorrelationFeature({ controller }: { controller: CorrelationCont
     showNewVariablePanel,
     topCorrelationMode,
     topCorrelationOutcomeOptions,
+    trainingEffectPathway,
+    trainingSleepInteraction,
+    trainingSleepOutcomeAxis,
+    setTrainingEffectPathway,
     trendLineData,
     formatTooltipNumber,
     describeCorrelationDirection,
@@ -92,7 +97,7 @@ export function CorrelationFeature({ controller }: { controller: CorrelationCont
                 <div>
                   <h2 className="text-xl font-semibold tracking-tight">Correlation Lab</h2>
                   <p className="mt-1 text-sm text-muted">
-                    Univariate associations only. Predictors can correlate with each other, so results are directional signals, not causality.
+                    Explore directional associations and whether stronger training close to sleep changes recovery outcomes. Results do not establish causality.
                   </p>
                 </div>
                 <button
@@ -103,6 +108,156 @@ export function CorrelationFeature({ controller }: { controller: CorrelationCont
                   + New Variable
                 </button>
               </div>
+            </article>
+
+            <article className="panel p-6 sm:p-8">
+              <header className="mb-4 flex flex-wrap items-end justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-semibold tracking-tight">Strong Training Close to Sleep</h3>
+                  <p className="text-sm text-muted">
+                    Tests the interaction between the strongest session&apos;s training effect and its finish-to-sleep gap.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-end gap-3">
+                  <div className="flex rounded-capsule bg-subsurface p-1">
+                    {(["aerobic", "anaerobic"] as const).map((pathway) => (
+                      <button
+                        key={pathway}
+                        className={clsx(
+                          "focusable min-h-10 rounded-capsule px-4 text-sm font-semibold capitalize transition",
+                          trainingEffectPathway === pathway ? "bg-accent text-white" : "text-muted hover:text-ink",
+                        )}
+                        type="button"
+                        onClick={() => setTrainingEffectPathway(pathway)}
+                      >
+                        {pathway}
+                      </button>
+                    ))}
+                  </div>
+                  <label className="space-y-1 text-sm">
+                    <span className="block text-xs uppercase tracking-[0.16em] text-muted">Outcome</span>
+                    <select
+                      className="focusable min-h-11 rounded-2xl bg-subsurface px-3"
+                      value={outcomeKey}
+                      onChange={(event) => setOutcomeKey(event.target.value as OutcomeKey)}
+                    >
+                      {outcomeOptions.map((option) => (
+                        <option key={option.key} value={option.key}>{option.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              </header>
+              {trainingSleepInteraction.sampleCount < 5 ? (
+                <p className="rounded-2xl bg-subsurface px-4 py-3 text-sm text-muted">
+                  At least five nights with a recorded training effect, sleep time, and outcome are needed. Current N={trainingSleepInteraction.sampleCount}.
+                </p>
+              ) : (
+                <>
+                  <div className="mb-4 grid gap-2 sm:grid-cols-3">
+                    <div className="rounded-2xl bg-subsurface px-4 py-3">
+                      <p className="text-xs uppercase tracking-[0.14em] text-muted">Nights</p>
+                      <p className="metric-number mt-1 text-lg font-semibold">{trainingSleepInteraction.sampleCount}</p>
+                    </div>
+                    <div className="rounded-2xl bg-subsurface px-4 py-3">
+                      <p className="text-xs uppercase tracking-[0.14em] text-muted">Interaction coefficient</p>
+                      <p className="metric-number mt-1 text-lg font-semibold">
+                        {trainingSleepInteraction.interactionCoefficient?.toFixed(3) ?? "--"}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl bg-subsurface px-4 py-3">
+                      <p className="text-xs uppercase tracking-[0.14em] text-muted">Interaction p-value</p>
+                      <p className="metric-number mt-1 text-lg font-semibold">
+                        {trainingSleepInteraction.interactionPValue?.toExponential(2) ?? "--"}
+                      </p>
+                    </div>
+                  </div>
+                  <p className="mb-3 text-sm text-muted">
+                    {trainingSleepInteraction.interactionPValue !== null && trainingSleepInteraction.interactionPValue < 0.05
+                      ? "The association between training effect and this outcome changes with the time to sleep in the current sample."
+                      : "No clear timing-by-intensity interaction yet; keep collecting nights to improve sensitivity."}
+                  </p>
+                  <div className="mb-2 flex flex-wrap gap-4 text-xs text-muted">
+                    {trainingSleepInteraction.predictionLines.map((line, index) => (
+                      <span key={line.label} className="inline-flex items-center gap-2">
+                        <span className={clsx("h-0.5 w-6", index === 0 ? "bg-[#3f6686]" : "bg-[#cc5833]")} />
+                        {line.label}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="h-[360px]">
+                    <ResponsiveContainer>
+                      <ComposedChart margin={{ bottom: 20, left: 8, right: 8, top: 8 }}>
+                        <CartesianGrid stroke="rgba(18,18,18,0.06)" strokeDasharray="3 6" />
+                        <XAxis
+                          axisLine={false}
+                          dataKey="gapHours"
+                          label={{ value: "Strongest session finish to sleep (hours)", position: "insideBottom", offset: -10 }}
+                          name="Gap to sleep"
+                          tick={{ fontSize: 12 }}
+                          tickLine={false}
+                          type="number"
+                          unit="h"
+                        />
+                        <YAxis
+                          axisLine={false}
+                          dataKey="outcome"
+                          domain={trainingSleepOutcomeAxis?.domain}
+                          label={{
+                            value: getOptionLabel(outcomeOptions, outcomeKey, outcomeKey),
+                            angle: -90,
+                            position: "insideLeft",
+                            style: { textAnchor: "middle" },
+                          }}
+                          tick={{ fontSize: 12 }}
+                          tickLine={false}
+                          ticks={trainingSleepOutcomeAxis?.ticks}
+                          type="number"
+                        />
+                        <Tooltip
+                          cursor={{ stroke: "rgba(18,18,18,0.18)", strokeDasharray: "3 3" }}
+                          content={({ active, payload }) => {
+                            const point = payload?.[0]?.payload as typeof trainingSleepInteraction.points[number] | undefined;
+                            if (!active || !point || typeof point.effect !== "number") return null;
+                            return (
+                              <div className="rounded-xl border border-black/10 bg-white/95 px-3 py-2 text-xs shadow-sm">
+                                <p className="font-semibold">{formatReadableDate(point.date)}</p>
+                                <p className="mt-1">Training effect: {point.effect.toFixed(1)}</p>
+                                <p>Gap: {point.gapHours.toFixed(1)}h</p>
+                                <p>{getOptionLabel(outcomeOptions, outcomeKey, outcomeKey)}: {formatTooltipNumber(point.outcome)}</p>
+                              </div>
+                            );
+                          }}
+                        />
+                        <Scatter data={trainingSleepInteraction.points} name="Nights">
+                          {trainingSleepInteraction.points.map((point) => (
+                            <Cell
+                              key={point.date}
+                              fill={`hsl(${205 - Math.max(0, Math.min(5, point.effect)) * 24} 58% 48%)`}
+                            />
+                          ))}
+                        </Scatter>
+                        {trainingSleepInteraction.predictionLines.map((line, index) => (
+                          <Line
+                            key={line.label}
+                            data={line.points}
+                            dataKey="outcome"
+                            dot={false}
+                            isAnimationActive={false}
+                            name={line.label}
+                            stroke={index === 0 ? "#3f6686" : "#cc5833"}
+                            strokeWidth={2.5}
+                            type="linear"
+                          />
+                        ))}
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <p className="mt-2 text-xs text-muted">
+                    The interaction coefficient uses standardized effect and gap values. Lines show model predictions at the lower and upper quartiles of observed training effect.
+                  </p>
+                </>
+              )}
             </article>
 
             {showNewVariablePanel && (
