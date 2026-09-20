@@ -1,8 +1,9 @@
 import clsx from "clsx";
-import { LoaderCircle } from "lucide-react";
+import { ChevronDown, Info, LoaderCircle } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   CartesianGrid,
-  Cell,
   ComposedChart,
   Line,
   ReferenceLine,
@@ -17,11 +18,178 @@ import { formatReadableDate } from "../../lib/mockData";
 import {
   getOptionLabel,
   type BasePredictorKey,
+  type CorrelationOption,
   type OutcomeKey,
   type PredictorKey,
 } from "../../lib/correlation";
 import type { MetricKey } from "../../lib/types";
 import type { CorrelationController } from "./useCorrelationFeature";
+
+const TRAINING_PREDICTOR_HELP: Record<string, string> = {
+  "garmin:maxAerobicTrainingEffect":
+    "The highest aerobic Training Effect recorded across all sessions that day. It measures intensity only and does not use workout timing.",
+  "garmin:maxAnaerobicTrainingEffect":
+    "The highest anaerobic Training Effect recorded across all sessions that day. It measures intensity only and does not use workout timing.",
+  "garmin:maxTrainingEffect":
+    "The highest aerobic or anaerobic Training Effect recorded across all sessions that day. It measures overall intensity only and does not use workout timing.",
+  "garmin:aerobicTrainingCloseToSleep":
+    "The day's highest proximity-weighted aerobic Training Effect: effect × max(0, 1 − hours from session end to sleep ÷ 12). Sessions 12+ hours before sleep score 0.",
+  "garmin:anaerobicTrainingCloseToSleep":
+    "The day's highest proximity-weighted anaerobic Training Effect: effect × max(0, 1 − hours from session end to sleep ÷ 12). Sessions 12+ hours before sleep score 0.",
+  "garmin:strongTrainingCloseToSleep":
+    "The day's highest proximity-weighted Training Effect. Each session uses its higher aerobic or anaerobic effect × max(0, 1 − hours from session end to sleep ÷ 12).",
+};
+
+function PredictorInfo({
+  label,
+  help,
+  inverted = false,
+}: {
+  label: string;
+  help: string;
+  inverted?: boolean;
+}) {
+  const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+
+  function showTooltip() {
+    const bounds = buttonRef.current?.getBoundingClientRect();
+    if (!bounds) return;
+    const hasRoomOnRight = bounds.right + 328 <= window.innerWidth;
+    setPosition(
+      hasRoomOnRight
+        ? {
+            left: bounds.right + 8,
+            top: Math.max(8, Math.min(bounds.top - 40, window.innerHeight - 128)),
+          }
+        : {
+            left: Math.max(8, bounds.right - 320),
+            top: Math.max(8, Math.min(bounds.bottom + 8, window.innerHeight - 128)),
+          },
+    );
+  }
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        aria-label={`About ${label.replace(" (0-5)", "")}`}
+        className={clsx(
+          "focusable shrink-0 rounded-full p-1 transition",
+          inverted ? "text-white/80 hover:text-white" : "text-muted hover:text-ink",
+        )}
+        type="button"
+        onBlur={() => setPosition(null)}
+        onFocus={showTooltip}
+        onClick={(event) => event.stopPropagation()}
+        onMouseEnter={showTooltip}
+        onMouseLeave={() => setPosition(null)}
+      >
+        <Info className="size-4" />
+      </button>
+      {position &&
+        createPortal(
+          <div
+            role="tooltip"
+            className="pointer-events-none fixed z-[100] w-80 rounded-2xl bg-ink px-3 py-2 text-xs leading-relaxed text-white shadow-soft"
+            style={position}
+          >
+            {help}
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
+
+function PredictorSelect({
+  options,
+  value,
+  onChange,
+}: {
+  options: CorrelationOption[];
+  value: PredictorKey;
+  onChange: (value: PredictorKey) => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const selected = options.find((option) => option.key === value);
+  const selectedHelp = TRAINING_PREDICTOR_HELP[value];
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) setIsOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [isOpen]);
+
+  return (
+    <div ref={containerRef} className="relative min-w-64 text-sm">
+      <div
+        className="flex min-h-11 cursor-pointer items-center rounded-2xl bg-subsurface"
+        onClick={() => setIsOpen((previous) => !previous)}
+      >
+        <button
+          aria-expanded={isOpen}
+          aria-haspopup="listbox"
+          className="focusable flex min-h-11 min-w-0 flex-1 items-center px-3 text-left"
+          type="button"
+        >
+          <span className="truncate">{selected?.label ?? value}</span>
+        </button>
+        {selected && selectedHelp && (
+          <PredictorInfo help={selectedHelp} label={selected.label} />
+        )}
+        <ChevronDown className={clsx("mr-3 size-4 shrink-0 text-muted transition", isOpen && "rotate-180")} />
+      </div>
+      {isOpen && (
+        <div
+          role="listbox"
+          className="scrollbar-thin absolute right-0 z-30 mt-2 max-h-80 w-max min-w-full overflow-y-auto rounded-2xl bg-panel p-1.5 shadow-panel"
+        >
+          {options.map((option) => (
+            <div
+              key={option.key}
+              className={clsx(
+                "flex items-center rounded-xl",
+                option.key === value ? "bg-accent text-white" : "hover:bg-subsurface",
+              )}
+            >
+              <button
+                aria-selected={option.key === value}
+                className="focusable min-h-10 flex-1 whitespace-nowrap px-3 text-left"
+                role="option"
+                type="button"
+                onClick={() => {
+                  onChange(option.key as PredictorKey);
+                  setIsOpen(false);
+                }}
+              >
+                {option.label}
+              </button>
+              {TRAINING_PREDICTOR_HELP[option.key] && (
+                <PredictorInfo
+                  help={TRAINING_PREDICTOR_HELP[option.key]}
+                  inverted={option.key === value}
+                  label={option.label}
+                />
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function CorrelationFeature({ controller }: { controller: CorrelationController }) {
   const {
@@ -82,10 +250,6 @@ export function CorrelationFeature({ controller }: { controller: CorrelationCont
     showNewVariablePanel,
     topCorrelationMode,
     topCorrelationOutcomeOptions,
-    trainingEffectPathway,
-    trainingSleepInteraction,
-    trainingSleepOutcomeAxis,
-    setTrainingEffectPathway,
     trendLineData,
     formatTooltipNumber,
     describeCorrelationDirection,
@@ -97,7 +261,7 @@ export function CorrelationFeature({ controller }: { controller: CorrelationCont
                 <div>
                   <h2 className="text-xl font-semibold tracking-tight">Correlation Lab</h2>
                   <p className="mt-1 text-sm text-muted">
-                    Explore directional associations and whether stronger training close to sleep changes recovery outcomes. Results do not establish causality.
+                    Explore directional associations between predictors and outcomes. Results do not establish causality.
                   </p>
                 </div>
                 <button
@@ -108,156 +272,6 @@ export function CorrelationFeature({ controller }: { controller: CorrelationCont
                   + New Variable
                 </button>
               </div>
-            </article>
-
-            <article className="panel p-6 sm:p-8">
-              <header className="mb-4 flex flex-wrap items-end justify-between gap-4">
-                <div>
-                  <h3 className="text-lg font-semibold tracking-tight">Strong Training Close to Sleep</h3>
-                  <p className="text-sm text-muted">
-                    Tests the interaction between the strongest session&apos;s training effect and its finish-to-sleep gap.
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-end gap-3">
-                  <div className="flex rounded-capsule bg-subsurface p-1">
-                    {(["aerobic", "anaerobic"] as const).map((pathway) => (
-                      <button
-                        key={pathway}
-                        className={clsx(
-                          "focusable min-h-10 rounded-capsule px-4 text-sm font-semibold capitalize transition",
-                          trainingEffectPathway === pathway ? "bg-accent text-white" : "text-muted hover:text-ink",
-                        )}
-                        type="button"
-                        onClick={() => setTrainingEffectPathway(pathway)}
-                      >
-                        {pathway}
-                      </button>
-                    ))}
-                  </div>
-                  <label className="space-y-1 text-sm">
-                    <span className="block text-xs uppercase tracking-[0.16em] text-muted">Outcome</span>
-                    <select
-                      className="focusable min-h-11 rounded-2xl bg-subsurface px-3"
-                      value={outcomeKey}
-                      onChange={(event) => setOutcomeKey(event.target.value as OutcomeKey)}
-                    >
-                      {outcomeOptions.map((option) => (
-                        <option key={option.key} value={option.key}>{option.label}</option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-              </header>
-              {trainingSleepInteraction.sampleCount < 5 ? (
-                <p className="rounded-2xl bg-subsurface px-4 py-3 text-sm text-muted">
-                  At least five nights with a recorded training effect, sleep time, and outcome are needed. Current N={trainingSleepInteraction.sampleCount}.
-                </p>
-              ) : (
-                <>
-                  <div className="mb-4 grid gap-2 sm:grid-cols-3">
-                    <div className="rounded-2xl bg-subsurface px-4 py-3">
-                      <p className="text-xs uppercase tracking-[0.14em] text-muted">Nights</p>
-                      <p className="metric-number mt-1 text-lg font-semibold">{trainingSleepInteraction.sampleCount}</p>
-                    </div>
-                    <div className="rounded-2xl bg-subsurface px-4 py-3">
-                      <p className="text-xs uppercase tracking-[0.14em] text-muted">Interaction coefficient</p>
-                      <p className="metric-number mt-1 text-lg font-semibold">
-                        {trainingSleepInteraction.interactionCoefficient?.toFixed(3) ?? "--"}
-                      </p>
-                    </div>
-                    <div className="rounded-2xl bg-subsurface px-4 py-3">
-                      <p className="text-xs uppercase tracking-[0.14em] text-muted">Interaction p-value</p>
-                      <p className="metric-number mt-1 text-lg font-semibold">
-                        {trainingSleepInteraction.interactionPValue?.toExponential(2) ?? "--"}
-                      </p>
-                    </div>
-                  </div>
-                  <p className="mb-3 text-sm text-muted">
-                    {trainingSleepInteraction.interactionPValue !== null && trainingSleepInteraction.interactionPValue < 0.05
-                      ? "The association between training effect and this outcome changes with the time to sleep in the current sample."
-                      : "No clear timing-by-intensity interaction yet; keep collecting nights to improve sensitivity."}
-                  </p>
-                  <div className="mb-2 flex flex-wrap gap-4 text-xs text-muted">
-                    {trainingSleepInteraction.predictionLines.map((line, index) => (
-                      <span key={line.label} className="inline-flex items-center gap-2">
-                        <span className={clsx("h-0.5 w-6", index === 0 ? "bg-[#3f6686]" : "bg-[#cc5833]")} />
-                        {line.label}
-                      </span>
-                    ))}
-                  </div>
-                  <div className="h-[360px]">
-                    <ResponsiveContainer>
-                      <ComposedChart margin={{ bottom: 20, left: 8, right: 8, top: 8 }}>
-                        <CartesianGrid stroke="rgba(18,18,18,0.06)" strokeDasharray="3 6" />
-                        <XAxis
-                          axisLine={false}
-                          dataKey="gapHours"
-                          label={{ value: "Strongest session finish to sleep (hours)", position: "insideBottom", offset: -10 }}
-                          name="Gap to sleep"
-                          tick={{ fontSize: 12 }}
-                          tickLine={false}
-                          type="number"
-                          unit="h"
-                        />
-                        <YAxis
-                          axisLine={false}
-                          dataKey="outcome"
-                          domain={trainingSleepOutcomeAxis?.domain}
-                          label={{
-                            value: getOptionLabel(outcomeOptions, outcomeKey, outcomeKey),
-                            angle: -90,
-                            position: "insideLeft",
-                            style: { textAnchor: "middle" },
-                          }}
-                          tick={{ fontSize: 12 }}
-                          tickLine={false}
-                          ticks={trainingSleepOutcomeAxis?.ticks}
-                          type="number"
-                        />
-                        <Tooltip
-                          cursor={{ stroke: "rgba(18,18,18,0.18)", strokeDasharray: "3 3" }}
-                          content={({ active, payload }) => {
-                            const point = payload?.[0]?.payload as typeof trainingSleepInteraction.points[number] | undefined;
-                            if (!active || !point || typeof point.effect !== "number") return null;
-                            return (
-                              <div className="rounded-xl border border-black/10 bg-white/95 px-3 py-2 text-xs shadow-sm">
-                                <p className="font-semibold">{formatReadableDate(point.date)}</p>
-                                <p className="mt-1">Training effect: {point.effect.toFixed(1)}</p>
-                                <p>Gap: {point.gapHours.toFixed(1)}h</p>
-                                <p>{getOptionLabel(outcomeOptions, outcomeKey, outcomeKey)}: {formatTooltipNumber(point.outcome)}</p>
-                              </div>
-                            );
-                          }}
-                        />
-                        <Scatter data={trainingSleepInteraction.points} name="Nights">
-                          {trainingSleepInteraction.points.map((point) => (
-                            <Cell
-                              key={point.date}
-                              fill={`hsl(${205 - Math.max(0, Math.min(5, point.effect)) * 24} 58% 48%)`}
-                            />
-                          ))}
-                        </Scatter>
-                        {trainingSleepInteraction.predictionLines.map((line, index) => (
-                          <Line
-                            key={line.label}
-                            data={line.points}
-                            dataKey="outcome"
-                            dot={false}
-                            isAnimationActive={false}
-                            name={line.label}
-                            stroke={index === 0 ? "#3f6686" : "#cc5833"}
-                            strokeWidth={2.5}
-                            type="linear"
-                          />
-                        ))}
-                      </ComposedChart>
-                    </ResponsiveContainer>
-                  </div>
-                  <p className="mt-2 text-xs text-muted">
-                    The interaction coefficient uses standardized effect and gap values. Lines show model predictions at the lower and upper quartiles of observed training effect.
-                  </p>
-                </>
-              )}
             </article>
 
             {showNewVariablePanel && (
@@ -510,7 +524,7 @@ export function CorrelationFeature({ controller }: { controller: CorrelationCont
                       </button>
                     ))}
                   </div>
-                  <label className="space-y-1 text-sm">
+                  <div className="space-y-1 text-sm">
                     <span className="block text-xs uppercase tracking-[0.16em] text-muted">
                       {topCorrelationMode === "target" ? "Target variable" : "Predictor variable"}
                     </span>
@@ -525,17 +539,13 @@ export function CorrelationFeature({ controller }: { controller: CorrelationCont
                         ))}
                       </select>
                     ) : (
-                      <select
-                        className="focusable min-h-11 rounded-2xl bg-subsurface px-3"
+                      <PredictorSelect
+                        options={predictorOptions}
                         value={predictorKey}
-                        onChange={(event) => setPredictorKey(event.target.value as PredictorKey)}
-                      >
-                        {predictorOptions.map((option) => (
-                          <option key={option.key} value={option.key}>{option.label}</option>
-                        ))}
-                      </select>
+                        onChange={setPredictorKey}
+                      />
                     )}
-                  </label>
+                  </div>
                 </div>
               </header>
               {isExploratoryFallback && (
@@ -603,18 +613,14 @@ export function CorrelationFeature({ controller }: { controller: CorrelationCont
                   <p className="text-sm text-muted">Inspect any predictor/outcome pair visually.</p>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="space-y-1 text-sm">
+                  <div className="space-y-1 text-sm">
                     <span className="block text-xs uppercase tracking-[0.16em] text-muted">Predictor (X)</span>
-                    <select
-                      className="focusable min-h-11 rounded-2xl bg-subsurface px-3"
+                    <PredictorSelect
+                      options={predictorOptions}
                       value={predictorKey}
-                      onChange={(event) => setPredictorKey(event.target.value as PredictorKey)}
-                    >
-                      {predictorOptions.map((option) => (
-                        <option key={option.key} value={option.key}>{option.label}</option>
-                      ))}
-                    </select>
-                  </label>
+                      onChange={setPredictorKey}
+                    />
+                  </div>
                   <label className="space-y-1 text-sm">
                     <span className="block text-xs uppercase tracking-[0.16em] text-muted">Outcome (Y)</span>
                     <select

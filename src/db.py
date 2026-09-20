@@ -40,6 +40,7 @@ REQUIRED_ACTIVITY_COLUMNS = {
     "anaerobic_training_effect": "REAL",
 }
 MAX_ACTIVITY_TO_SLEEP_GAP_MINUTES = 24 * 60
+TRAINING_PROXIMITY_WINDOW_MINUTES = 12 * 60
 
 
 def utc_now() -> str:
@@ -84,9 +85,14 @@ def _ensure_activity_columns(connection: sqlite3.Connection) -> None:
     for column_name, column_type in REQUIRED_ACTIVITY_COLUMNS.items():
         if column_name in existing_columns:
             continue
-        connection.execute(
-            f"ALTER TABLE activities ADD COLUMN {column_name} {column_type}"
-        )
+        try:
+            connection.execute(
+                f"ALTER TABLE activities ADD COLUMN {column_name} {column_type}"
+            )
+        except sqlite3.OperationalError as error:
+            if "duplicate column name" not in str(error).lower():
+                raise
+            continue
         added_columns.append(column_name)
     json_keys = {
         "aerobic_training_effect": "aerobicTrainingEffect",
@@ -670,11 +676,11 @@ def _local_wall_datetime(value: Any) -> datetime | None:
     return parsed.replace(tzinfo=None) if parsed is not None else None
 
 
-def build_strongest_training_effects_by_metric_date(
+def build_training_effect_predictors_by_metric_date(
     connection: sqlite3.Connection,
     daily_metric_rows: list[sqlite3.Row],
-) -> dict[str, dict[str, tuple[float, float]]]:
-    """Pair each effect pathway's strongest prior-day activity with its sleep gap."""
+) -> dict[str, dict[str, float]]:
+    """Return daily maximum and sleep-proximity Training Effect predictors."""
     activities_by_date: dict[str, list[sqlite3.Row]] = {}
     for activity in connection.execute(
         """
@@ -691,16 +697,43 @@ def build_strongest_training_effects_by_metric_date(
             str(activity["start_time_local"])[:10], []
         ).append(activity)
 
-    summaries: dict[str, dict[str, tuple[float, float]]] = {}
+    scores: dict[str, dict[str, float]] = {}
     for metric in daily_metric_rows:
         metric_date = str(metric["metric_date"])
         source_date = _shift_iso_date(metric_date, -1)
-        sleep_at = _local_wall_datetime(metric["fell_asleep_at"])
-        if source_date is None or sleep_at is None:
+        if source_date is None:
+            continue
+        activities = activities_by_date.get(source_date, [])
+        if not activities:
+            scores[metric_date] = {
+                "maxAerobicTrainingEffect": 0.0,
+                "maxAnaerobicTrainingEffect": 0.0,
+                "maxTrainingEffect": 0.0,
+                "aerobicTrainingCloseToSleep": 0.0,
+                "anaerobicTrainingCloseToSleep": 0.0,
+                "strongTrainingCloseToSleep": 0.0,
+            }
             continue
 
-        strongest: dict[str, tuple[float, datetime, float]] = {}
-        for activity in activities_by_date.get(source_date, []):
+        maxima: dict[str, float] = {}
+        close_scores: dict[str, float] = {}
+        sleep_at = _local_wall_datetime(metric["fell_asleep_at"])
+        for activity in activities:
+            session_effects: dict[str, float] = {}
+            for pathway in ("aerobic", "anaerobic"):
+                effect = _as_float(activity[f"{pathway}_training_effect"])
+                if effect is None:
+                    continue
+                session_effects[pathway] = effect
+                maxima[pathway] = max(maxima.get(pathway, effect), effect)
+            if not session_effects:
+                continue
+            overall_effect = max(session_effects.values())
+            maxima["overall"] = max(
+                maxima.get("overall", overall_effect), overall_effect
+            )
+            if sleep_at is None:
+                continue
             started_at = _local_wall_datetime(activity["start_time_local"])
             duration_seconds = _as_float(activity["duration_seconds"])
             if started_at is None or duration_seconds is None or duration_seconds < 0:
@@ -709,20 +742,31 @@ def build_strongest_training_effects_by_metric_date(
             gap_minutes = (sleep_at - ended_at).total_seconds() / 60
             if not 0 <= gap_minutes <= MAX_ACTIVITY_TO_SLEEP_GAP_MINUTES:
                 continue
-            for pathway in ("aerobic", "anaerobic"):
-                effect = _as_float(activity[f"{pathway}_training_effect"])
-                if effect is None:
-                    continue
-                current = strongest.get(pathway)
-                if current is None or (effect, ended_at) > (current[0], current[1]):
-                    strongest[pathway] = (effect, ended_at, gap_minutes)
+            proximity = max(0.0, 1 - gap_minutes / TRAINING_PROXIMITY_WINDOW_MINUTES)
+            for pathway, effect in (
+                *session_effects.items(),
+                ("overall", overall_effect),
+            ):
+                score = effect * proximity
+                close_scores[pathway] = max(close_scores.get(pathway, score), score)
 
-        if strongest:
-            summaries[metric_date] = {
-                pathway: (effect, gap_minutes)
-                for pathway, (effect, _, gap_minutes) in strongest.items()
-            }
-    return summaries
+        values: dict[str, float] = {}
+        for pathway, feature_name in (
+            ("aerobic", "Aerobic"),
+            ("anaerobic", "Anaerobic"),
+            ("overall", ""),
+        ):
+            if pathway in maxima:
+                values[f"max{feature_name}TrainingEffect"] = maxima[pathway]
+            if pathway in close_scores:
+                close_key = (
+                    f"{pathway}TrainingCloseToSleep"
+                    if pathway != "overall"
+                    else "strongTrainingCloseToSleep"
+                )
+                values[close_key] = close_scores[pathway]
+        scores[metric_date] = values
+    return scores
 
 
 def _average_hr_before_sleep_from_payloads(
@@ -1105,7 +1149,7 @@ def rebuild_analysis_values(connection: sqlite3.Connection) -> None:
         for row in daily_metric_rows
         if row["metric_date"] is not None
     }
-    strongest_training_effects = build_strongest_training_effects_by_metric_date(
+    training_effect_predictors = build_training_effect_predictors_by_metric_date(
         connection, daily_metric_rows
     )
 
@@ -1115,26 +1159,26 @@ def rebuild_analysis_values(connection: sqlite3.Connection) -> None:
 
         training_source_date = _shift_iso_date(source_date, -1)
         if training_source_date is not None:
-            for pathway, (effect, gap_minutes) in strongest_training_effects.get(
+            for feature_name, value_num in training_effect_predictors.get(
                 source_date, {}
             ).items():
-                for suffix, value_num in (
-                    ("TrainingEffect", effect),
-                    ("ToSleepGapMinutes", gap_minutes),
-                ):
-                    _append_analysis_row(
-                        rows_to_insert,
-                        analysis_date=source_date,
-                        role="predictor",
-                        feature_key=f"garmin:strongest{pathway.title()}{suffix}",
-                        value_num=value_num,
-                        value_text=None,
-                        value_bool=None,
-                        source_date=training_source_date,
-                        lag_days=-1,
-                        alignment_rule=f"strongest_{pathway}_session_previous_night",
-                        refreshed_at=refreshed_at,
-                    )
+                _append_analysis_row(
+                    rows_to_insert,
+                    analysis_date=source_date,
+                    role="predictor",
+                    feature_key=f"garmin:{feature_name}",
+                    value_num=value_num,
+                    value_text=None,
+                    value_bool=None,
+                    source_date=training_source_date,
+                    lag_days=-1,
+                    alignment_rule=(
+                        "training_effect_sleep_proximity"
+                        if feature_name.endswith("CloseToSleep")
+                        else "training_effect_previous_day"
+                    ),
+                    refreshed_at=refreshed_at,
+                )
 
         if predictor_analysis_date is not None:
             for feature_key, column_name in (

@@ -479,6 +479,33 @@ describe("App persistence workflows", () => {
     expect(card?.parentElement).toHaveClass("grid-cols-2");
   });
 
+  it("explains all Training Effect predictors in the predictor selector", async () => {
+    setView("lab");
+    const user = userEvent.setup();
+    render(<App />);
+
+    const predictorSelector = (await screen.findAllByRole("button", { name: "Steps" }))[0];
+    await user.click(predictorSelector);
+    expect(
+      screen.getAllByRole("button", { name: /About .*Training/ }),
+    ).toHaveLength(6);
+    const infoButton = screen.getByRole("button", {
+      name: "About Strong Training Close to Sleep",
+    });
+
+    await user.hover(infoButton);
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      "higher aerobic or anaerobic effect",
+    );
+
+    await user.click(
+      screen.getByRole("option", { name: "Max Overall Training Effect (0-5)" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "About Max Overall Training Effect" }),
+    ).toBeInTheDocument();
+  });
+
   it("offers strength volume, sets, and reps as dashboard plots", async () => {
     setView("dashboard");
     const user = userEvent.setup();

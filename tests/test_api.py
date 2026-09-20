@@ -1137,7 +1137,7 @@ def test_load_correlation_values_payload_uses_materialized_analysis_values(
     assert target_rem_or_deep_pct["sourceDate"] == "2026-02-21"
 
 
-def test_correlation_values_pair_strongest_training_effect_with_its_sleep_gap(
+def test_correlation_values_include_daily_and_sleep_proximity_training_effects(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "garmin.db"
@@ -1150,7 +1150,7 @@ def test_correlation_values_pair_strongest_training_effect_with_its_sleep_gap(
         """
     )
     sessions = (
-        (1, "2026-02-20 18:00:00", 3600, 4.0, 1.0),
+        (1, "2026-02-20 18:00:00", 3600, 4.5, 1.0),
         (2, "2026-02-20 20:00:00", 1800, 4.0, 2.0),
         (3, "2026-02-20 21:00:00", 1800, 2.0, 3.5),
     )
@@ -1181,14 +1181,79 @@ def test_correlation_values_pair_strongest_training_effect_with_its_sleep_gap(
         value["featureKey"]: value for value in values if value["role"] == "predictor"
     }
 
-    assert predictors["garmin:strongestAerobicTrainingEffect"]["valueNum"] == 4.0
-    assert predictors["garmin:strongestAerobicToSleepGapMinutes"]["valueNum"] == 150
-    assert predictors["garmin:strongestAnaerobicTrainingEffect"]["valueNum"] == 3.5
-    assert predictors["garmin:strongestAnaerobicToSleepGapMinutes"]["valueNum"] == 90
-    assert (
-        predictors["garmin:strongestAerobicTrainingEffect"]["sourceDate"]
-        == "2026-02-20"
+    expected = {
+        "garmin:maxAerobicTrainingEffect": 4.5,
+        "garmin:maxAnaerobicTrainingEffect": 3.5,
+        "garmin:maxTrainingEffect": 4.5,
+        "garmin:aerobicTrainingCloseToSleep": 4.0 * (1 - 150 / 720),
+        "garmin:anaerobicTrainingCloseToSleep": 3.5 * (1 - 90 / 720),
+        "garmin:strongTrainingCloseToSleep": 4.0 * (1 - 150 / 720),
+    }
+    for feature_key, expected_value in expected.items():
+        predictor = predictors[feature_key]
+        assert predictor["valueNum"] == pytest.approx(expected_value)
+        assert predictor["sourceDate"] == "2026-02-20"
+        assert predictor["alignmentRule"] == (
+            "training_effect_sleep_proximity"
+            if feature_key.endswith("CloseToSleep")
+            else "training_effect_previous_day"
+        )
+
+
+def test_correlation_values_distinguish_rest_days_from_missing_training_effects(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "garmin.db"
+    connection = connect_db(str(db_path))
+    init_db(connection)
+    connection.executemany(
+        """
+        INSERT INTO daily_metrics (metric_date, fell_asleep_at, updated_at)
+        VALUES (?, ?, '2026-02-23T06:00:00+00:00')
+        """,
+        (
+            ("2026-02-21", "2026-02-20T23:00:00+00:00"),
+            ("2026-02-22", "2026-02-21T23:00:00+00:00"),
+        ),
     )
+    connection.execute(
+        """
+        INSERT INTO activities (
+            garmin_activity_id,
+            start_time_local,
+            duration_seconds,
+            raw_json,
+            updated_at
+        )
+        VALUES (1, '2026-02-21 20:00:00', 3600, '{}', '2026-02-23T06:00:00+00:00')
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    values = _load_correlation_values_payload(
+        str(db_path),
+        from_date=date(2026, 2, 21),
+        to_date=date(2026, 2, 22),
+    )
+    training_effect_keys = {
+        "garmin:maxAerobicTrainingEffect",
+        "garmin:maxAnaerobicTrainingEffect",
+        "garmin:maxTrainingEffect",
+        "garmin:aerobicTrainingCloseToSleep",
+        "garmin:anaerobicTrainingCloseToSleep",
+        "garmin:strongTrainingCloseToSleep",
+    }
+    training_values = [
+        value for value in values if value["featureKey"] in training_effect_keys
+    ]
+
+    rest_values = [
+        value for value in training_values if value["analysisDate"] == "2026-02-21"
+    ]
+    assert len(rest_values) == 6
+    assert all(value["valueNum"] == 0.0 for value in rest_values)
+    assert not any(value["analysisDate"] == "2026-02-22" for value in training_values)
 
 
 def test_load_dashboard_payload_includes_fell_asleep_iso_field(tmp_path: Path) -> None:

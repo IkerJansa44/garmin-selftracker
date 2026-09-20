@@ -7,7 +7,6 @@ import {
   buildOutcomeOptions,
   buildPredictorDistribution,
   buildPredictorOptions,
-  buildTrainingSleepInteraction,
   calculateQuantileCutPoints,
   findCorrelationPair,
 } from "../../src/lib/correlation";
@@ -428,8 +427,16 @@ describe("correlation helpers", () => {
     expect(predictors.some((option) => option.key === "garmin:remSleepPercentage")).toBe(false);
     expect(predictors.some((option) => option.key === "garmin:remOrDeepSleepPercentage")).toBe(false);
     expect(predictors.some((option) => option.key === "garmin:sleepConsistency")).toBe(true);
-    expect(predictors.some((option) => option.key === "garmin:strongestAerobicTrainingEffect")).toBe(true);
-    expect(predictors.some((option) => option.key === "garmin:strongestAerobicToSleepGapMinutes")).toBe(true);
+    for (const key of [
+      "maxAerobicTrainingEffect",
+      "maxAnaerobicTrainingEffect",
+      "maxTrainingEffect",
+      "aerobicTrainingCloseToSleep",
+      "anaerobicTrainingCloseToSleep",
+      "strongTrainingCloseToSleep",
+    ]) {
+      expect(predictors.some((option) => option.key === `garmin:${key}`)).toBe(true);
+    }
     expect(predictors.some((option) => option.key === "question:late_meal")).toBe(false);
     expect(predictors.some((option) => option.key === "question:caffeine_last_time")).toBe(false);
     expect(outcomes.some((option) => option.key === "metric:recoveryIndex")).toBe(true);
@@ -463,45 +470,6 @@ describe("correlation helpers", () => {
     expect(calculateQuantileCutPoints(values, 2)).toHaveLength(1);
     expect(calculateQuantileCutPoints(values, 4)).toHaveLength(3);
     expect(calculateQuantileCutPoints([1, 1, 1, 1], 4)).toEqual([]);
-  });
-
-  it("detects a strongest-session training effect by sleep-gap interaction", () => {
-    const analysisValues: AnalysisValueRecord[] = [];
-    for (let index = 0; index < 30; index += 1) {
-      const date = buildDate(index);
-      const effect = index % 5 + 1;
-      const gapHours = Math.floor(index / 5) + 1;
-      const values = [
-        ["predictor", "garmin:strongestAerobicTrainingEffect", effect],
-        ["predictor", "garmin:strongestAerobicToSleepGapMinutes", gapHours * 60],
-        ["target", "metric:sleepScore", 80 - effect * 2 + effect * gapHours * 3],
-      ] as const;
-      for (const [role, featureKey, valueNum] of values) {
-        analysisValues.push({
-          analysisDate: date,
-          role,
-          featureKey,
-          valueNum,
-          valueText: null,
-          valueBool: null,
-          sourceDate: role === "predictor" ? buildDate(index - 1) : date,
-          lagDays: role === "predictor" ? -1 : 0,
-          alignmentRule: "test_fixture",
-        });
-      }
-    }
-
-    const result = buildTrainingSleepInteraction(
-      analysisValues,
-      [],
-      "metric:sleepScore",
-      "aerobic",
-    );
-
-    expect(result.sampleCount).toBe(30);
-    expect(result.interactionCoefficient).toBeGreaterThan(0);
-    expect(result.interactionPValue).toBeLessThan(0.001);
-    expect(result.predictionLines).toHaveLength(2);
   });
 
   it("builds meaningful continuous correlations and assigns FDR-adjusted q values", () => {
