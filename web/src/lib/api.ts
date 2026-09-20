@@ -225,12 +225,10 @@ export async function fetchCheckIns(
 }
 
 export async function fetchCorrelationValues(
-  fromDate: string,
-  toDate: string,
   signal?: AbortSignal,
 ): Promise<CorrelationValuesApiResponse> {
   return apiRequest(
-    `/api/correlation/values?fromDate=${encodeURIComponent(fromDate)}&toDate=${encodeURIComponent(toDate)}`,
+    "/api/correlation/values",
     "Correlation values API failed",
     { signal },
   );

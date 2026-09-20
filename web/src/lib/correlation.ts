@@ -356,6 +356,34 @@ type AnalysisValueIndex = {
   targetByDate: Map<string, Map<string, AnalysisValueRecord>>;
 };
 
+type CorrelationDay = Pick<DailyRecord, "date" | "weekday" | "isTrainingDay">;
+
+function buildCorrelationDays(
+  records: DailyRecord[],
+  analysisValues: AnalysisValueRecord[],
+): CorrelationDay[] {
+  const recordDates = new Set(records.map((record) => record.date));
+  const days = new Map<string, CorrelationDay>(
+    records.map((record) => [record.date, record]),
+  );
+  for (const value of analysisValues) {
+    const existing = days.get(value.analysisDate);
+    const inferredTrainingDay = value.role === "predictor"
+      && value.featureKey === "garmin:isTrainingDay"
+      ? analysisNumericValue(value) === 1
+      : existing?.isTrainingDay ?? false;
+    days.set(value.analysisDate, {
+      date: value.analysisDate,
+      weekday: existing?.weekday
+        ?? new Date(`${value.analysisDate}T00:00:00Z`).getUTCDay(),
+      isTrainingDay: recordDates.has(value.analysisDate)
+        ? existing?.isTrainingDay ?? false
+        : inferredTrainingDay,
+    });
+  }
+  return [...days.values()].sort((left, right) => left.date.localeCompare(right.date));
+}
+
 function buildAnalysisValueIndex(values: AnalysisValueRecord[]): AnalysisValueIndex {
   const predictorByDate = new Map<string, Map<string, AnalysisValueRecord>>();
   const targetByDate = new Map<string, Map<string, AnalysisValueRecord>>();
@@ -813,20 +841,21 @@ export function buildPredictorDistribution({
   const analysisValueIndex = buildAnalysisValueIndex(analysisValues);
   const questionFields = flattenQuestionFields(questions);
   const questionsById = new Map(questionFields.map((question) => [question.id, question]));
+  const days = buildCorrelationDays(records, analysisValues);
   const values: number[] = [];
 
-  for (const record of records) {
-    if (weekdayOnly && (record.weekday === 0 || record.weekday === 6)) {
+  for (const day of days) {
+    if (weekdayOnly && (day.weekday === 0 || day.weekday === 6)) {
       continue;
     }
-    if (trainingOnly && !record.isTrainingDay) {
+    if (trainingOnly && !day.isTrainingDay) {
       continue;
     }
     const value = parseBasePredictorValue(
       predictor,
       analysisValueIndex,
       questionsById,
-      record.date,
+      day.date,
     );
     if (value === null) {
       continue;
@@ -856,6 +885,7 @@ export function buildCorrelationCatalog({
   const questionFields = flattenQuestionFields(questions);
   const questionsById = new Map(questionFields.map((question) => [question.id, question]));
   const derivedById = new Map(derivedPredictors.map((definition) => [definition.id, definition]));
+  const days = buildCorrelationDays(records, analysisValues);
 
   const predictorOptions = buildPredictorOptions(questions, derivedPredictors);
   const outcomeOptions = buildOutcomeOptions(questions);
@@ -871,11 +901,11 @@ export function buildCorrelationCatalog({
       }
       const points: CorrelationPoint[] = [];
 
-      for (const record of records) {
-        if (weekdayOnly && (record.weekday === 0 || record.weekday === 6)) {
+      for (const day of days) {
+        if (weekdayOnly && (day.weekday === 0 || day.weekday === 6)) {
           continue;
         }
-        if (trainingOnly && !record.isTrainingDay) {
+        if (trainingOnly && !day.isTrainingDay) {
           continue;
         }
         const x = parsePredictorValue(
@@ -883,13 +913,13 @@ export function buildCorrelationCatalog({
           analysisValueIndex,
           questionsById,
           derivedById,
-          record.date,
+          day.date,
         );
         const y = parseOutcomeValue(
           outcome,
           analysisValueIndex,
           questionsById,
-          record.date,
+          day.date,
         );
         if (x === null || y === null) {
           continue;
@@ -897,7 +927,7 @@ export function buildCorrelationCatalog({
         points.push({
           x: x.value,
           y: y.value,
-          date: record.date,
+          date: day.date,
           predictorSourceDate: x.sourceDate,
           outcomeSourceDate: y.sourceDate,
         });
@@ -978,6 +1008,7 @@ export function buildCorrelationResult({
   const questionFields = flattenQuestionFields(questions);
   const questionsById = new Map(questionFields.map((question) => [question.id, question]));
   const derivedById = new Map(derivedPredictors.map((definition) => [definition.id, definition]));
+  const days = buildCorrelationDays(records, analysisValues);
   const points: CorrelationPoint[] = [];
   if (isSameSignalPair(predictor, outcome)) {
     return {
@@ -988,11 +1019,11 @@ export function buildCorrelationResult({
     };
   }
 
-  for (const record of records) {
-    if (weekdayOnly && (record.weekday === 0 || record.weekday === 6)) {
+  for (const day of days) {
+    if (weekdayOnly && (day.weekday === 0 || day.weekday === 6)) {
       continue;
     }
-    if (trainingOnly && !record.isTrainingDay) {
+    if (trainingOnly && !day.isTrainingDay) {
       continue;
     }
     const x = parsePredictorValue(
@@ -1000,13 +1031,13 @@ export function buildCorrelationResult({
       analysisValueIndex,
       questionsById,
       derivedById,
-      record.date,
+      day.date,
     );
     const y = parseOutcomeValue(
       outcome,
       analysisValueIndex,
       questionsById,
-      record.date,
+      day.date,
     );
     if (x === null || y === null) {
       continue;
@@ -1014,7 +1045,7 @@ export function buildCorrelationResult({
     points.push({
       x: x.value,
       y: y.value,
-      date: record.date,
+      date: day.date,
       predictorSourceDate: x.sourceDate,
       outcomeSourceDate: y.sourceDate,
     });

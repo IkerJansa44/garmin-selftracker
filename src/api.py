@@ -255,7 +255,7 @@ def _parse_date_range_query(
     *,
     from_field: str = "fromDate",
     to_field: str = "toDate",
-    max_range_days: int = MAX_IMPORT_RANGE_DAYS,
+    max_range_days: int | None = MAX_IMPORT_RANGE_DAYS,
 ) -> tuple[date, date]:
     from_values = query.get(from_field)
     to_values = query.get(to_field)
@@ -266,7 +266,7 @@ def _parse_date_range_query(
     if start_date > end_date:
         raise ValueError(f"{from_field} must be on or before {to_field}")
     span_days = (end_date - start_date).days + 1
-    if span_days > max_range_days:
+    if max_range_days is not None and span_days > max_range_days:
         raise ValueError(f"Date range cannot exceed {max_range_days} days")
     return start_date, end_date
 
@@ -1477,7 +1477,9 @@ def _load_checkin_range_payload(
 
 
 def _load_correlation_values_payload(
-    db_path: str, from_date: date, to_date: date
+    db_path: str,
+    from_date: date | None = None,
+    to_date: date | None = None,
 ) -> list[dict[str, Any]]:
     connection = connect_db(db_path)
     try:
@@ -1485,8 +1487,8 @@ def _load_correlation_values_payload(
         rebuild_analysis_values(connection)
         return get_analysis_values(
             connection,
-            from_date=from_date.isoformat(),
-            to_date=to_date.isoformat(),
+            from_date=from_date.isoformat() if from_date else None,
+            to_date=to_date.isoformat() if to_date else None,
         )
     finally:
         connection.close()
@@ -1495,9 +1497,11 @@ def _load_correlation_values_payload(
 def _load_correlation_range_payload(
     db_path: str, query: dict[str, list[str]]
 ) -> dict[str, list[dict[str, Any]]]:
+    if not query:
+        return {"values": _load_correlation_values_payload(db_path)}
     from_date, to_date = _parse_date_range_query(
         query,
-        max_range_days=MAX_IMPORT_RANGE_DAYS,
+        max_range_days=None,
     )
     return {"values": _load_correlation_values_payload(db_path, from_date, to_date)}
 

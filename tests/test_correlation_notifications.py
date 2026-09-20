@@ -13,7 +13,7 @@ from src.correlation_notifications import (
     _build_correlation_pairs,
     _build_email_body,
     _build_email_html,
-    _load_recent_analysis_values,
+    _load_analysis_values,
     _pearson,
     _pearson_p_value,
     current_meaningful_correlation_keys,
@@ -130,7 +130,7 @@ def test_materialized_values_produce_previous_day_correlation(
         26,
         25,
     ]
-    start = date.today() - timedelta(days=len(steps) - 1)
+    start = date.today() - timedelta(days=730)
     connection = connect_db(str(db_path))
     init_db(connection)
     for offset, step_value in enumerate(steps):
@@ -152,7 +152,7 @@ def test_materialized_values_produce_previous_day_correlation(
     connection.commit()
     connection.close()
 
-    values = _load_recent_analysis_values(str(db_path))
+    values = _load_analysis_values(str(db_path))
     pairs = _build_correlation_pairs(values, {}, {})
     pair = next(item for item in pairs if item.key == "garmin:steps__metric:restingHr")
 

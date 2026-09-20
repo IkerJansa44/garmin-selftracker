@@ -1010,4 +1010,25 @@ describe("correlation helpers", () => {
     expect(result.points.length).toBe(result.sampleCount);
     expect(Number.isFinite(result.regression.slope)).toBe(true);
   });
+
+  it("builds a decade-long catalog within the performance budget", () => {
+    const days = 3650;
+    const allRecords = buildRecords(days);
+    const analysisValues = buildAnalysisValues(allRecords, buildCheckins(days));
+    const startedAt = performance.now();
+
+    const catalog = buildCorrelationCatalog({
+      records: allRecords.slice(-365),
+      analysisValues,
+      questions: QUESTIONS,
+      derivedPredictors: [],
+      weekdayOnly: false,
+      trainingOnly: false,
+    });
+
+    const elapsedMs = performance.now() - startedAt;
+    const pair = findCorrelationPair(catalog, "question:caffeine_count", "metric:recoveryIndex");
+    expect(pair?.sampleCount).toBe(days - 1);
+    expect(elapsedMs).toBeLessThan(2500);
+  });
 });

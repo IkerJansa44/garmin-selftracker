@@ -1425,8 +1425,13 @@ def rebuild_analysis_values(connection: sqlite3.Connection) -> None:
 
 
 def get_analysis_values(
-    connection: sqlite3.Connection, *, from_date: str, to_date: str
+    connection: sqlite3.Connection,
+    *,
+    from_date: str | None = None,
+    to_date: str | None = None,
 ) -> list[dict[str, Any]]:
+    lower_bound = from_date or date.min.isoformat()
+    upper_bound = to_date or date.max.isoformat()
     rows = connection.execute(
         """
         SELECT
@@ -1443,7 +1448,7 @@ def get_analysis_values(
         WHERE analysis_date BETWEEN ? AND ?
         ORDER BY analysis_date, role, feature_key
         """,
-        (from_date, to_date),
+        (lower_bound, upper_bound),
     ).fetchall()
     values: list[dict[str, Any]] = []
     for row in rows:

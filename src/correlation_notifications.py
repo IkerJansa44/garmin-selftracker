@@ -4,7 +4,6 @@ import logging
 import math
 import smtplib
 from dataclasses import dataclass
-from datetime import date, timedelta
 from email.message import EmailMessage
 from html import escape
 from typing import Any, Callable, Literal
@@ -31,7 +30,6 @@ NOTIFIED_CORRELATIONS_KEY = "notified_meaningful_correlations"
 MIN_SAMPLE_COUNT = 20
 MIN_STRENGTH = 0.2
 MAX_Q_VALUE = 0.05
-SCAN_DAYS = 365
 FeatureDisplayKind = Literal["numeric", "binary", "time"]
 
 FEATURE_LABELS = {
@@ -148,7 +146,7 @@ def notify_new_meaningful_correlations(
 
 
 def scan_meaningful_correlations(db_path: str) -> list[MeaningfulCorrelation]:
-    values = _load_recent_analysis_values(db_path)
+    values = _load_analysis_values(db_path)
     questions = _load_questions(db_path)
     labels = _feature_labels(questions)
     pairs = _build_correlation_pairs(values, labels, questions)
@@ -164,18 +162,12 @@ def scan_meaningful_correlations(db_path: str) -> list[MeaningfulCorrelation]:
     ]
 
 
-def _load_recent_analysis_values(db_path: str) -> list[dict[str, Any]]:
-    end_date = date.today()
-    start_date = end_date - timedelta(days=SCAN_DAYS - 1)
+def _load_analysis_values(db_path: str) -> list[dict[str, Any]]:
     connection = connect_db(db_path)
     try:
         init_db(connection)
         rebuild_analysis_values(connection)
-        return get_analysis_values(
-            connection,
-            from_date=start_date.isoformat(),
-            to_date=end_date.isoformat(),
-        )
+        return get_analysis_values(connection)
     finally:
         connection.close()
 

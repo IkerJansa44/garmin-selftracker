@@ -1377,17 +1377,8 @@ function App() {
 
   const loadCorrelationValues = useCallback(
     async (signal?: AbortSignal) => {
-      if (!allRecords.length) {
-        setAnalysisValues([]);
-        return;
-      }
-      const firstDate = allRecords[0]?.date;
-      const lastDate = allRecords[allRecords.length - 1]?.date;
-      if (!firstDate || !lastDate) {
-        return;
-      }
       try {
-        const payload = await fetchCorrelationValues(firstDate, lastDate, signal);
+        const payload = await fetchCorrelationValues(signal);
         setAnalysisValues(payload.values);
       } catch {
         if (signal?.aborted) {
@@ -1396,7 +1387,7 @@ function App() {
         setAnalysisValues([]);
       }
     },
-    [allRecords],
+    [],
   );
 
   useEffect(() => {

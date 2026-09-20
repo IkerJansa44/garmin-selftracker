@@ -1137,6 +1137,31 @@ def test_load_correlation_values_payload_uses_materialized_analysis_values(
     assert target_rem_or_deep_pct["sourceDate"] == "2026-02-21"
 
 
+def test_load_correlation_values_payload_returns_unrestricted_history(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "garmin.db"
+    connection = connect_db(str(db_path))
+    init_db(connection)
+    connection.executemany(
+        """
+        INSERT INTO daily_metrics (metric_date, resting_heart_rate, updated_at)
+        VALUES (?, 50, '2026-02-21T06:00:00+00:00')
+        """,
+        (("2020-01-01",), ("2026-01-01",)),
+    )
+    connection.commit()
+    connection.close()
+
+    values = _load_correlation_values_payload(str(db_path))
+
+    assert {
+        value["analysisDate"]
+        for value in values
+        if value["featureKey"] == "metric:restingHr"
+    } == {"2020-01-01", "2026-01-01"}
+
+
 def test_correlation_values_include_daily_and_sleep_proximity_training_effects(
     tmp_path: Path,
 ) -> None:
