@@ -65,6 +65,9 @@ type CorrelationTooltipContent = {
 };
 
 export interface CorrelationController {
+  records: DailyRecord[];
+  analysisValues: AnalysisValueRecord[];
+  questions: CheckInQuestion[];
   activeCorrelationTooltipContent: CorrelationTooltipContent | null;
   activeCorrelationTooltipStyle: { left: number; top: number } | null;
   categoricalMeanData: Array<{ x: number; xJittered: number; y: number }>;
@@ -574,6 +577,7 @@ export function useCorrelationFeature(inputs: CorrelationFeatureInputs): Correla
   }, [derivedPredictors, editingDerivedId, persistDefinitions, resetDerivedForm]);
 
   return {
+    records, analysisValues, questions,
     activeCorrelationTooltipContent, activeCorrelationTooltipStyle, categoricalMeanData, categoricalScatterData,
     continuousExplorerXDomain, correlationChartRef, correlationExplorerYAxis, densityAxisTicks, densityDomain,
     derivedBins, derivedFormError, derivedLabelsInput, derivedLoadState, derivedMode, derivedName, derivedPredictors,

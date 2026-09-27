@@ -4,6 +4,7 @@ import {
   buildCorrelationCatalog,
   buildCorrelationResult,
   buildDerivedPredictorSourceOptions,
+  buildExploreTogetherResult,
   buildOutcomeOptions,
   buildPredictorDistribution,
   buildPredictorOptions,
@@ -339,6 +340,75 @@ function buildThreeBinCheckins(days: number): Map<string, CheckInEntry> {
 }
 
 describe("correlation helpers", () => {
+  it("estimates an interaction from the same complete days as both individual correlations", () => {
+    const records = buildRecords(81);
+    const analysisValues: AnalysisValueRecord[] = [];
+    for (let index = 1; index < records.length; index += 1) {
+      const a = index % 2;
+      const b = Math.floor(index / 2) % 2;
+      const date = records[index].date;
+      const sourceDate = records[index - 1].date;
+      for (const [featureKey, value] of [["garmin:steps", a], ["garmin:calories", b]] as const) {
+        if (featureKey === "garmin:calories" && index <= 5) continue;
+        analysisValues.push({ analysisDate: date, role: "predictor", featureKey, valueNum: value, valueText: null, valueBool: null, sourceDate, lagDays: -1, alignmentRule: "test_fixture" });
+      }
+      analysisValues.push({ analysisDate: date, role: "target", featureKey: "metric:sleepScore", valueNum: 80 - 4 * a - 5 * b - 6 * a * b, valueText: null, valueBool: null, sourceDate: date, lagDays: 0, alignmentRule: "test_fixture" });
+    }
+    const result = buildExploreTogetherResult({
+      records,
+      analysisValues,
+      questions: [],
+      derivedPredictors: [],
+      predictorA: "garmin:steps",
+      predictorB: "garmin:calories",
+      outcome: "metric:sleepScore",
+    });
+
+    expect(result.sampleCount).toBe(75);
+    expect(result.correlationA).toBeLessThan(0);
+    expect(result.correlationB).toBeLessThan(0);
+    expect(result.interaction?.difference).toBeCloseTo(-6, 6);
+    expect(result.interaction?.lowBEstimates[0]).toBeCloseTo(80, 6);
+    expect(result.interaction?.lowBEstimates[1]).toBeCloseTo(76, 6);
+    expect(result.interaction?.highBEstimates[0]).toBeCloseTo(75, 6);
+    expect(result.interaction?.highBEstimates[1]).toBeCloseTo(65, 6);
+    expect(result.interaction?.interval?.[0]).toBeCloseTo(-6, 5);
+
+    const additiveValues = analysisValues.map((value) => {
+      if (value.featureKey !== "metric:sleepScore") return value;
+      const index = records.findIndex((record) => record.date === value.analysisDate);
+      const a = index % 2;
+      const b = Math.floor(index / 2) % 2;
+      return { ...value, valueNum: 80 - 4 * a - 5 * b };
+    });
+    const additive = buildExploreTogetherResult({
+      records,
+      analysisValues: additiveValues,
+      questions: [],
+      derivedPredictors: [],
+      predictorA: "garmin:steps",
+      predictorB: "garmin:calories",
+      outcome: "metric:sleepScore",
+    });
+    expect(additive.interaction?.difference).toBeCloseTo(0, 6);
+
+    const sparseValues = analysisValues.map((value) => value.featureKey === "garmin:calories"
+      && records.findIndex((record) => record.date === value.analysisDate) > 11
+      ? { ...value, valueNum: 0 }
+      : value);
+    const sparse = buildExploreTogetherResult({
+      records,
+      analysisValues: sparseValues,
+      questions: [],
+      derivedPredictors: [],
+      predictorA: "garmin:steps",
+      predictorB: "garmin:calories",
+      outcome: "metric:sleepScore",
+    });
+    expect(sparse.interaction).toBeNull();
+    expect(sparse.reason).toContain("at least 8 days");
+  });
+
   it("matches Pearson reference values and rejects undefined correlations", () => {
     const xs = [43, 21, 25, 42, 57, 59];
     const ys = [99, 65, 79, 75, 87, 81];

@@ -1060,3 +1060,196 @@ export function buildCorrelationResult({
     regression: calculateRegression(xs, ys),
   };
 }
+
+type TogetherPoint = { a: number; b: number; y: number };
+
+export interface ExploreTogetherResult {
+  sampleCount: number;
+  correlationA: number | null;
+  correlationB: number | null;
+  interaction: {
+    aLow: number;
+    aHigh: number;
+    bLow: number;
+    bHigh: number;
+    lowBEstimates: [number, number];
+    highBEstimates: [number, number];
+    difference: number;
+    interval: [number, number] | null;
+    lowBCount: number;
+    highBCount: number;
+  } | null;
+  reason: string | null;
+}
+
+const MIN_INTERACTION_DAYS = 30;
+const MIN_LEVEL_DAYS = 8;
+const MIN_INTERVAL_DAYS = 60;
+const BOOTSTRAP_REPETITIONS = 200;
+const BOOTSTRAP_BLOCK_DAYS = 7;
+
+function percentile(sorted: number[], fraction: number): number {
+  const position = (sorted.length - 1) * fraction;
+  const lower = Math.floor(position);
+  const weight = position - lower;
+  return sorted[lower] * (1 - weight) + sorted[Math.ceil(position)] * weight;
+}
+
+function solveFourByFour(matrix: number[][], vector: number[]): number[] | null {
+  const rows = matrix.map((row, index) => [...row, vector[index]]);
+  for (let column = 0; column < 4; column += 1) {
+    let pivot = column;
+    for (let row = column + 1; row < 4; row += 1) {
+      if (Math.abs(rows[row][column]) > Math.abs(rows[pivot][column])) pivot = row;
+    }
+    if (Math.abs(rows[pivot][column]) < 1e-9) return null;
+    [rows[column], rows[pivot]] = [rows[pivot], rows[column]];
+    const divisor = rows[column][column];
+    for (let index = column; index <= 4; index += 1) rows[column][index] /= divisor;
+    for (let row = 0; row < 4; row += 1) {
+      if (row === column) continue;
+      const factor = rows[row][column];
+      for (let index = column; index <= 4; index += 1) rows[row][index] -= factor * rows[column][index];
+    }
+  }
+  return rows.map((row) => row[4]);
+}
+
+function fitTogether(rows: number[][], outcomes: number[], indices: number[]): number[] | null {
+  const matrix = Array.from({ length: 4 }, () => [0, 0, 0, 0]);
+  const vector = [0, 0, 0, 0];
+  for (const index of indices) {
+    for (let left = 0; left < 4; left += 1) {
+      vector[left] += rows[index][left] * outcomes[index];
+      for (let right = 0; right < 4; right += 1) {
+        matrix[left][right] += rows[index][left] * rows[index][right];
+      }
+    }
+  }
+  return solveFourByFour(matrix, vector);
+}
+
+function blockBootstrapInterval(
+  rows: number[][],
+  outcomes: number[],
+  contrast: number,
+): [number, number] | null {
+  if (rows.length < MIN_INTERVAL_DAYS) return null;
+  const estimates: number[] = [];
+  const blockSize = Math.min(BOOTSTRAP_BLOCK_DAYS, rows.length);
+  let seed = 0x5f3759df;
+  for (let repeat = 0; repeat < BOOTSTRAP_REPETITIONS; repeat += 1) {
+    const indices: number[] = [];
+    while (indices.length < rows.length) {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      const start = seed % (rows.length - blockSize + 1);
+      for (let offset = 0; offset < blockSize && indices.length < rows.length; offset += 1) {
+        indices.push(start + offset);
+      }
+    }
+    const coefficients = fitTogether(rows, outcomes, indices);
+    if (coefficients) estimates.push(coefficients[3] * contrast);
+  }
+  if (estimates.length < BOOTSTRAP_REPETITIONS * 0.8) return null;
+  estimates.sort((left, right) => left - right);
+  return [percentile(estimates, 0.025), percentile(estimates, 0.975)];
+}
+
+export function buildExploreTogetherResult({
+  records,
+  analysisValues,
+  questions,
+  derivedPredictors,
+  predictorA,
+  predictorB,
+  outcome,
+}: {
+  records: DailyRecord[];
+  analysisValues: AnalysisValueRecord[];
+  questions: CheckInQuestion[];
+  derivedPredictors: DerivedPredictorDefinition[];
+  predictorA: PredictorKey;
+  predictorB: PredictorKey;
+  outcome: OutcomeKey;
+}): ExploreTogetherResult {
+  const empty = (reason: string): ExploreTogetherResult => ({
+    sampleCount: 0, correlationA: null, correlationB: null, interaction: null, reason,
+  });
+  if (predictorA === predictorB) return empty("Choose two different predictors.");
+  if (isSameSignalPair(predictorA, outcome) || isSameSignalPair(predictorB, outcome)) {
+    return empty("A predictor cannot be the same signal as the target.");
+  }
+  const index = buildAnalysisValueIndex(analysisValues);
+  const questionsById = new Map(flattenQuestionFields(questions).map((question) => [question.id, question]));
+  const derivedById = new Map(derivedPredictors.map((definition) => [definition.id, definition]));
+  const points: TogetherPoint[] = [];
+  for (const day of buildCorrelationDays(records, analysisValues)) {
+    const a = parsePredictorValue(predictorA, index, questionsById, derivedById, day.date);
+    const b = parsePredictorValue(predictorB, index, questionsById, derivedById, day.date);
+    const y = parseOutcomeValue(outcome, index, questionsById, day.date);
+    if (a && b && y) points.push({ a: a.value, b: b.value, y: y.value });
+  }
+  const sampleCount = points.length;
+  const valuesA = points.map((point) => point.a);
+  const valuesB = points.map((point) => point.b);
+  const outcomes = points.map((point) => point.y);
+  const base = {
+    sampleCount,
+    correlationA: pearsonCorrelation(valuesA, outcomes),
+    correlationB: pearsonCorrelation(valuesB, outcomes),
+  };
+  if (sampleCount < MIN_INTERACTION_DAYS) {
+    return { ...base, interaction: null, reason: `At least ${MIN_INTERACTION_DAYS} complete days are needed for the interaction view.` };
+  }
+  const meanA = mean(valuesA);
+  const meanB = mean(valuesB);
+  const scaleA = Math.sqrt(mean(valuesA.map((value) => (value - meanA) ** 2)));
+  const scaleB = Math.sqrt(mean(valuesB.map((value) => (value - meanB) ** 2)));
+  if (scaleA < 1e-9 || scaleB < 1e-9) {
+    return { ...base, interaction: null, reason: "Both predictors need to vary across the selected days." };
+  }
+  const sortedA = [...valuesA].sort((left, right) => left - right);
+  const sortedB = [...valuesB].sort((left, right) => left - right);
+  const quartilesA = [percentile(sortedA, 0.25), percentile(sortedA, 0.75)];
+  const quartilesB = [percentile(sortedB, 0.25), percentile(sortedB, 0.75)];
+  const [aLow, aHigh] = quartilesA[0] < quartilesA[1]
+    ? quartilesA : [sortedA[0], sortedA.at(-1) as number];
+  const [bLow, bHigh] = quartilesB[0] < quartilesB[1]
+    ? quartilesB : [sortedB[0], sortedB.at(-1) as number];
+  const lowACount = valuesA.filter((value) => value <= aLow).length;
+  const highACount = valuesA.filter((value) => value >= aHigh).length;
+  const lowBCount = valuesB.filter((value) => value <= bLow).length;
+  const highBCount = valuesB.filter((value) => value >= bHigh).length;
+  if (Math.min(lowACount, highACount, lowBCount, highBCount) < MIN_LEVEL_DAYS) {
+    return { ...base, interaction: null, reason: `Each predictor needs at least ${MIN_LEVEL_DAYS} days at its lower and higher values.` };
+  }
+  const rows = points.map((point) => {
+    const a = (point.a - meanA) / scaleA;
+    const b = (point.b - meanB) / scaleB;
+    return [1, a, b, a * b];
+  });
+  const coefficients = fitTogether(rows, outcomes, points.map((_, position) => position));
+  if (!coefficients) {
+    return { ...base, interaction: null, reason: "These predictors overlap too closely to estimate an interaction." };
+  }
+  const predict = (a: number, b: number): number => {
+    const normalizedA = (a - meanA) / scaleA;
+    const normalizedB = (b - meanB) / scaleB;
+    return coefficients[0] + coefficients[1] * normalizedA + coefficients[2] * normalizedB
+      + coefficients[3] * normalizedA * normalizedB;
+  };
+  const contrast = ((aHigh - aLow) / scaleA) * ((bHigh - bLow) / scaleB);
+  return {
+    ...base,
+    interaction: {
+      aLow, aHigh, bLow, bHigh,
+      lowBEstimates: [predict(aLow, bLow), predict(aHigh, bLow)],
+      highBEstimates: [predict(aLow, bHigh), predict(aHigh, bHigh)],
+      difference: coefficients[3] * contrast,
+      interval: blockBootstrapInterval(rows, outcomes, contrast),
+      lowBCount,
+      highBCount,
+    },
+    reason: null,
+  };
+}

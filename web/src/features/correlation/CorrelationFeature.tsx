@@ -24,6 +24,7 @@ import {
 } from "../../lib/correlation";
 import type { MetricKey } from "../../lib/types";
 import type { CorrelationController } from "./useCorrelationFeature";
+import { ExploreTogether } from "./ExploreTogether";
 
 const TRAINING_PREDICTOR_HELP: Record<string, string> = {
   "garmin:maxAerobicTrainingEffect":
@@ -192,7 +193,11 @@ function PredictorSelect({
 }
 
 export function CorrelationFeature({ controller }: { controller: CorrelationController }) {
+  const [activeTab, setActiveTab] = useState<"top" | "together">("top");
   const {
+    records,
+    analysisValues,
+    questions,
     activeCorrelationTooltipContent,
     activeCorrelationTooltipStyle,
     categoricalMeanData,
@@ -500,6 +505,31 @@ export function CorrelationFeature({ controller }: { controller: CorrelationCont
               </article>
             )}
 
+            <div className="flex flex-wrap gap-3 border-b border-ink/10" role="tablist" aria-label="Correlation Lab sections">
+              {([
+                { id: "top", label: "Top Correlations", help: "Browse the strongest predictor–target links." },
+                { id: "together", label: "Explore Together", help: "See how two predictors relate to a target, separately and together." },
+              ] as const).map((tab) => (
+                <div key={tab.id} className={clsx("flex items-center gap-1 border-b-2", activeTab === tab.id ? "border-accent" : "border-transparent")}>
+                  <button
+                    id={`correlation-tab-${tab.id}`}
+                    aria-controls={`correlation-panel-${tab.id}`}
+                    aria-selected={activeTab === tab.id}
+                    className={clsx("focusable min-h-11 px-2 text-sm font-semibold", activeTab === tab.id ? "text-accent" : "text-muted hover:text-ink")}
+                    role="tab"
+                    type="button"
+                    onClick={() => setActiveTab(tab.id)}
+                  >
+                    {tab.label}
+                  </button>
+                  <PredictorInfo label={tab.label} help={tab.help} />
+                </div>
+              ))}
+            </div>
+
+            {activeTab === "top" ? (
+              <div id="correlation-panel-top" aria-labelledby="correlation-tab-top" className="space-y-5" role="tabpanel">
+
             <article className="panel p-4 sm:p-8">
               <header className="mb-4 flex flex-wrap items-end justify-between gap-4">
                 <div>
@@ -609,8 +639,8 @@ export function CorrelationFeature({ controller }: { controller: CorrelationCont
             <article className="panel p-6 sm:p-8">
               <header className="mb-4 flex flex-wrap items-end justify-between gap-4">
                 <div>
-                  <h3 className="text-lg font-semibold tracking-tight">Explorer</h3>
-                  <p className="text-sm text-muted">Inspect any predictor/outcome pair visually.</p>
+                  <h3 className="text-lg font-semibold tracking-tight">Selected correlation</h3>
+                  <p className="text-sm text-muted">Inspect a predictor and target visually.</p>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="space-y-1 text-sm">
@@ -760,6 +790,19 @@ export function CorrelationFeature({ controller }: { controller: CorrelationCont
                 </p>
               )}
             </article>
+              </div>
+            ) : (
+              <div id="correlation-panel-together" aria-labelledby="correlation-tab-together" role="tabpanel">
+                <ExploreTogether
+                  records={records}
+                  analysisValues={analysisValues}
+                  questions={questions}
+                  derivedPredictors={derivedPredictors}
+                  predictorOptions={predictorOptions}
+                  outcomeOptions={outcomeOptions}
+                />
+              </div>
+            )}
           </section>
   );
 

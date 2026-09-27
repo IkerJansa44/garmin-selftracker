@@ -47,6 +47,7 @@ vi.mock("recharts", () => {
     CartesianGrid: Chart,
     ComposedChart: Chart,
     Line: Chart,
+    LineChart: Chart,
     ReferenceLine: Chart,
     ResponsiveContainer: Chart,
     Scatter: Chart,
@@ -140,6 +141,26 @@ describe("App persistence workflows", () => {
     vi.clearAllMocks();
     window.localStorage.clear();
     mockInitialLoads();
+  });
+
+  it("shows two correlation tabs with short help and opens Explore Together", async () => {
+    setView("lab");
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(await screen.findByRole("tab", { name: "Top Correlations" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getAllByRole("tab")).toHaveLength(2);
+    await user.hover(screen.getByRole("button", { name: "About Top Correlations" }));
+    expect(screen.getByRole("tooltip")).toHaveTextContent("Browse the strongest predictor–target links.");
+    await user.hover(screen.getByRole("button", { name: "About Explore Together" }));
+    expect(screen.getByRole("tooltip")).toHaveTextContent("See how two predictors relate to a target, separately and together.");
+    await user.click(screen.getByRole("tab", { name: "Explore Together" }));
+
+    expect(screen.getByRole("combobox", { name: "Predictor A" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Predictor B" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Target" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Individual relationships" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Interaction" })).toBeInTheDocument();
   });
 
   it("opens one import flow with the current two-day range selected", async () => {
