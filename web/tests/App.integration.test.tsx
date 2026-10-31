@@ -288,6 +288,79 @@ describe("App persistence workflows", () => {
     }
   });
 
+  it("moves a notification with the finger and swipes it away without opening it or changing tabs", async () => {
+    setView("lab");
+    mockInitialLoads({ notifications: CORRELATION_NOTIFICATIONS });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: /3 new correlations/ }));
+    const card = screen.getByRole("button", { name: "Review Sleep Duration vs Sleep Score" });
+    Object.defineProperty(card, "clientWidth", { value: 300 });
+    fireEvent.touchStart(card, { touches: [{ clientX: 260, clientY: 200 }] });
+    fireEvent.pointerDown(card, { pointerId: 1, pointerType: "touch", clientX: 260, clientY: 200 });
+    fireEvent.pointerMove(card, { pointerId: 1, pointerType: "touch", clientX: 180, clientY: 202 });
+    expect(card).toHaveStyle({ transform: "translate3d(-80px, 0, 0)" });
+    expect(api.dismissCorrelationNotifications).not.toHaveBeenCalled();
+    fireEvent.pointerUp(card, { pointerId: 1, pointerType: "touch", clientX: 160, clientY: 202 });
+    fireEvent.touchEnd(card, { changedTouches: [{ clientX: 160, clientY: 202 }] });
+    await waitFor(() => expect(api.dismissCorrelationNotifications).toHaveBeenCalledWith([CORRELATION_NOTIFICATIONS[1].id]));
+    expect(screen.getByRole("button", { name: /2 new correlations/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Correlation", exact: true })).toHaveClass("bg-accent");
+    expect(new URLSearchParams(window.location.search).get("outcome")).toBe("metric:restingHr");
+  });
+
+  it("keeps a notification for short, vertical, rightward, and canceled swipes", async () => {
+    setView("lab");
+    mockInitialLoads({ notifications: CORRELATION_NOTIFICATIONS });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: /3 new correlations/ }));
+    const card = screen.getByRole("button", { name: "Review Steps vs Resting HR" });
+    Object.defineProperty(card, "clientWidth", { value: 300 });
+    for (const [x, y, canceled] of [[250, 200, false], [200, 300, false], [290, 200, false], [100, 200, true]] as const) {
+      fireEvent.pointerDown(card, { pointerId: 1, pointerType: "touch", clientX: 260, clientY: 200 });
+      fireEvent.pointerMove(card, { pointerId: 1, pointerType: "touch", clientX: x, clientY: y });
+      if (canceled) {
+        fireEvent.pointerCancel(card, { pointerId: 1, pointerType: "touch", clientX: x, clientY: y });
+      } else {
+        fireEvent.pointerUp(card, { pointerId: 1, pointerType: "touch", clientX: x, clientY: y });
+      }
+    }
+    expect(card).toHaveStyle({ transform: "translate3d(0px, 0, 0)" });
+    expect(api.dismissCorrelationNotifications).not.toHaveBeenCalled();
+    fireEvent.click(card);
+    expect(api.dismissCorrelationNotifications).not.toHaveBeenCalled();
+    fireEvent.keyDown(card, { key: "Delete" });
+    await waitFor(() => expect(api.dismissCorrelationNotifications).toHaveBeenCalledWith([CORRELATION_NOTIFICATIONS[0].id]));
+  });
+
+  it("clears the entire queue with its cross and keeps it cleared after a reload", async () => {
+    setView("lab");
+    mockInitialLoads({ notifications: CORRELATION_NOTIFICATIONS });
+    const user = userEvent.setup();
+    const app = render(<App />);
+    await user.click(await screen.findByRole("button", { name: "Clear all new correlations" }));
+    await waitFor(() => expect(api.dismissCorrelationNotifications).toHaveBeenCalledWith(CORRELATION_NOTIFICATIONS.map((notification) => notification.id)));
+    expect(screen.queryByRole("region", { name: "New correlations" })).not.toBeInTheDocument();
+    app.unmount();
+    render(<App />);
+    await screen.findByRole("heading", { name: "Correlation Lab" });
+    expect(screen.queryByRole("region", { name: "New correlations" })).not.toBeInTheDocument();
+    expect(new URLSearchParams(window.location.search).get("outcome")).toBe("metric:restingHr");
+  });
+
+  it("restores every notification if clearing the queue fails", async () => {
+    setView("lab");
+    mockInitialLoads({ notifications: CORRELATION_NOTIFICATIONS });
+    api.dismissCorrelationNotifications.mockRejectedValueOnce(new Error("Offline"));
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "Clear all new correlations" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("still in your queue");
+    await user.click(screen.getByRole("button", { name: /3 new correlations/ }));
+    expect(screen.getAllByRole("button", { name: /^Review / })).toHaveLength(3);
+  });
+
   it("opens one import flow with the current two-day range selected", async () => {
     const user = userEvent.setup();
     const today = todayIso();
@@ -547,6 +620,25 @@ describe("App persistence workflows", () => {
       { transform: "translate3d(0, 0, 0)", opacity: 1 },
     ]);
     expect(screen.getByRole("button", { name: "Correlation" })).toHaveClass("bg-accent");
+  });
+
+  it.each([
+    ["dashboard", "Correlation", 300, 140, -160, -256],
+    ["lab", "Dashboard", 100, 260, 160, 256],
+  ] as const)("continues the %s tab swipe in the release direction", async (view, nextTab, startX, endX, dragged, exited) => {
+    setView(view);
+    render(<App />);
+    const main = screen.getByRole("main");
+    const animate = vi.fn(() => ({ cancel: vi.fn(), finished: Promise.resolve() }) as unknown as Animation);
+    Object.defineProperty(main, "animate", { configurable: true, value: animate });
+    fireEvent.touchStart(main, { touches: [{ clientX: startX, clientY: 200 }] });
+    fireEvent.touchMove(main, { touches: [{ clientX: endX, clientY: 202 }] });
+    expect(main).toHaveStyle({ transform: `translate3d(${dragged}px, 0, 0)` });
+    fireEvent.touchEnd(main, { changedTouches: [{ clientX: endX, clientY: 202 }] });
+    await waitFor(() => expect(animate).toHaveBeenCalledTimes(2));
+    expect(animate.mock.calls[0][0][0].transform).toBe(`translate3d(${dragged}px, 0, 0)`);
+    expect(animate.mock.calls[0][0][1].transform).toBe(`translate3d(${exited}px, 0, 0)`);
+    expect(screen.getByRole("button", { name: nextTab, exact: true })).toHaveClass("bg-accent");
   });
 
   it("adds edge resistance when dragging past the first tab", () => {

@@ -199,11 +199,13 @@ export function CorrelationFeature({
   notifications,
   notificationError,
   onOpenNotification,
+  onDismissNotifications,
 }: {
   controller: CorrelationController;
   notifications: CorrelationNotification[];
   notificationError: string | null;
   onOpenNotification: (notification: CorrelationNotification) => void;
+  onDismissNotifications: (notifications: CorrelationNotification[]) => void;
 }) {
   const [activeTab, setActiveTab] = useState<"top" | "together">("top");
   const [reviewNavigation, setReviewNavigation] = useState(0);
@@ -300,6 +302,7 @@ export function CorrelationFeature({
 
             <CorrelationInbox
               notifications={notifications}
+              onDismiss={onDismissNotifications}
               onOpen={(notification) => {
                 setActiveTab("top");
                 setReviewNavigation((previous) => previous + 1);

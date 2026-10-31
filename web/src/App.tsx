@@ -1209,7 +1209,7 @@ function App() {
 
     isViewTransitioningRef.current = true;
     const transitionDistance = Math.min(96, Math.max(56, window.innerWidth * 0.18));
-    const exitOffset = -direction * transitionDistance;
+    const exitOffset = startOffset - direction * transitionDistance;
     const enterOffset = direction * transitionDistance;
     let exitAnimation: Animation | null = null;
     let enterAnimation: Animation | null = null;
@@ -1255,7 +1255,7 @@ function App() {
   }, [activeView, resetDraggedView]);
 
   const handleViewTouchStart = useCallback((event: ReactTouchEvent<HTMLElement>) => {
-    if (event.touches.length !== 1 || !isSwipeNavigationTarget(event.target)) {
+    if (isViewTransitioningRef.current || event.touches.length !== 1 || !isSwipeNavigationTarget(event.target)) {
       swipeStartRef.current = null;
       return;
     }
@@ -1273,7 +1273,7 @@ function App() {
     const gesture = swipeStartRef.current;
     const touch = event.touches[0];
     const main = mainRef.current;
-    if (!gesture || !touch || !main) return;
+    if (!gesture || !touch || !main || isViewTransitioningRef.current) return;
 
     const deltaX = touch.clientX - gesture.x;
     const deltaY = touch.clientY - gesture.y;
@@ -1290,7 +1290,7 @@ function App() {
     const viewportWidth = Math.max(320, window.innerWidth);
     const offset = isPullingPastEdge
       ? Math.sign(deltaX) * Math.min(72, Math.abs(deltaX) * 0.24)
-      : Math.sign(deltaX) * Math.min(viewportWidth * 0.32, Math.abs(deltaX));
+      : Math.sign(deltaX) * Math.min(viewportWidth, Math.abs(deltaX));
     swipeOffsetRef.current = offset;
     main.style.willChange = "transform, opacity";
     main.style.transform = `translate3d(${offset}px, 0, 0)`;
@@ -1535,6 +1535,7 @@ function App() {
   }, [dashboardPlotPreferences, plotSettingsLoadState]);
 
   useEffect(() => {
+    if (isViewTransitioningRef.current) return;
     const context = gsap.context(() => {
       gsap.from(".gsap-fade", {
         y: 20,
@@ -2152,24 +2153,29 @@ function App() {
     mainRef.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
   };
 
-  const openCorrelationNotification = async (notification: CorrelationNotification) => {
-    const token = correlationNotificationToken(notification);
-    reviewedCorrelationTokensRef.current.add(token);
-    setCorrelationNotifications((current) => current.filter((item) => item.id !== notification.id));
+  const removeCorrelationNotifications = async (notifications: CorrelationNotification[]) => {
+    const ids = notifications.map((notification) => notification.id);
+    notifications.forEach((notification) => reviewedCorrelationTokensRef.current.add(correlationNotificationToken(notification)));
+    setCorrelationNotifications((current) => current.filter((item) => !ids.includes(item.id)));
     setCorrelationNotificationError(null);
+    try {
+      await dismissCorrelationNotifications(ids);
+    } catch {
+      notifications.forEach((notification) => reviewedCorrelationTokensRef.current.delete(correlationNotificationToken(notification)));
+      setCorrelationNotifications((current) => [
+        ...notifications.filter((notification) => !current.some((item) => item.id === notification.id)),
+        ...current,
+      ]);
+      setCorrelationNotificationError("Could not remove notifications. They are still in your queue; try again.");
+    }
+  };
+
+  const openCorrelationNotification = (notification: CorrelationNotification) => {
     setPredictorKey(notification.predictor as PredictorKey);
     setOutcomeKey(notification.outcome as OutcomeKey);
     setActiveView("lab");
     void loadCorrelationValues();
-    try {
-      await dismissCorrelationNotifications([notification.id]);
-    } catch {
-      reviewedCorrelationTokensRef.current.delete(token);
-      setCorrelationNotifications((current) => current.some((item) => item.id === notification.id)
-        ? current
-        : [notification, ...current]);
-      setCorrelationNotificationError("Could not mark this correlation as viewed. It is still in your queue; open it again to retry.");
-    }
+    void removeCorrelationNotifications([notification]);
   };
 
   const correlationController = useCorrelationFeature({
@@ -2663,6 +2669,7 @@ function App() {
             notifications={correlationNotifications}
             notificationError={correlationNotificationError}
             onOpenNotification={(notification) => void openCorrelationNotification(notification)}
+            onDismissNotifications={(notifications) => void removeCorrelationNotifications(notifications)}
           />
         )}
         {activeView === "checkin" && <CheckinFeature controller={checkin} />}
