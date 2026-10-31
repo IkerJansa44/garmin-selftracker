@@ -487,7 +487,7 @@ export function CheckinFeature({ controller }: { controller: CheckinController }
 
         <div className="mb-4 rounded-2xl bg-subsurface px-4 py-3 text-sm">
           {controller.weekday && (
-            <p className="text-sm font-semibold uppercase tracking-[0.16em] text-muted">
+            <p data-checkin-weekday className="text-sm font-semibold uppercase tracking-[0.16em] text-muted">
               {controller.weekday}
             </p>
           )}

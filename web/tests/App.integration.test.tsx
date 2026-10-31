@@ -576,6 +576,8 @@ describe("App persistence workflows", () => {
       previousDate.getTime() - previousDate.getTimezoneOffset() * 60_000,
     ).toISOString().slice(0, 10);
     Object.defineProperty(panel, "setPointerCapture", { value: vi.fn() });
+    vi.spyOn(panel.querySelector("[data-checkin-weekday]")!, "getBoundingClientRect")
+      .mockReturnValue({ bottom: 100 } as DOMRect);
 
     fireEvent.touchStart(panel, { touches: [{ clientX: 120, clientY: 200 }] });
     fireEvent.pointerDown(panel, {
@@ -595,6 +597,29 @@ describe("App persistence workflows", () => {
     await waitFor(() => expect(dateInput).toHaveValue(previousDateIso));
     expect(screen.getByRole("button", { name: "Check-In" })).toHaveClass("bg-accent");
     expect(screen.getByRole("button", { name: "Correlation" })).not.toHaveClass("bg-accent");
+  });
+
+  it.each([
+    ["above", 80, "Correlation"],
+    ["below", 120, "Check-In"],
+  ] as const)("routes a swipe starting %s the weekday to the correct navigation", async (_area, startY, tab) => {
+    setView("checkin");
+    render(<App />);
+    const panel = await screen.findByRole("article", { name: "Daily Check-In" });
+    const dateInput = within(panel).getByDisplayValue(todayIso());
+    Object.defineProperty(panel, "setPointerCapture", { value: vi.fn() });
+    vi.spyOn(panel.querySelector("[data-checkin-weekday]")!, "getBoundingClientRect")
+      .mockReturnValue({ bottom: 100 } as DOMRect);
+    const endY = startY === 80 ? 110 : 90;
+
+    fireEvent.pointerDown(panel, { pointerId: 1, pointerType: "touch", clientX: 100, clientY: startY });
+    fireEvent.touchStart(panel, { touches: [{ clientX: 100, clientY: startY }] });
+    fireEvent.touchMove(panel, { touches: [{ clientX: 220, clientY: endY }] });
+    fireEvent.pointerUp(panel, { pointerId: 1, pointerType: "touch", clientX: 220, clientY: endY });
+    fireEvent.touchEnd(panel, { changedTouches: [{ clientX: 220, clientY: endY }] });
+
+    await waitFor(() => expect(screen.getByRole("button", { name: tab, exact: true })).toHaveClass("bg-accent"));
+    expect(dateInput).toHaveValue(startY === 80 ? todayIso() : shiftIsoDate(todayIso(), -1));
   });
 
   it("uses an iOS-style lateral transition when swiping between tabs", async () => {

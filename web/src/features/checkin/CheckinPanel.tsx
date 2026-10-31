@@ -17,6 +17,11 @@ export function resolveSwipeDirection(deltaX: number, deltaY: number): "previous
   return deltaX < 0 ? "next" : "previous";
 }
 
+function isBelowWeekday(panel: HTMLElement, clientY: number): boolean {
+  const weekday = panel.querySelector("[data-checkin-weekday]");
+  return weekday !== null && clientY > weekday.getBoundingClientRect().bottom;
+}
+
 export function CheckinPanel({
   children,
   isDirty,
@@ -37,6 +42,7 @@ export function CheckinPanel({
   const handlePointerDown = (event: PointerEvent<HTMLElement>) => {
     if (
       event.pointerType !== "touch" ||
+      !isBelowWeekday(event.currentTarget, event.clientY) ||
       (event.target instanceof Element && event.target.closest(INTERACTIVE_SELECTOR))
     ) {
       return;
@@ -62,7 +68,10 @@ export function CheckinPanel({
         showSavedState && "border border-[#d7e6dc]",
       )}
       style={showSavedState ? { backgroundColor: SAVED_BACKGROUND_COLOR } : undefined}
-      data-swipe-ignore
+      onTouchStart={(event) => {
+        const touch = event.touches[0];
+        if (touch && isBelowWeekday(event.currentTarget, touch.clientY)) event.stopPropagation();
+      }}
       onPointerCancel={() => {
         pointerStartRef.current = null;
       }}
