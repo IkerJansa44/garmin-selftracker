@@ -1,5 +1,5 @@
 FROM node:22-slim AS codex
-RUN npm install -g @openai/codex@0.147.0
+RUN npm install -g @openai/codex@0.166.0
 
 FROM python:3.12-slim
 

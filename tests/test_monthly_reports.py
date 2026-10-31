@@ -202,6 +202,8 @@ def test_codex_analysis_validates_json_and_falls_back(tmp_path: Path) -> None:
     }
 
     def valid_runner(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        assert args[args.index("--model") + 1] == "gpt-6.1-sol"
+        assert args[args.index("--config") + 1] == 'model_reasoning_effort="medium"'
         result_path = Path(args[args.index("--output-last-message") + 1])
         result_path.write_text(
             json.dumps(
