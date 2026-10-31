@@ -2192,6 +2192,13 @@ function App() {
     <div
       ref={appRef}
       className="min-h-screen overflow-x-clip px-4 pb-[calc(7rem+env(safe-area-inset-bottom))] pt-4 text-ink sm:px-6 sm:pb-10 sm:pt-32 lg:px-9"
+      onTouchCancel={() => {
+        swipeStartRef.current = null;
+        void resetDraggedView();
+      }}
+      onTouchEnd={handleViewTouchEnd}
+      onTouchMove={handleViewTouchMove}
+      onTouchStart={handleViewTouchStart}
     >
       {activeView !== "lab" && correlationNotifications.some(
         (notification) => !hiddenCorrelationBanners.includes(correlationNotificationToken(notification)),
@@ -2326,13 +2333,6 @@ function App() {
       <main
         ref={mainRef}
         className="mx-auto flex w-full max-w-[1400px] touch-pan-y flex-col gap-8"
-        onTouchCancel={() => {
-          swipeStartRef.current = null;
-          void resetDraggedView();
-        }}
-        onTouchEnd={handleViewTouchEnd}
-        onTouchMove={handleViewTouchMove}
-        onTouchStart={handleViewTouchStart}
       >
         {dataStatus !== "ready" && (
           <div

@@ -60,14 +60,13 @@ describe("CheckinPanel", () => {
         onNext={onNext}
         onPrevious={onPrevious}
       >
-        <p data-checkin-weekday>Saturday</p>
+        <div data-checkin-date-swipe><p>Saturday</p></div>
       </CheckinPanel>,
     );
     const panel = screen.getByRole("article", { name: "Daily Check-In" });
     Object.defineProperty(panel, "setPointerCapture", { value: vi.fn() });
-    vi.spyOn(screen.getByText("Saturday"), "getBoundingClientRect").mockReturnValue({ bottom: 100 } as DOMRect);
 
-    fireEvent.pointerDown(panel, {
+    fireEvent.pointerDown(screen.getByText("Saturday"), {
       clientX: 120,
       clientY: 200,
       pointerId: 1,
@@ -84,21 +83,45 @@ describe("CheckinPanel", () => {
     expect(onNext).not.toHaveBeenCalled();
   });
 
-  it.each([80, 100])("does not change dates for a swipe starting at or above the weekday (%s)", (clientY) => {
+  it.each(["Header", "Margin", "Gap"])("does not change dates for a swipe starting on %s and ending inside a card", (label) => {
     const onPrevious = vi.fn();
     render(
       <CheckinPanel isDirty={false} isSaved={false} onPrevious={onPrevious}>
-        <p data-checkin-weekday>Saturday</p>
+        <h2>Header</h2>
+        <p>Margin</p>
+        <div data-checkin-date-swipe><p>Saturday</p></div>
+        <p>Gap</p>
       </CheckinPanel>,
     );
     const panel = screen.getByRole("article");
     const capture = vi.fn();
     Object.defineProperty(panel, "setPointerCapture", { value: capture });
-    vi.spyOn(screen.getByText("Saturday"), "getBoundingClientRect").mockReturnValue({ bottom: 100 } as DOMRect);
-    fireEvent.pointerDown(panel, { pointerId: 1, pointerType: "touch", clientX: 120, clientY });
-    fireEvent.pointerUp(panel, { pointerId: 1, pointerType: "touch", clientX: 240, clientY: 110 });
+    fireEvent.pointerDown(screen.getByText(label), { pointerId: 1, pointerType: "touch", clientX: 120, clientY: 200 });
+    fireEvent.pointerUp(screen.getByText("Saturday"), { pointerId: 1, pointerType: "touch", clientX: 240, clientY: 200 });
     expect(onPrevious).not.toHaveBeenCalled();
     expect(capture).not.toHaveBeenCalled();
+  });
+
+  it("leaves gestures on form controls to the controls", () => {
+    const onPrevious = vi.fn();
+    render(
+      <CheckinPanel isDirty={false} isSaved={false} onPrevious={onPrevious}>
+        <div data-checkin-date-swipe>
+          <input aria-label="Score" type="range" />
+          <textarea aria-label="Note" />
+          <button type="button">Yes</button>
+        </div>
+      </CheckinPanel>,
+    );
+    const panel = screen.getByRole("article");
+    const capture = vi.fn();
+    Object.defineProperty(panel, "setPointerCapture", { value: capture });
+    for (const control of [screen.getByRole("slider"), screen.getByRole("textbox"), screen.getByRole("button", { name: "Yes" })]) {
+      fireEvent.pointerDown(control, { pointerId: 1, pointerType: "touch", clientX: 120, clientY: 200 });
+      fireEvent.pointerUp(control, { pointerId: 1, pointerType: "touch", clientX: 240, clientY: 200 });
+    }
+    expect(capture).not.toHaveBeenCalled();
+    expect(onPrevious).not.toHaveBeenCalled();
   });
 
   it("ignores short or mostly vertical gestures", () => {

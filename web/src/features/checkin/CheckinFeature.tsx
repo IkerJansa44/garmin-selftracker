@@ -485,9 +485,9 @@ export function CheckinFeature({ controller }: { controller: CheckinController }
           </div>
         </div>
 
-        <div className="mb-4 rounded-2xl bg-subsurface px-4 py-3 text-sm">
+        <div data-checkin-date-swipe className="mb-4 rounded-2xl bg-subsurface px-4 py-3 text-sm">
           {controller.weekday && (
-            <p data-checkin-weekday className="text-sm font-semibold uppercase tracking-[0.16em] text-muted">
+            <p className="text-sm font-semibold uppercase tracking-[0.16em] text-muted">
               {controller.weekday}
             </p>
           )}
@@ -515,7 +515,7 @@ export function CheckinFeature({ controller }: { controller: CheckinController }
 
         <div className="space-y-5">
           {controller.questions.map((section) => (
-            <div key={section.name} className="rounded-[22px] bg-subsurface p-4">
+            <div key={section.name} data-checkin-date-swipe className="rounded-[22px] bg-subsurface p-4">
               <h3 className="mb-3 text-sm font-semibold uppercase tracking-[0.16em] text-muted">
                 {section.name}
               </h3>
@@ -594,7 +594,7 @@ export function CheckinFeature({ controller }: { controller: CheckinController }
 
 function MetricCard({ label, value, sourceDate }: { label: string; value: string; sourceDate: string }) {
   return (
-    <div className="rounded-[22px] bg-subsurface p-4">
+    <div data-checkin-date-swipe className="rounded-[22px] bg-subsurface p-4">
       <p className="text-xs uppercase tracking-[0.16em] text-muted">Predictor</p>
       <p className="mt-2 text-sm text-muted">{label}</p>
       <p className="metric-number mt-1 text-2xl font-semibold text-ink">{value}</p>

@@ -10,7 +10,7 @@ export function DerivedMetricCard({
   helperText,
 }: DerivedMetricCardProps) {
   return (
-    <div className="mt-5 rounded-[22px] bg-subsurface p-4">
+    <div data-checkin-date-swipe className="mt-5 rounded-[22px] bg-subsurface p-4">
       <p className="text-xs uppercase tracking-[0.16em] text-muted">Derived Metric</p>
       <p className="mt-2 text-sm text-muted">{label}</p>
       <p className="metric-number mt-1 text-2xl font-semibold text-ink">{value}</p>

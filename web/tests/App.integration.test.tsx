@@ -576,11 +576,10 @@ describe("App persistence workflows", () => {
       previousDate.getTime() - previousDate.getTimezoneOffset() * 60_000,
     ).toISOString().slice(0, 10);
     Object.defineProperty(panel, "setPointerCapture", { value: vi.fn() });
-    vi.spyOn(panel.querySelector("[data-checkin-weekday]")!, "getBoundingClientRect")
-      .mockReturnValue({ bottom: 100 } as DOMRect);
+    const card = panel.querySelector("[data-checkin-date-swipe]")!;
 
-    fireEvent.touchStart(panel, { touches: [{ clientX: 120, clientY: 200 }] });
-    fireEvent.pointerDown(panel, {
+    fireEvent.touchStart(card, { touches: [{ clientX: 120, clientY: 200 }] });
+    fireEvent.pointerDown(card, {
       clientX: 120,
       clientY: 200,
       pointerId: 1,
@@ -600,26 +599,57 @@ describe("App persistence workflows", () => {
   });
 
   it.each([
-    ["above", 80, "Correlation"],
-    ["below", 120, "Check-In"],
-  ] as const)("routes a swipe starting %s the weekday to the correct navigation", async (_area, startY, tab) => {
+    ["header", "Correlation"],
+    ["weekday", "Check-In"],
+    ["question", "Check-In"],
+    ["card margin", "Correlation"],
+    ["screen margin", "Correlation"],
+    ["gap", "Correlation"],
+  ] as const)("routes a swipe starting in the %s to the correct navigation", async (area, tab) => {
     setView("checkin");
     render(<App />);
     const panel = await screen.findByRole("article", { name: "Daily Check-In" });
     const dateInput = within(panel).getByDisplayValue(todayIso());
     Object.defineProperty(panel, "setPointerCapture", { value: vi.fn() });
-    vi.spyOn(panel.querySelector("[data-checkin-weekday]")!, "getBoundingClientRect")
-      .mockReturnValue({ bottom: 100 } as DOMRect);
-    const endY = startY === 80 ? 110 : 90;
+    const weekday = panel.querySelector("[data-checkin-date-swipe]")!;
+    const targets = {
+      header: screen.getByRole("heading", { name: "Daily Check-In" }),
+      weekday,
+      question: within(panel).getByText("Journal"),
+      "card margin": panel,
+      "screen margin": screen.getByRole("main").parentElement!,
+      gap: weekday.parentElement!,
+    };
+    const target = targets[area];
+    const endTarget = tab === "Check-In" ? panel : weekday;
 
-    fireEvent.pointerDown(panel, { pointerId: 1, pointerType: "touch", clientX: 100, clientY: startY });
-    fireEvent.touchStart(panel, { touches: [{ clientX: 100, clientY: startY }] });
-    fireEvent.touchMove(panel, { touches: [{ clientX: 220, clientY: endY }] });
-    fireEvent.pointerUp(panel, { pointerId: 1, pointerType: "touch", clientX: 220, clientY: endY });
-    fireEvent.touchEnd(panel, { changedTouches: [{ clientX: 220, clientY: endY }] });
+    fireEvent.pointerDown(target, { pointerId: 1, pointerType: "touch", clientX: 100, clientY: 200 });
+    fireEvent.touchStart(target, { touches: [{ clientX: 100, clientY: 200 }] });
+    fireEvent.touchMove(endTarget, { touches: [{ clientX: 220, clientY: 202 }] });
+    fireEvent.pointerUp(endTarget, { pointerId: 1, pointerType: "touch", clientX: 220, clientY: 202 });
+    fireEvent.touchEnd(endTarget, { changedTouches: [{ clientX: 220, clientY: 202 }] });
 
     await waitFor(() => expect(screen.getByRole("button", { name: tab, exact: true })).toHaveClass("bg-accent"));
-    expect(dateInput).toHaveValue(startY === 80 ? todayIso() : shiftIsoDate(todayIso(), -1));
+    expect(dateInput).toHaveValue(tab === "Correlation" ? todayIso() : shiftIsoDate(todayIso(), -1));
+  });
+
+  it("keeps slider gestures inside a question card from navigating dates or tabs", async () => {
+    setView("checkin");
+    api.fetchQuestionSettings.mockResolvedValue({
+      questions: [{ ...JOURNAL_QUESTION, id: "score", prompt: "Score", inputType: "slider", min: 0, max: 10 }],
+    });
+    render(<App />);
+    const slider = await screen.findByRole("slider");
+    const dateInput = screen.getByDisplayValue(todayIso());
+    fireEvent.pointerDown(slider, { pointerId: 1, pointerType: "touch", clientX: 100, clientY: 200 });
+    fireEvent.touchStart(slider, { touches: [{ clientX: 100, clientY: 200 }] });
+    fireEvent.touchMove(slider, { touches: [{ clientX: 220, clientY: 202 }] });
+    fireEvent.change(slider, { target: { value: "7" } });
+    fireEvent.pointerUp(slider, { pointerId: 1, pointerType: "touch", clientX: 220, clientY: 202 });
+    fireEvent.touchEnd(slider, { changedTouches: [{ clientX: 220, clientY: 202 }] });
+    expect(slider).toHaveValue("7");
+    expect(dateInput).toHaveValue(todayIso());
+    expect(screen.getByRole("button", { name: "Check-In", exact: true })).toHaveClass("bg-accent");
   });
 
   it("uses an iOS-style lateral transition when swiping between tabs", async () => {
