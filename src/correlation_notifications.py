@@ -3,7 +3,9 @@ from __future__ import annotations
 import logging
 import math
 import smtplib
+import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from email.message import EmailMessage
 from html import escape
 from typing import Any, Callable, Literal
@@ -26,6 +28,7 @@ from src.notifications import (
 
 logger = logging.getLogger(__name__)
 
+CORRELATION_IN_APP_NOTIFICATIONS_KEY = "correlation_in_app_notifications"
 NOTIFIED_CORRELATIONS_KEY = "notified_meaningful_correlations"
 MIN_SAMPLE_COUNT = 20
 MIN_STRENGTH = 0.2
@@ -127,6 +130,7 @@ def notify_new_meaningful_correlations(
         _save_notified_keys(settings.db_path, current_keys)
         return []
 
+    append_correlation_notifications(settings.db_path, new_correlations)
     preferences = load_notification_preferences(settings.db_path)
     if preferences["email"]:
         try:
@@ -143,6 +147,130 @@ def notify_new_meaningful_correlations(
         "Recorded %d new meaningful correlation notifications", len(new_correlations)
     )
     return new_correlations
+
+
+def append_correlation_notifications(
+    db_path: str,
+    correlations: list[MeaningfulCorrelation],
+) -> list[dict[str, Any]]:
+    connection = connect_db(db_path)
+    try:
+        init_db(connection)
+        connection.execute("BEGIN IMMEDIATE")
+        existing = load_correlation_notifications(connection)
+        existing_by_id = {str(item["id"]): item for item in existing}
+        created_at = datetime.now(timezone.utc).isoformat()
+        for correlation in correlations:
+            existing_by_id[correlation.key] = _serialize_correlation_notification(
+                correlation,
+                created_at=created_at,
+            )
+        notifications = list(existing_by_id.values())
+        upsert_setting_json(
+            connection,
+            CORRELATION_IN_APP_NOTIFICATIONS_KEY,
+            notifications,
+        )
+        connection.commit()
+        return notifications
+    finally:
+        connection.close()
+
+
+def dismiss_correlation_notifications(
+    db_path: str,
+    notification_ids: list[str],
+) -> list[dict[str, Any]]:
+    ids = set(notification_ids)
+    connection = connect_db(db_path)
+    try:
+        init_db(connection)
+        connection.execute("BEGIN IMMEDIATE")
+        notifications = [
+            notification
+            for notification in load_correlation_notifications(connection)
+            if str(notification["id"]) not in ids
+        ]
+        upsert_setting_json(
+            connection,
+            CORRELATION_IN_APP_NOTIFICATIONS_KEY,
+            notifications,
+        )
+        connection.commit()
+        return notifications
+    finally:
+        connection.close()
+
+
+def load_correlation_notifications(
+    connection: sqlite3.Connection,
+) -> list[dict[str, Any]]:
+    raw_notifications = get_setting_json(
+        connection,
+        CORRELATION_IN_APP_NOTIFICATIONS_KEY,
+    )
+    if not isinstance(raw_notifications, list):
+        return []
+    return [
+        notification
+        for item in raw_notifications
+        if (notification := _normalize_correlation_notification(item)) is not None
+    ]
+
+
+def _normalize_correlation_notification(item: Any) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+    required_strings = (
+        "id",
+        "key",
+        "predictor",
+        "outcome",
+        "predictorLabel",
+        "outcomeLabel",
+        "createdAt",
+    )
+    if any(
+        not isinstance(item.get(key), str) or not item[key] for key in required_strings
+    ):
+        return None
+    try:
+        correlation = float(item["correlation"])
+        q_value = float(item["qValue"])
+        sample_count = int(item["sampleCount"])
+    except (TypeError, ValueError):
+        return None
+    return {
+        "id": item["id"],
+        "key": item["key"],
+        "predictor": item["predictor"],
+        "outcome": item["outcome"],
+        "predictorLabel": item["predictorLabel"],
+        "outcomeLabel": item["outcomeLabel"],
+        "sampleCount": sample_count,
+        "correlation": correlation,
+        "qValue": q_value,
+        "createdAt": item["createdAt"],
+    }
+
+
+def _serialize_correlation_notification(
+    correlation: MeaningfulCorrelation,
+    *,
+    created_at: str,
+) -> dict[str, Any]:
+    return {
+        "id": correlation.key,
+        "key": correlation.key,
+        "predictor": correlation.predictor,
+        "outcome": correlation.outcome,
+        "predictorLabel": correlation.predictor_label,
+        "outcomeLabel": correlation.outcome_label,
+        "sampleCount": correlation.sample_count,
+        "correlation": correlation.correlation,
+        "qValue": correlation.q_value,
+        "createdAt": created_at,
+    }
 
 
 def scan_meaningful_correlations(db_path: str) -> list[MeaningfulCorrelation]:
@@ -516,18 +644,11 @@ def _send_correlation_push(
     settings: CorrelationEmailSettings,
     correlations: list[MeaningfulCorrelation],
 ) -> int:
-    strongest = max(correlations, key=lambda item: abs(item.correlation))
-    body = (
-        _describe_correlation(strongest)
-        if len(correlations) == 1
-        else f"{len(correlations)} new meaningful correlations were found."
-    )
+    count = len(correlations)
     notification = PushNotification(
-        title="New meaningful Garmin correlation",
-        body=body,
-        url=_build_correlation_link(settings.dashboard_url, strongest)
-        or settings.dashboard_url
-        or "/",
+        title=f"{count} new correlation{'s' if count != 1 else ''}",
+        body="Tap to review.",
+        url=_build_correlation_link(settings.dashboard_url or "/") or "/",
         tag="meaningful-correlations",
     )
     if settings.send_push_fn is not None:
@@ -630,19 +751,19 @@ def _build_email_html(
 
 def _build_correlation_link(
     dashboard_url: str,
-    correlation: MeaningfulCorrelation,
+    correlation: MeaningfulCorrelation | None = None,
 ) -> str | None:
     if not dashboard_url:
         return None
     parts = urlsplit(dashboard_url)
     query = dict(parse_qsl(parts.query, keep_blank_values=True))
-    query.update(
-        {
-            "view": "lab",
-            "predictor": correlation.predictor,
-            "outcome": correlation.outcome,
-        }
-    )
+    query["view"] = "lab"
+    query.pop("predictor", None)
+    query.pop("outcome", None)
+    if correlation is not None:
+        query.update(
+            {"predictor": correlation.predictor, "outcome": correlation.outcome}
+        )
     return urlunsplit(
         (
             parts.scheme,

@@ -13,10 +13,8 @@ from src.api import (
     ApiSettings,
     ImportJobManager,
     ImportRequest,
-    _append_correlation_notifications,
     _as_clock_time,
     _build_settings,
-    _dismiss_correlation_notifications,
     _load_derived_predictors_payload,
     _load_checkin_reminder_settings_payload,
     _import_status_message,
@@ -37,7 +35,11 @@ from src.api import (
     _save_derived_predictors_payload,
     _save_questions_payload,
 )
-from src.correlation_notifications import MeaningfulCorrelation
+from src.correlation_notifications import (
+    MeaningfulCorrelation,
+    append_correlation_notifications,
+    dismiss_correlation_notifications,
+)
 from src.config import Settings
 from src.sync import SyncResult
 from src.db import connect_db, init_db
@@ -962,7 +964,7 @@ def test_correlation_notifications_are_stored_and_dismissed(tmp_path: Path) -> N
         ),
     ]
 
-    stored = _append_correlation_notifications(str(db_path), correlations)
+    stored = append_correlation_notifications(str(db_path), correlations)
     assert [notification["id"] for notification in stored] == [
         "garmin:steps__metric:restingHr",
         "garmin:sleepSeconds__metric:sleepScore",
@@ -971,7 +973,7 @@ def test_correlation_notifications_are_stored_and_dismissed(tmp_path: Path) -> N
     payload = _load_dashboard_payload(str(db_path), 7)
     assert len(payload["notifications"]["correlations"]) == 2
 
-    remaining = _dismiss_correlation_notifications(
+    remaining = dismiss_correlation_notifications(
         str(db_path),
         ["garmin:steps__metric:restingHr"],
     )

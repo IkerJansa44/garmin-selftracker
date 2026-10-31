@@ -23,8 +23,10 @@ import {
   type PredictorKey,
 } from "../../lib/correlation";
 import type { MetricKey } from "../../lib/types";
+import type { CorrelationNotification } from "../../lib/api";
 import type { CorrelationController } from "./useCorrelationFeature";
 import { ExploreTogether } from "./ExploreTogether";
+import { CorrelationInbox } from "./CorrelationInbox";
 
 const TRAINING_PREDICTOR_HELP: Record<string, string> = {
   "garmin:maxAerobicTrainingEffect":
@@ -192,8 +194,25 @@ function PredictorSelect({
   );
 }
 
-export function CorrelationFeature({ controller }: { controller: CorrelationController }) {
+export function CorrelationFeature({
+  controller,
+  notifications,
+  notificationError,
+  onOpenNotification,
+}: {
+  controller: CorrelationController;
+  notifications: CorrelationNotification[];
+  notificationError: string | null;
+  onOpenNotification: (notification: CorrelationNotification) => void;
+}) {
   const [activeTab, setActiveTab] = useState<"top" | "together">("top");
+  const [reviewNavigation, setReviewNavigation] = useState(0);
+  const selectedCorrelationRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (reviewNavigation) {
+      selectedCorrelationRef.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    }
+  }, [reviewNavigation]);
   const {
     records,
     analysisValues,
@@ -278,6 +297,16 @@ export function CorrelationFeature({ controller }: { controller: CorrelationCont
                 </button>
               </div>
             </article>
+
+            <CorrelationInbox
+              notifications={notifications}
+              onOpen={(notification) => {
+                setActiveTab("top");
+                setReviewNavigation((previous) => previous + 1);
+                onOpenNotification(notification);
+              }}
+            />
+            {notificationError && <p role="alert" className="text-sm text-error">{notificationError}</p>}
 
             {showNewVariablePanel && (
               <article className="panel p-6 sm:p-8">
@@ -636,7 +665,7 @@ export function CorrelationFeature({ controller }: { controller: CorrelationCont
               )}
             </article>
 
-            <article className="panel p-6 sm:p-8">
+            <article ref={selectedCorrelationRef} className="panel scroll-mt-4 p-6 sm:scroll-mt-40 sm:p-8">
               <header className="mb-4 flex flex-wrap items-end justify-between gap-4">
                 <div>
                   <h3 className="text-lg font-semibold tracking-tight">Selected correlation</h3>

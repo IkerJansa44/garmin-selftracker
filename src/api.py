@@ -17,7 +17,8 @@ from urllib.parse import parse_qs, urlparse
 from src.config import SettingsError, load_settings
 from src.correlation_notifications import (
     CorrelationEmailSettings,
-    MeaningfulCorrelation,
+    dismiss_correlation_notifications,
+    load_correlation_notifications,
     current_meaningful_correlation_keys,
     notify_new_meaningful_correlations,
 )
@@ -76,7 +77,6 @@ logger = logging.getLogger(__name__)
 QUESTION_SETTINGS_KEY = "checkin_questions"
 DASHBOARD_PLOTS_SETTINGS_KEY = "dashboard_plots"
 CORRELATION_DERIVED_PREDICTORS_KEY = "correlation_derived_predictors"
-CORRELATION_IN_APP_NOTIFICATIONS_KEY = "correlation_in_app_notifications"
 QUESTION_INPUT_TYPES = {"slider", "multi-choice", "boolean", "time", "text"}
 QUESTION_ANALYSIS_MODES = {"predictor_next_day", "target_same_day"}
 PLOT_DIRECTIONS = {"higher", "lower"}
@@ -477,140 +477,14 @@ def _notify_new_meaningful_correlations(
     settings: ApiSettings,
     *,
     previous_keys: set[str] | None,
-) -> list[dict[str, Any]]:
+) -> None:
     try:
-        correlations = notify_new_meaningful_correlations(
+        notify_new_meaningful_correlations(
             _correlation_email_settings(settings),
             previous_keys=previous_keys,
         )
     except Exception:  # pragma: no cover - runtime guard
         logger.exception("Failed to scan meaningful correlation notifications")
-        return []
-    if correlations:
-        return _append_correlation_notifications(settings.db_path, correlations)
-    return []
-
-
-def _append_correlation_notifications(
-    db_path: str,
-    correlations: list[MeaningfulCorrelation],
-) -> list[dict[str, Any]]:
-    connection = connect_db(db_path)
-    try:
-        init_db(connection)
-        existing = _load_correlation_notifications(connection)
-        existing_by_id = {str(item["id"]): item for item in existing}
-        created_at = datetime.now(timezone.utc).isoformat()
-        for correlation in correlations:
-            existing_by_id[correlation.key] = _serialize_correlation_notification(
-                correlation,
-                created_at=created_at,
-            )
-        notifications = list(existing_by_id.values())
-        upsert_setting_json(
-            connection,
-            CORRELATION_IN_APP_NOTIFICATIONS_KEY,
-            notifications,
-        )
-        connection.commit()
-        return notifications
-    finally:
-        connection.close()
-
-
-def _dismiss_correlation_notifications(
-    db_path: str,
-    notification_ids: list[str],
-) -> list[dict[str, Any]]:
-    ids = set(notification_ids)
-    connection = connect_db(db_path)
-    try:
-        init_db(connection)
-        notifications = [
-            notification
-            for notification in _load_correlation_notifications(connection)
-            if str(notification["id"]) not in ids
-        ]
-        upsert_setting_json(
-            connection,
-            CORRELATION_IN_APP_NOTIFICATIONS_KEY,
-            notifications,
-        )
-        connection.commit()
-        return notifications
-    finally:
-        connection.close()
-
-
-def _load_correlation_notifications(
-    connection: Any,
-) -> list[dict[str, Any]]:
-    raw_notifications = get_setting_json(
-        connection,
-        CORRELATION_IN_APP_NOTIFICATIONS_KEY,
-    )
-    if not isinstance(raw_notifications, list):
-        return []
-    return [
-        notification
-        for item in raw_notifications
-        if (notification := _normalize_correlation_notification(item)) is not None
-    ]
-
-
-def _normalize_correlation_notification(item: Any) -> dict[str, Any] | None:
-    if not isinstance(item, dict):
-        return None
-    required_strings = (
-        "id",
-        "key",
-        "predictor",
-        "outcome",
-        "predictorLabel",
-        "outcomeLabel",
-        "createdAt",
-    )
-    if any(
-        not isinstance(item.get(key), str) or not item[key] for key in required_strings
-    ):
-        return None
-    try:
-        correlation = float(item["correlation"])
-        q_value = float(item["qValue"])
-        sample_count = int(item["sampleCount"])
-    except (TypeError, ValueError):
-        return None
-    return {
-        "id": item["id"],
-        "key": item["key"],
-        "predictor": item["predictor"],
-        "outcome": item["outcome"],
-        "predictorLabel": item["predictorLabel"],
-        "outcomeLabel": item["outcomeLabel"],
-        "sampleCount": sample_count,
-        "correlation": correlation,
-        "qValue": q_value,
-        "createdAt": item["createdAt"],
-    }
-
-
-def _serialize_correlation_notification(
-    correlation: MeaningfulCorrelation,
-    *,
-    created_at: str,
-) -> dict[str, Any]:
-    return {
-        "id": correlation.key,
-        "key": correlation.key,
-        "predictor": correlation.predictor,
-        "outcome": correlation.outcome,
-        "predictorLabel": correlation.predictor_label,
-        "outcomeLabel": correlation.outcome_label,
-        "sampleCount": correlation.sample_count,
-        "correlation": correlation.correlation,
-        "qValue": correlation.q_value,
-        "createdAt": created_at,
-    }
 
 
 def _coverage(row_exists: bool, value: Any) -> str:
@@ -1723,7 +1597,7 @@ def _load_dashboard_payload(
     ).fetchone()
 
     hr_zone_bounds = get_hr_zone_bounds(connection)
-    correlation_notifications = _load_correlation_notifications(connection)
+    correlation_notifications = load_correlation_notifications(connection)
     connection.close()
 
     if latest_run is None:
@@ -2255,7 +2129,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                 )
                 return
             self._send_operation(
-                lambda: _dismiss_correlation_notifications(
+                lambda: dismiss_correlation_notifications(
                     self.db_path,
                     notification_ids,
                 ),

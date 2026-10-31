@@ -1,9 +1,10 @@
 import { type ReactNode } from "react";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { generateMockRecords } from "../src/lib/mockData";
 import { type CheckInQuestion } from "../src/lib/types";
+import type { CorrelationNotification } from "../src/lib/api";
 
 const api = vi.hoisted(() => ({
   deletePushSubscription: vi.fn(),
@@ -82,6 +83,19 @@ const RECOVERY_PLOT = {
   reduceMethod: "mean" as const,
   chartStyle: "line" as const,
 };
+const CORRELATION_NOTIFICATIONS: CorrelationNotification[] = [
+  { predictor: "garmin:steps", predictorLabel: "Steps", outcome: "metric:restingHr", outcomeLabel: "Resting HR" },
+  { predictor: "garmin:sleepSeconds", predictorLabel: "Sleep Duration", outcome: "metric:sleepScore", outcomeLabel: "Sleep Score" },
+  { predictor: "garmin:stressAvg", predictorLabel: "Stress Avg", outcome: "metric:restingHr", outcomeLabel: "Resting HR" },
+].map((pair) => ({
+  ...pair,
+  id: `${pair.predictor}__${pair.outcome}`,
+  key: `${pair.predictor}__${pair.outcome}`,
+  sampleCount: 31,
+  correlation: 0.42,
+  qValue: 0.02,
+  createdAt: "2026-10-31T06:00:00Z",
+}));
 
 function setView(view: "checkin" | "dashboard" | "lab" | "settings") {
   window.history.replaceState(null, "", `/?view=${view}`);
@@ -91,17 +105,26 @@ function mockInitialLoads({
   drafts = [],
   entries = [],
   plots = [RECOVERY_PLOT],
+  notifications = [],
 }: {
   drafts?: Array<{ date: string; answers: Record<string, string>; updatedAt: string }>;
   entries?: Array<{ date: string; answers: Record<string, string>; completedAt: string }>;
   plots?: typeof RECOVERY_PLOT[];
+  notifications?: CorrelationNotification[];
 } = {}) {
-  api.fetchDashboardData.mockResolvedValue({
+  const dashboard = {
     records: generateMockRecords(2),
     importStatus: { state: "ok", lastImportAt: null, message: "Ready", errorDetail: null },
-    notifications: { correlations: [] },
+    notifications: { correlations: [...notifications] },
     meta: { source: "test", days: 2, availableDays: 2 },
     hrZoneBounds: null,
+  };
+  api.fetchDashboardData.mockResolvedValue(dashboard);
+  api.dismissCorrelationNotifications.mockImplementation(async (ids: string[]) => {
+    dashboard.notifications.correlations = dashboard.notifications.correlations.filter(
+      (notification) => !ids.includes(notification.id),
+    );
+    return { correlations: dashboard.notifications.correlations };
   });
   api.fetchCheckIns.mockImplementation(
     () => new Promise((resolve) => window.setTimeout(() => resolve({ entries, drafts }), 0)),
@@ -161,6 +184,108 @@ describe("App persistence workflows", () => {
     expect(screen.getByRole("combobox", { name: "Target" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Individual relationships" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Interaction" })).toBeInTheDocument();
+  });
+
+  it("shows one count-only banner and keeps the queue unread when it is dismissed", async () => {
+    setView("dashboard");
+    mockInitialLoads({ notifications: CORRELATION_NOTIFICATIONS });
+    const user = userEvent.setup();
+    render(<App />);
+
+    const banner = await screen.findByRole("status", { name: "New correlation notification" });
+    expect(banner).toHaveTextContent("3 new correlations");
+    expect(within(banner).queryByText(/Resting HR/)).not.toBeInTheDocument();
+    await user.click(within(banner).getByRole("button", { name: "Dismiss correlation banner" }));
+    expect(screen.queryByRole("status", { name: "New correlation notification" })).not.toBeInTheDocument();
+    expect(api.dismissCorrelationNotifications).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Correlation", exact: true }));
+    const inbox = screen.getByRole("region", { name: "New correlations" });
+    const toggle = within(inbox).getByRole("button", { name: /3 new correlations/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await user.click(toggle);
+    expect(within(inbox).getAllByRole("button", { name: /^Review / })).toHaveLength(3);
+    expect(api.dismissCorrelationNotifications).not.toHaveBeenCalled();
+  });
+
+  it("opens the compact queue from View and removes only each reviewed correlation", async () => {
+    setView("dashboard");
+    mockInitialLoads({ notifications: CORRELATION_NOTIFICATIONS });
+    const user = userEvent.setup();
+    render(<App />);
+    const banner = await screen.findByRole("status", { name: "New correlation notification" });
+    await user.click(within(banner).getByRole("button", { name: "View" }));
+
+    expect(screen.getByRole("button", { name: "Correlation", exact: true })).toHaveClass("bg-accent");
+    expect(api.dismissCorrelationNotifications).not.toHaveBeenCalled();
+    for (const [index, notification] of CORRELATION_NOTIFICATIONS.entries()) {
+      await user.click(screen.getByRole("button", { name: new RegExp(`${3 - index} new correlation`) }));
+      await user.click(screen.getByRole("button", { name: `Review ${notification.predictorLabel} vs ${notification.outcomeLabel}` }));
+      await waitFor(() => expect(api.dismissCorrelationNotifications).toHaveBeenLastCalledWith([notification.id]));
+      expect(new URLSearchParams(window.location.search).get("predictor")).toBe(notification.predictor);
+      expect(new URLSearchParams(window.location.search).get("outcome")).toBe(notification.outcome);
+      expect(screen.getByRole("heading", { name: "Selected correlation" })).toBeInTheDocument();
+    }
+    expect(screen.queryByRole("region", { name: "New correlations" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Top Correlations" })).toBeInTheDocument();
+  });
+
+  it("restores unread correlations from SQLite after reopening the app", async () => {
+    setView("lab");
+    mockInitialLoads({ notifications: CORRELATION_NOTIFICATIONS });
+    const user = userEvent.setup();
+    const app = render(<App />);
+    await user.click(await screen.findByRole("button", { name: /3 new correlations/ }));
+    await user.click(screen.getByRole("button", { name: "Review Steps vs Resting HR" }));
+    await waitFor(() => expect(api.dismissCorrelationNotifications).toHaveBeenCalledOnce());
+    app.unmount();
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: /2 new correlations/ }));
+    expect(screen.queryByRole("button", { name: "Review Steps vs Resting HR" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /^Review / })).toHaveLength(2);
+  });
+
+  it("restores an item to the queue when marking it viewed fails", async () => {
+    setView("lab");
+    mockInitialLoads({ notifications: [CORRELATION_NOTIFICATIONS[0]] });
+    api.dismissCorrelationNotifications.mockRejectedValueOnce(new Error("Offline"));
+    const user = userEvent.setup();
+    render(<App />);
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(
+      screen.getByRole("heading", { name: "Selected correlation" }).closest("article"),
+      "scrollIntoView",
+      { value: scrollIntoView },
+    );
+    await user.click(await screen.findByRole("button", { name: /1 new correlation/ }));
+    await user.click(screen.getByRole("button", { name: "Review Steps vs Resting HR" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("still in your queue");
+    expect(scrollIntoView).toHaveBeenCalledOnce();
+    await user.click(screen.getByRole("button", { name: /1 new correlation/ }));
+    await user.click(screen.getByRole("button", { name: "Review Steps vs Resting HR" }));
+    await waitFor(() => expect(api.dismissCorrelationNotifications).toHaveBeenCalledTimes(2));
+    expect(scrollIntoView).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "New correlations" })).not.toBeInTheDocument();
+  });
+
+  it("keeps a dismissed banner hidden on refresh and shows a new batch", async () => {
+    setView("dashboard");
+    mockInitialLoads({ notifications: [CORRELATION_NOTIFICATIONS[0]] });
+    vi.useFakeTimers();
+    const app = render(<App />);
+    try {
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      fireEvent.click(screen.getByRole("button", { name: "Dismiss correlation banner" }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(screen.queryByRole("status", { name: "New correlation notification" })).not.toBeInTheDocument();
+      mockInitialLoads({ notifications: CORRELATION_NOTIFICATIONS });
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(screen.getByRole("status", { name: "New correlation notification" })).toHaveTextContent("3 new correlations");
+    } finally {
+      app.unmount();
+      vi.useRealTimers();
+    }
   });
 
   it("opens one import flow with the current two-day range selected", async () => {

@@ -21,6 +21,7 @@ import {
   LoaderCircle,
   Pencil,
   Settings,
+  Sparkles,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -1041,8 +1042,8 @@ function SparklineTooltip({
   );
 }
 
-function formatCorrelationStat(value: number): string {
-  return Number.isFinite(value) ? value.toFixed(2) : "--";
+function correlationNotificationToken(notification: CorrelationNotification): string {
+  return `${notification.id}:${notification.createdAt}`;
 }
 
 function isSwipeNavigationTarget(target: EventTarget | null): boolean {
@@ -1119,6 +1120,9 @@ function App() {
   const [dataStatus, setDataStatus] = useState<"loading" | "ready" | "error">("loading");
   const [dataError, setDataError] = useState<string | null>(null);
   const [correlationNotifications, setCorrelationNotifications] = useState<CorrelationNotification[]>([]);
+  const [hiddenCorrelationBanners, setHiddenCorrelationBanners] = useState<string[]>([]);
+  const [correlationNotificationError, setCorrelationNotificationError] = useState<string | null>(null);
+  const reviewedCorrelationTokensRef = useRef(new Set<string>());
   const [predictorKey, setPredictorKey] = useState<PredictorKey>(readUrlPredictorKey);
   const [outcomeKey, setOutcomeKey] = useState<OutcomeKey>(readUrlOutcomeKey);
   const [showImportModal, setShowImportModal] = useState(false);
@@ -1332,7 +1336,9 @@ function App() {
         const payload = await fetchDashboardData(365, signal);
         setAllRecords(payload.records);
         setImportSummary(payload.importStatus);
-        setCorrelationNotifications(payload.notifications?.correlations ?? []);
+        setCorrelationNotifications((payload.notifications?.correlations ?? []).filter(
+          (notification) => !reviewedCorrelationTokensRef.current.has(correlationNotificationToken(notification)),
+        ));
         setHrZoneBounds(payload.hrZoneBounds ?? null);
         setDataStatus("ready");
       } catch (error) {
@@ -2133,26 +2139,38 @@ function App() {
     void persistQuestionLibrary(questionLibrary, backfillRequest);
   };
 
-  const dismissCorrelationNotificationIds = useCallback(async (ids: string[]) => {
-    setCorrelationNotifications((current) =>
-      current.filter((notification) => !ids.includes(notification.id)),
-    );
-    try {
-      const payload = await dismissCorrelationNotifications(ids);
-      setCorrelationNotifications(payload.correlations);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to dismiss notification.";
-      setImportFeedback(message);
-      await loadDashboardData({ setLoading: false });
-    }
-  }, [loadDashboardData]);
+  const hideCorrelationBanner = () => {
+    setHiddenCorrelationBanners((current) => Array.from(new Set([
+      ...current,
+      ...correlationNotifications.map(correlationNotificationToken),
+    ])));
+  };
 
-  const openCorrelationNotification = useCallback((notification: CorrelationNotification) => {
+  const openCorrelationInbox = () => {
+    hideCorrelationBanner();
+    setActiveView("lab");
+    mainRef.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+  };
+
+  const openCorrelationNotification = async (notification: CorrelationNotification) => {
+    const token = correlationNotificationToken(notification);
+    reviewedCorrelationTokensRef.current.add(token);
+    setCorrelationNotifications((current) => current.filter((item) => item.id !== notification.id));
+    setCorrelationNotificationError(null);
     setPredictorKey(notification.predictor as PredictorKey);
     setOutcomeKey(notification.outcome as OutcomeKey);
     setActiveView("lab");
-    void dismissCorrelationNotificationIds([notification.id]);
-  }, [dismissCorrelationNotificationIds]);
+    void loadCorrelationValues();
+    try {
+      await dismissCorrelationNotifications([notification.id]);
+    } catch {
+      reviewedCorrelationTokensRef.current.delete(token);
+      setCorrelationNotifications((current) => current.some((item) => item.id === notification.id)
+        ? current
+        : [notification, ...current]);
+      setCorrelationNotificationError("Could not mark this correlation as viewed. It is still in your queue; open it again to retry.");
+    }
+  };
 
   const correlationController = useCorrelationFeature({
     records: allRecords,
@@ -2169,52 +2187,29 @@ function App() {
       ref={appRef}
       className="min-h-screen overflow-x-clip px-4 pb-[calc(7rem+env(safe-area-inset-bottom))] pt-4 text-ink sm:px-6 sm:pb-10 sm:pt-32 lg:px-9"
     >
-      {correlationNotifications.length > 0 && (
-        <div className="fixed right-3 top-4 z-[65] flex w-[min(50vw,420px)] flex-col gap-2 sm:right-4 sm:top-24 sm:gap-3">
-          {correlationNotifications.map((notification) => (
-            <div
-              key={notification.id}
-              className="rounded-[18px] border border-[rgba(18,18,18,0.08)] bg-panel p-3 shadow-soft sm:rounded-[22px] sm:p-4"
-              role="status"
-            >
-              <div className="flex items-start gap-3">
-                <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-success" aria-hidden="true" />
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-semibold tracking-tight">New meaningful correlation</p>
-                  <p className="mt-1 text-sm text-muted">
-                    {notification.predictorLabel} vs {notification.outcomeLabel}
-                  </p>
-                  <p className="metric-number mt-2 text-xs text-muted">
-                    r={formatCorrelationStat(notification.correlation)} · q={notification.qValue.toExponential(2)} · N={notification.sampleCount}
-                  </p>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      className="focusable rounded-capsule bg-accent px-3 py-1.5 text-xs font-semibold text-white"
-                      onClick={() => openCorrelationNotification(notification)}
-                    >
-                      Open
-                    </button>
-                    <button
-                      type="button"
-                      className="focusable rounded-capsule bg-subsurface px-3 py-1.5 text-xs font-semibold text-muted"
-                      onClick={() => void dismissCorrelationNotificationIds([notification.id])}
-                    >
-                      Dismiss
-                    </button>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  className="focusable rounded-full p-1 text-muted transition hover:bg-subsurface"
-                  aria-label="Dismiss correlation notification"
-                  onClick={() => void dismissCorrelationNotificationIds([notification.id])}
-                >
-                  <X className="h-4 w-4" aria-hidden="true" />
-                </button>
-              </div>
-            </div>
-          ))}
+      {activeView !== "lab" && correlationNotifications.some(
+        (notification) => !hiddenCorrelationBanners.includes(correlationNotificationToken(notification)),
+      ) && (
+        <div
+          className="fixed left-3 right-3 top-[calc(0.75rem+env(safe-area-inset-top))] z-[65] mx-auto flex max-w-md items-center gap-2 rounded-[18px] border border-hairline bg-panel py-1 pl-4 pr-1 shadow-panel sm:left-auto sm:right-4 sm:top-24"
+          role="status"
+          aria-label="New correlation notification"
+        >
+          <Sparkles className="size-4 shrink-0 text-accent" aria-hidden="true" />
+          <p className="min-w-0 flex-1 text-sm font-semibold">
+            {correlationNotifications.length} new correlation{correlationNotifications.length === 1 ? "" : "s"}
+          </p>
+          <button type="button" className="focusable min-h-11 px-3 text-sm font-semibold text-accent" onClick={openCorrelationInbox}>
+            View
+          </button>
+          <button
+            type="button"
+            className="focusable grid size-11 shrink-0 place-items-center rounded-full text-muted hover:bg-subsurface"
+            aria-label="Dismiss correlation banner"
+            onClick={hideCorrelationBanner}
+          >
+            <X className="size-4" aria-hidden="true" />
+          </button>
         </div>
       )}
       <header
@@ -2662,7 +2657,14 @@ function App() {
           </section>
         )}
 
-        {activeView === "lab" && <CorrelationFeature controller={correlationController} />}
+        {activeView === "lab" && (
+          <CorrelationFeature
+            controller={correlationController}
+            notifications={correlationNotifications}
+            notificationError={correlationNotificationError}
+            onOpenNotification={(notification) => void openCorrelationNotification(notification)}
+          />
+        )}
         {activeView === "checkin" && <CheckinFeature controller={checkin} />}
         {activeView === "settings" && (
           <section className="panel gsap-fade p-6 sm:p-8">

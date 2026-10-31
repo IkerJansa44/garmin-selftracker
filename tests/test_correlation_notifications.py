@@ -16,7 +16,10 @@ from src.correlation_notifications import (
     _load_analysis_values,
     _pearson,
     _pearson_p_value,
+    _send_correlation_push,
     current_meaningful_correlation_keys,
+    dismiss_correlation_notifications,
+    load_correlation_notifications,
     notify_new_meaningful_correlations,
 )
 from src.db import connect_db, get_setting_json, init_db
@@ -310,9 +313,94 @@ def test_notify_new_meaningful_correlations_uses_iphone_preference(
 
     assert correlations
     assert len(sent_pushes) == 1
-    assert sent_pushes[0].title == "New meaningful Garmin correlation"
-    assert "Resting HR" in sent_pushes[0].body
-    assert "view=lab" in sent_pushes[0].url
+    assert sent_pushes[0].title == "1 new correlation"
+    assert sent_pushes[0].body == "Tap to review."
+    assert sent_pushes[0].url == "http://dashboard?view=lab"
+
+
+@pytest.mark.parametrize("count", [1, 3])
+@pytest.mark.parametrize(
+    "dashboard_url", ["", "https://tracker/garmin-joan/?predictor=old&outcome=old"]
+)
+def test_correlation_push_is_a_single_summary_linking_to_the_queue(
+    count: int, dashboard_url: str
+) -> None:
+    sent: list[PushNotification] = []
+    settings = CorrelationEmailSettings(
+        db_path="unused",
+        smtp_host="",
+        smtp_port=587,
+        smtp_user="",
+        smtp_pass="",
+        recipient_email="",
+        dashboard_url=dashboard_url,
+        send_push_fn=lambda notification: sent.append(notification) or 1,
+    )
+    correlation = MeaningfulCorrelation(
+        key="garmin:steps__metric:restingHr",
+        predictor="garmin:steps",
+        outcome="metric:restingHr",
+        predictor_label="Steps",
+        outcome_label="Resting HR",
+        sample_count=31,
+        correlation=0.42,
+        p_value=0.01,
+        q_value=0.02,
+    )
+
+    assert _send_correlation_push(settings, [correlation] * count) == 1
+    assert len(sent) == 1
+    assert sent[0].title == (
+        "1 new correlation" if count == 1 else "3 new correlations"
+    )
+    assert sent[0].body == "Tap to review."
+    assert sent[0].tag == "meaningful-correlations"
+    assert sent[0].url == (
+        "https://tracker/garmin-joan/?view=lab" if dashboard_url else "/?view=lab"
+    )
+
+
+@pytest.mark.parametrize("push_fails", [False, True])
+def test_shared_notification_flow_persists_queue_independently_of_delivery(
+    tmp_path: Path, push_fails: bool
+) -> None:
+    db_path = tmp_path / "garmin.db"
+    _insert_correlated_metrics(db_path)
+    save_notification_preferences(str(db_path), {"email": False, "iphone": push_fails})
+
+    def send_push(notification: PushNotification) -> int:
+        raise RuntimeError("Push service unavailable")
+
+    settings = CorrelationEmailSettings(
+        db_path=str(db_path),
+        smtp_host="",
+        smtp_port=587,
+        smtp_user="",
+        smtp_pass="",
+        recipient_email="",
+        dashboard_url="",
+        send_push_fn=send_push,
+    )
+    correlations = notify_new_meaningful_correlations(settings, previous_keys=set())
+    connection = connect_db(str(db_path))
+    try:
+        queued = load_correlation_notifications(connection)
+    finally:
+        connection.close()
+    assert {item["id"] for item in queued} == {item.key for item in correlations}
+    assert (
+        dismiss_correlation_notifications(str(db_path), [item["id"] for item in queued])
+        == []
+    )
+    assert notify_new_meaningful_correlations(settings) == []
+    connection = connect_db(str(db_path))
+    try:
+        assert load_correlation_notifications(connection) == []
+        assert (
+            connection.execute("SELECT COUNT(*) FROM daily_metrics").fetchone()[0] == 26
+        )
+    finally:
+        connection.close()
 
 
 def test_build_email_body_describes_negative_correlations_with_scatterplot_link() -> (
